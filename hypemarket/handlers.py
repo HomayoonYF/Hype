@@ -1,0 +1,1130 @@
+"""Telegram layer: routes messages and button presses to the game logic."""
+from __future__ import annotations
+
+import html
+import logging
+import re
+import time
+from collections import deque
+from dataclasses import dataclass, field
+
+from aiogram import Bot, F, Router
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramRetryAfter
+from aiogram.types import BufferedInputFile, CallbackQuery, ChatMemberUpdated, InputMediaPhoto, LabeledPrice, Message, PreCheckoutQuery, User
+
+from . import charts, config as C, core, events, fmt, progress, quests, shop, social, textparse, trading, views
+from .core import GameError
+from .db import Database
+from .texts import ALIASES, SOFT_ARGS, SOFT_EXACT, EXAMPLES, level_title, t
+from .views import Reply, kb
+
+log = logging.getLogger("hypemarket")
+router = Router()
+GROUPS = ("group", "supergroup")
+
+
+class Ignore(Exception):
+    """Silently drop the message (used for look-alike chat text in groups)."""
+
+
+# --- runtime state -----------------------------------------------------------------------------
+@dataclass
+class App:
+    settings: C.Settings
+    db: Database
+    bot: Bot | None = None
+    botname: str = ""
+    counts: dict = field(default_factory=dict)
+    seen: set = field(default_factory=set)
+    last_count: dict = field(default_factory=dict)
+    last_cmd: dict = field(default_factory=dict)
+    chat_sent: dict = field(default_factory=dict)
+
+    def swap_buffers(self):
+        counts, seen = self.counts, self.seen
+        self.counts, self.seen = {}, set()
+        return counts, seen
+
+    def note_activity(self, uid: int, chat_id: int) -> None:
+        self.seen.add((chat_id, uid))
+        t0 = time.time()
+        if t0 - self.last_count.get(uid, 0) >= C.ACT_MIN_GAP:
+            self.last_count[uid] = t0
+            self.counts[(uid, chat_id)] = self.counts.get((uid, chat_id), 0) + 1
+        if len(self.last_count) > 50_000:
+            self.last_count.clear()
+
+    def throttled(self, uid: int, gap: float = 0.6) -> bool:
+        t0 = time.time()
+        if t0 - self.last_cmd.get(uid, 0) < gap:
+            return True
+        self.last_cmd[uid] = t0
+        if len(self.last_cmd) > 50_000:
+            self.last_cmd.clear()
+        return False
+
+    def chat_budget(self, chat_id: int, per_minute: int = 18) -> bool:
+        """Stay under Telegram's ~20 messages/minute group limit."""
+        dq = self.chat_sent.setdefault(chat_id, deque())
+        t0 = time.time()
+        while dq and t0 - dq[0] > 60:
+            dq.popleft()
+        if len(dq) >= per_minute:
+            return False
+        dq.append(t0)
+        return True
+
+
+@dataclass
+class Ctx:
+    app: App
+    bot: Bot
+    tg: User
+    chat: object
+    lang: str
+    cmd: str
+    args: list = field(default_factory=list)
+    soft: bool = False
+    msg: Message | None = None
+    cb: CallbackQuery | None = None
+
+    @property
+    def db(self) -> Database:
+        return self.app.db
+
+    @property
+    def uid(self) -> int:
+        return self.tg.id
+
+    @property
+    def is_group(self) -> bool:
+        return self.chat.type in GROUPS
+
+    def reply(self, text=None, kbd=None, **kw) -> Reply:
+        return Reply(text=text, kb=kbd, edit=self.cb is not None, **kw)
+
+    def usage(self, cmd: str) -> Reply:
+        if self.soft:
+            raise Ignore
+        ex = EXAMPLES[cmd][0 if self.lang == "fa" else 1]
+        return Reply(text=t(self.lang, "usage", ex=html.escape(ex)))
+
+
+# --- helpers ------------------------------------------------------------------------------------
+_TAGS = re.compile(r"<[^>]+>")
+
+
+def plain(text: str, limit: int = 190) -> str:
+    return html.unescape(_TAGS.sub("", text))[:limit]
+
+
+MONEY_KW = {"funds": ("need", "have"), "rb_need": ("need", "nw"), "bad_goal": ("lo", "hi")}
+
+
+def err_text(lang: str, e: GameError) -> str:
+    kw = {}
+    money = MONEY_KW.get(e.code, ())
+    for k, v in e.kw.items():
+        if k in money:
+            kw[k] = fmt.coins(v, lang)
+        elif k == "ticker":
+            kw[k] = fmt.tk(v)
+        elif isinstance(v, int):
+            kw[k] = fmt.num(v, lang)
+        else:
+            kw[k] = fmt.esc(v)
+    if "secs" in e.kw and e.code in ("rug_young", "rug_cooldown", "daily_wait"):
+        kw["time"] = fmt.dur(e.kw["secs"], lang)
+    key = "e." + e.code
+    from .texts import FA
+    if key not in FA:
+        return t(lang, "e.unknown", code=fmt.esc(e.code))
+    return t(lang, key, **kw)
+
+
+def lvl_line(lang: str, r: dict) -> str:
+    lv = r.get("levelup")
+    return "\n\n" + t(lang, "levelup", level=fmt.num(lv, lang), title=level_title(lang, lv)) if lv else ""
+
+
+def ticker_exists(db: Database, tok: str) -> bool:
+    return bool(db.q1("SELECT 1 FROM stocks WHERE ticker=?", (core.norm_ticker(tok),)))
+
+
+def perk_key(tok: str) -> str | None:
+    k = textparse.key(tok)
+    for pk in C.PERKS:
+        if k == pk or k in (textparse.key(t("fa", f"perk.{pk}.name")), textparse.key(t("en", f"perk.{pk}.name"))):
+            return pk
+    return None
+
+
+LANGS = {"fa": "fa", "farsi": "fa", "persian": "fa", "فارسی": "fa", "en": "en", "english": "en", "انگلیسی": "en"}
+
+
+def soft_ok(app: App, p: textparse.Parsed) -> bool:
+    """Plain-word commands in groups must look unmistakably like commands, so ordinary chat doesn't trigger the bot."""
+    a, db = p.args, app.db
+    if p.cmd in SOFT_EXACT and p.cmd != "alert":
+        return not a
+    if p.cmd == "alert":
+        return not a or (textparse.key(a[0]) in ("حذف", "delete", "del")) or (textparse.looks_like_ticker(a[0]) and ticker_exists(db, a[0]))
+    if p.cmd not in SOFT_ARGS:
+        return False
+    if p.cmd in ("buy", "sell"):
+        tkr, amt = textparse.split_trade(a)
+        return len(a) <= 3 and bool(tkr) and ticker_exists(db, tkr)
+    if p.cmd in ("price", "chart", "short", "cover", "cashout"):
+        return bool(a) and textparse.looks_like_ticker(a[0]) and ticker_exists(db, a[0])
+    if p.cmd in ("launch", "project", "meme"):
+        return len(a) >= 2 and textparse.looks_like_ticker(a[0]) and not ticker_exists(db, a[0])
+    if p.cmd == "createcompany":
+        return len(a) >= 2 and textparse.looks_like_ticker(a[-1])
+    if p.cmd == "joincompany":
+        return bool(a) and bool(db.q1("SELECT 1 FROM companies WHERE name=? COLLATE NOCASE", (" ".join(a),)))
+    if p.cmd == "upgrade":
+        return len(a) == 1 and perk_key(a[0]) is not None
+    if p.cmd == "setdividend":
+        return bool(a) and textparse.to_int(a[0]) is not None
+    if p.cmd == "editstock":
+        return len(a) >= 1 and textparse.key(a[0]) in EDIT_FIELDS
+    if p.cmd == "msglimit":
+        return len(a) == 1 and textparse.to_int(a[0]) is not None
+    if p.cmd == "setlang":
+        return len(a) == 1 and textparse.key(a[0]) in LANGS
+    return False
+
+
+async def is_admin(c: Ctx) -> bool:
+    if c.uid in c.app.settings.admins:
+        return True
+    if not c.is_group:
+        return False
+    try:
+        m = await c.bot.get_chat_member(c.chat.id, c.uid)
+        return m.status in ("creator", "administrator")
+    except Exception:
+        log.warning("could not check admin status in chat %s", c.chat.id, exc_info=True)
+        return False
+
+
+def bot_link(c: Ctx, param: str = "") -> str:
+    return f"https://t.me/{c.app.botname}" + (f"?{param}" if param else "")
+
+
+# --- sending ---------------------------------------------------------------------------------------
+async def _call(coro_fn, *a, **kw):
+    try:
+        return await coro_fn(*a, **kw)
+    except TelegramRetryAfter as e:
+        log.warning("flood control: retry after %s", e.retry_after)
+    except TelegramForbiddenError:
+        log.info("forbidden: bot can't write here")
+    except TelegramBadRequest as e:
+        if "not modified" not in str(e).lower():
+            log.warning("bad request: %s", e)
+    return None
+
+
+def _photo(r: Reply):
+    return BufferedInputFile(r.photo, "chart.png") if isinstance(r.photo, (bytes, bytearray)) else r.photo
+
+
+async def send(c: Ctx, r: Reply) -> None:
+    if c.cb is not None:
+        cb = c.cb
+        await _call(cb.answer, r.toast[:200], show_alert=r.alert) if r.toast else await _call(cb.answer)
+        m = cb.message
+        if not m:
+            return
+        if r.photo and r.edit and m.photo:
+            await _call(m.edit_media, media=InputMediaPhoto(media=_photo(r), caption=r.text), reply_markup=r.kb)
+        elif r.photo:
+            await _call(m.answer_photo, _photo(r), caption=r.text, reply_markup=r.kb)
+        elif r.text and r.edit:
+            if m.photo:
+                await _call(m.edit_caption, caption=r.text, reply_markup=r.kb)
+            else:
+                await _call(m.edit_text, r.text, reply_markup=r.kb)
+        elif r.text:
+            if not c.is_group or c.app.chat_budget(c.chat.id):
+                await _call(m.answer, r.text, reply_markup=r.kb)
+        return
+    if c.is_group and not c.app.chat_budget(c.chat.id):
+        return
+    m = c.msg
+    if r.photo:
+        await _call(m.reply_photo, _photo(r), caption=r.text, reply_markup=r.kb)
+    elif r.text:
+        await _call(m.reply, r.text, reply_markup=r.kb)
+
+
+async def flush_outbox(app: App) -> None:
+    items = list(app.db.outbox)
+    app.db.outbox.clear()
+    for uid, key, kw in items:
+        u = core.get_user(app.db, uid)
+        if not u:
+            continue
+        try:
+            await app.bot.send_message(uid, views.dm_text(u["lang"], key, kw))
+        except TelegramRetryAfter:
+            log.warning("flood control while sending DMs")
+            break
+        except (TelegramForbiddenError, TelegramBadRequest):
+            pass  # user never opened the bot privately
+        except Exception:
+            log.exception("DM failed")
+
+
+# --- command registry --------------------------------------------------------------------------------
+HANDLERS: dict = {}
+CALLBACKS: dict = {}
+
+
+def cmd(name: str):
+    def deco(fn):
+        HANDLERS[name] = fn
+        return fn
+    return deco
+
+
+def cbk(name: str):
+    def deco(fn):
+        CALLBACKS[name] = fn
+        return fn
+    return deco
+
+
+def uname(c: Ctx) -> str:
+    return core.display_name(core.get_user(c.db, c.uid))
+
+
+# =============================== commands ==================================================
+@cmd("start")
+async def h_start(c: Ctx):
+    u = core.need_user(c.db, c.uid)
+    return c.reply(t(c.lang, "welcome", name=fmt.esc(core.display_name(u, False)), brand=t(c.lang, "brand"), cash=fmt.coins(u["cash"], c.lang)))
+
+
+@cmd("help")
+async def h_help(c: Ctx):
+    return views.help_menu(c.lang, c.uid)
+
+
+@cbk("hp")
+async def cb_help(c: Ctx):
+    return views.help_section(c.db, c.lang, c.uid, c.args[0])
+
+
+@cmd("quests")
+async def h_quests(c: Ctx):
+    return views.quests_view(c.db, c.lang, c.uid)
+
+
+@cbk("qs")
+async def cb_quests(c: Ctx):
+    r = views.quests_view(c.db, c.lang, c.uid)
+    r.edit = True
+    return r
+
+
+@cmd("whales")
+async def h_whales(c: Ctx):
+    return views.whales_view(c.db, c.lang, c.uid)
+
+
+@cbk("wh")
+async def cb_whales(c: Ctx):
+    c.db.x("UPDATE users SET whale_dm=1-whale_dm WHERE id=?", (c.uid,))
+    r = views.whales_view(c.db, c.lang, c.uid)
+    r.edit = True
+    return r
+
+
+@cmd("profile")
+async def h_profile(c: Ctx):
+    return views.profile_view(c.db, c.lang, c.uid)
+
+
+@cmd("language")
+async def h_language(c: Ctx):
+    scope = "g" if c.is_group else "u"
+    ident = c.chat.id if c.is_group else c.uid
+    if c.is_group and not await is_admin(c):
+        return Reply(text=t(c.lang, "admin_only"))
+    return Reply(text="🌐", kb=kb([[("فارسی", f"lang:fa:{scope}:{ident}"), ("English", f"lang:en:{scope}:{ident}")]]))
+
+
+@cmd("setlang")
+async def h_setlang(c: Ctx):
+    if not c.args or textparse.key(c.args[0]) not in LANGS:
+        return c.usage("setlang")
+    code = LANGS[textparse.key(c.args[0])]
+    if c.is_group:
+        if not await is_admin(c):
+            return Reply(text=t(c.lang, "admin_only"))
+        social.set_group_lang(c.db, c.chat.id, code)
+    else:
+        c.db.x("UPDATE users SET lang=? WHERE id=?", (code, c.uid))
+    return Reply(text=t(code, "lang.set", lang=t(code, "lang_name")))
+
+
+@cbk("lang")
+async def cb_lang(c: Ctx):
+    code, scope, ident = c.args[0], c.args[1], int(c.args[2])
+    if code not in ("fa", "en"):
+        return Reply(toast=t(c.lang, "e.bad_usage"))
+    if scope == "g":
+        if ident != c.chat.id or not await is_admin(c):
+            return Reply(toast=t(c.lang, "admin_only"), alert=True)
+        social.set_group_lang(c.db, ident, code)
+    else:
+        if ident != c.uid:
+            return Reply(toast=t(c.lang, "not_yours"))
+        c.db.x("UPDATE users SET lang=? WHERE id=?", (code, c.uid))
+    return Reply(text=t(code, "lang.set", lang=t(code, "lang_name")), edit=True)
+
+
+# ---- trading ---------------------------------------------------------------------------------
+def trade_kb(db, lang, s):
+    return views.stock_card(db, lang, s).kb
+
+
+@cmd("buy")
+async def h_buy(c: Ctx):
+    tkr, amt = textparse.split_trade(c.args)
+    if not tkr:
+        return c.usage("buy")
+    if amt is None:
+        return views.stock_card(c.db, c.lang, core.need_stock(c.db, tkr), c.uid)
+    r = trading.buy(c.db, c.uid, tkr, n=amt, spend_all=(amt == 0))
+    s = r["stock"]
+    text = t(c.lang, "buy_ok", tk=fmt.tk(s["ticker"]), shares=fmt.num(r["shares"], c.lang), cost=fmt.coins(r["cost"], c.lang), fee=fmt.coins(r["fee"], c.lang),
+             price=fmt.price(r["price"], c.lang), holding=fmt.num(r["holding"], c.lang)) + lvl_line(c.lang, r)
+    return Reply(text=text, kb=trade_kb(c.db, c.lang, s))
+
+
+@cmd("sell")
+async def h_sell(c: Ctx):
+    tkr, amt = textparse.split_trade(c.args)
+    if not tkr:
+        return c.usage("sell")
+    if amt is None:
+        return views.stock_card(c.db, c.lang, core.need_stock(c.db, tkr), c.uid)
+    r = trading.sell(c.db, c.uid, tkr, n=amt, sell_all=(amt == 0))
+    s = r["stock"]
+    pnl = t(c.lang, "pnl_line", pnl=fmt.pnl(r["pnl"], c.lang))
+    text = t(c.lang, "sell_ok", tk=fmt.tk(s["ticker"]), shares=fmt.num(r["shares"], c.lang), net=fmt.coins(r["net"], c.lang), fee=fmt.coins(r["fee"], c.lang),
+             price=fmt.price(r["price"], c.lang), pnl=pnl) + lvl_line(c.lang, r)
+    return Reply(text=text, kb=trade_kb(c.db, c.lang, s))
+
+
+@cmd("price")
+async def h_price(c: Ctx):
+    if not c.args:
+        return c.usage("price")
+    s = core.need_stock(c.db, c.args[0], active=False)
+    card = views.stock_card(c.db, c.lang, s, c.uid if not c.is_group else None)
+    if s["logo"] and s["status"] == "active":
+        card.photo = s["logo"]
+    return card
+
+
+@cbk("st")
+async def cb_stock(c: Ctx):
+    s = core.stock_row(c.db, int(c.args[0]))
+    if not s:
+        return Reply(toast=t(c.lang, "e.no_stock", ticker="?"))
+    card = views.stock_card(c.db, c.lang, s, None if c.is_group else c.uid)
+    card.edit = True
+    return card
+
+
+SPAN_WORDS = {"1h": "1h", "h": "1h", "ساعت": "1h", "24h": "24h", "day": "24h", "روز": "24h", "7d": "7d", "week": "7d", "هفته": "7d", "هفتگی": "7d"}
+
+
+def _chart(db, lang, s, span, edit=False):
+    png, d = charts.build(db, s, span)
+    sid = s["id"]
+    rows = [[(("• " if d["span"] == sp else "") + sp, f"ch:{sid}:{sp}") for sp in ("1h", "24h", "7d")]]
+    return Reply(photo=png, text=views.chart_caption(db, lang, s, d), kb=kb(rows), edit=edit)
+
+
+@cmd("chart")
+async def h_chart(c: Ctx):
+    if not c.args:
+        return c.usage("chart")
+    s = core.need_stock(c.db, c.args[0])
+    span = next((SPAN_WORDS[textparse.key(a)] for a in c.args[1:] if textparse.key(a) in SPAN_WORDS), "24h")
+    return _chart(c.db, c.lang, s, span)
+
+
+@cbk("ch")
+async def cb_chart(c: Ctx):
+    s = core.stock_row(c.db, int(c.args[0]))
+    if not s or s["status"] != "active":
+        return Reply(toast=t(c.lang, "e.no_stock", ticker="?"))
+    return _chart(c.db, c.lang, s, c.args[1], edit=bool(c.msg and c.msg.photo))
+
+
+@cmd("market")
+async def h_market(c: Ctx):
+    return views.market_view(c.db, c.lang, "top")
+
+
+@cbk("mk")
+async def cb_market(c: Ctx):
+    r = views.market_view(c.db, c.lang, c.args[0])
+    r.edit = True
+    return r
+
+
+@cmd("portfolio")
+async def h_portfolio(c: Ctx):
+    return views.portfolio_view(c.db, c.lang, c.uid)
+
+
+@cbk("pf")
+async def cb_portfolio(c: Ctx):
+    r = views.portfolio_view(c.db, c.lang, c.uid)
+    r.edit = True
+    return r
+
+
+@cmd("alert")
+async def h_alert(c: Ctx):
+    a = c.args
+    if not a:
+        return views.alerts_view(c.db, c.lang, c.uid)
+    if textparse.key(a[0]) in ("حذف", "delete", "del"):
+        n = trading.delete_alerts(c.db, c.uid, a[1] if len(a) > 1 else None)
+        return Reply(text=t(c.lang, "alerts_deleted", n=fmt.num(n, c.lang)))
+    v = textparse.to_number(a[1]) if len(a) > 1 else None
+    if v is None:
+        return c.usage("alert")
+    r = trading.set_alert(c.db, c.uid, a[0], int(round(v * C.UNIT)))
+    return Reply(text=t(c.lang, "alert_ok", tk=fmt.tk(r["stock"]["ticker"]), dir=t(c.lang, "dir." + r["direction"]), target=fmt.price(r["target"], c.lang)))
+
+
+@cmd("short")
+async def h_short(c: Ctx):
+    tkr, amt = textparse.split_trade(c.args)
+    if not tkr or not amt:
+        return c.usage("short")
+    r = trading.open_short(c.db, c.uid, tkr, amt)
+    return Reply(text=t(c.lang, "short_ok", tk=fmt.tk(r["stock"]["ticker"]), ticker=r["stock"]["ticker"], shares=fmt.num(r["shares"], c.lang),
+                        entry=fmt.price(r["entry"], c.lang), margin=fmt.coins(r["margin"], c.lang), fee=fmt.coins(r["fee"], c.lang)))
+
+
+@cmd("cover")
+async def h_cover(c: Ctx):
+    if not c.args:
+        return c.usage("cover")
+    r = trading.close_short(c.db, c.uid, c.args[0])
+    return Reply(text=t(c.lang, "cover_ok", tk=fmt.tk(r["stock"]["ticker"]), pnl=fmt.pnl(r["pnl"], c.lang), payout=fmt.coins(r["payout"], c.lang)) + lvl_line(c.lang, r))
+
+
+@cbk("b")
+async def cb_buy(c: Ctx):
+    sid, n = int(c.args[0]), int(c.args[1])
+    s = core.stock_row(c.db, sid)
+    if not s:
+        return Reply(toast=t(c.lang, "e.no_stock", ticker="?"))
+    r = trading.buy(c.db, c.uid, s["ticker"], n=n, spend_all=(n == 0))
+    toast = plain(t(c.lang, "buy_ok", tk=fmt.tk(s["ticker"]), shares=fmt.num(r["shares"], c.lang), cost=fmt.coins(r["cost"], c.lang), fee=fmt.coins(r["fee"], c.lang),
+                    price=fmt.price(r["price"], c.lang), holding=fmt.num(r["holding"], c.lang)) + lvl_line(c.lang, r))
+    card = views.stock_card(c.db, c.lang, r["stock"], None if c.is_group else c.uid)
+    card.edit, card.toast = True, toast
+    return card
+
+
+@cbk("s")
+async def cb_sell(c: Ctx):
+    sid, n = int(c.args[0]), int(c.args[1])
+    s = core.stock_row(c.db, sid)
+    if not s:
+        return Reply(toast=t(c.lang, "e.no_stock", ticker="?"))
+    r = trading.sell(c.db, c.uid, s["ticker"], n=n, sell_all=(n == 0))
+    pnl = t(c.lang, "pnl_line", pnl=fmt.pnl(r["pnl"], c.lang))
+    toast = plain(t(c.lang, "sell_ok", tk=fmt.tk(s["ticker"]), shares=fmt.num(r["shares"], c.lang), net=fmt.coins(r["net"], c.lang), fee=fmt.coins(r["fee"], c.lang),
+                    price=fmt.price(r["price"], c.lang), pnl=pnl) + lvl_line(c.lang, r))
+    card = views.stock_card(c.db, c.lang, r["stock"], None if c.is_group else c.uid)
+    card.edit, card.toast = True, toast
+    return card
+
+
+# ---- launching / owning -------------------------------------------------------------------------------
+def _launch(c: Ctx, kind: str, name_idx: int, goal: int = 0):
+    rest = " ".join(c.args[name_idx:])
+    name, _, descr = rest.partition("|")
+    s = trading.launch(c.db, c.uid, c.args[0], name.strip(), kind=kind, descr=descr.strip(), goal=goal)
+    text = t(c.lang, "launch_ok", tk=fmt.tk(s["ticker"]), ticker=s["ticker"], name=fmt.esc(s["name"]), price=fmt.price(core.price(s), c.lang))
+    if goal:
+        text += "\n" + t(c.lang, "launch_goal", goal=fmt.coins(goal, c.lang))
+    return Reply(text=text, kb=trade_kb(c.db, c.lang, s))
+
+
+@cmd("launch")
+async def h_launch(c: Ctx):
+    if len(c.args) < 2:
+        return c.usage("launch")
+    return _launch(c, "personal", 1)
+
+
+@cmd("meme")
+async def h_meme(c: Ctx):
+    if len(c.args) < 2:
+        return c.usage("meme")
+    return _launch(c, "meme", 1)
+
+
+@cmd("project")
+async def h_project(c: Ctx):
+    if len(c.args) < 3 or textparse.to_number(c.args[1]) is None:
+        return c.usage("project")
+    return _launch(c, "project", 2, goal=int(round(textparse.to_number(c.args[1]) * C.UNIT)))
+
+
+@cmd("mystock")
+async def h_mystock(c: Ctx):
+    s = trading.my_stock(c.db, c.uid, c.args[0] if c.args else None)
+    card = views.stock_card(c.db, c.lang, s, c.uid if not c.is_group else None)
+    card.text += "\n" + t(c.lang, "card.fees", fees=fmt.coins(s["fees_earned"], c.lang))
+    others = [x["ticker"] for x in trading.my_stocks(c.db, c.uid) if x["id"] != s["id"]]
+    if others:
+        card.text += "\n" + " ".join(fmt.tk(x) for x in others)
+    return card
+
+
+EDIT_FIELDS = {"نام": "name", "name": "name", "اسم": "name", "توضیح": "descr", "توضیحات": "descr", "descr": "descr", "description": "descr", "لوگو": "logo", "logo": "logo"}
+
+
+@cmd("editstock")
+async def h_editstock(c: Ctx):
+    if not c.args or textparse.key(c.args[0]) not in EDIT_FIELDS:
+        return c.usage("editstock")
+    field_ = EDIT_FIELDS[textparse.key(c.args[0])]
+    if field_ == "logo":
+        m = c.msg
+        photo = (m.photo if m and m.photo else None) or (m.reply_to_message.photo if m and m.reply_to_message and m.reply_to_message.photo else None)
+        if not photo:
+            raise GameError("bad_usage")
+        value = photo[-1].file_id
+    else:
+        value = " ".join(c.args[1:])
+        if not value and field_ != "descr":
+            return c.usage("editstock")
+    trading.edit_stock(c.db, c.uid, field_, value)
+    return Reply(text=t(c.lang, "edit_ok"))
+
+
+@cmd("setdividend")
+async def h_setdividend(c: Ctx):
+    pct = textparse.to_int(c.args[0]) if c.args else None
+    if pct is None:
+        return c.usage("setdividend")
+    s = trading.set_dividend(c.db, c.uid, pct, c.args[1] if len(c.args) > 1 else None)
+    return Reply(text=t(c.lang, "setdiv_ok", pct=fmt.num(pct, c.lang), tk=fmt.tk(s["ticker"])))
+
+
+def _rug_menu(c: Ctx, s) -> Reply:
+    sid, uid = s["id"], c.uid
+    text = t(c.lang, "rug_warn", tk=fmt.tk(s["ticker"]), pen=fmt.num(C.RUG_REP_PENALTY, c.lang), tax=fmt.num(C.RUG_TAX_BPS // 100, c.lang))
+    rows = [[(f"☠️ {fmt.num(p, c.lang)}%", f"rug:{sid}:{p}:{uid}") for p in (25, 50, 70)], [(t(c.lang, "btn.cancel"), f"rug:no:{uid}")]]
+    return Reply(text=text, kb=kb(rows))
+
+
+def _do_rug(c: Ctx, ticker: str, pct: int) -> Reply:
+    r = trading.rug(c.db, c.uid, ticker, pct, allowed=c.app.settings.rug)
+    return Reply(text=t(c.lang, "rug_ok", tk=fmt.tk(r["stock"]["ticker"]), taken=fmt.coins(r["taken"], c.lang)) + lvl_line(c.lang, r))
+
+
+@cmd("cashout")
+async def h_cashout(c: Ctx):
+    if not c.app.settings.rug:
+        raise GameError("rug_off")
+    ticker = next((a for a in c.args if textparse.looks_like_ticker(a) and textparse.to_int(a) is None), None)
+    pct = next((textparse.to_int(a) for a in c.args if textparse.to_int(a) is not None), None)
+    s = trading.my_stock(c.db, c.uid, ticker)
+    if pct is not None:
+        return _do_rug(c, s["ticker"], pct)
+    return _rug_menu(c, s)
+
+
+@cbk("rug")
+async def cb_rug(c: Ctx):
+    if c.args[0] == "no":
+        return Reply(text="👍", edit=True)
+    sid, pct = int(c.args[0]), int(c.args[1])
+    s = core.stock_row(c.db, sid)
+    r = _do_rug(c, s["ticker"], pct)
+    r.edit = True
+    return r
+
+
+# ---- passive income ------------------------------------------------------------------------------------
+def _claim_extra(c: Ctx, r: dict) -> str:
+    extra = ""
+    if r["tax"]:
+        extra += t(c.lang, "claim_tax", tax=fmt.coins(r["tax"], c.lang))
+    if r["bonus"]:
+        extra += t(c.lang, "claim_bonus", bonus=fmt.coins(r["bonus"], c.lang))
+    return extra + lvl_line(c.lang, r)
+
+
+@cmd("dividends")
+async def h_dividends(c: Ctx):
+    r = trading.claim_dividends(c.db, c.uid)
+    return Reply(text=t(c.lang, "div_ok", net=fmt.coins(r["net"], c.lang), extra=_claim_extra(c, r)))
+
+
+@cmd("income")
+async def h_income(c: Ctx):
+    r = trading.claim_income(c.db, c.uid)
+    return Reply(text=t(c.lang, "inc_ok", net=fmt.coins(r["net"], c.lang), extra=_claim_extra(c, r)))
+
+
+@cbk("cl")
+async def cb_claim(c: Ctx):
+    try:
+        r = trading.claim_dividends(c.db, c.uid) if c.args[0] == "div" else trading.claim_income(c.db, c.uid)
+        toast = plain(t(c.lang, "div_ok" if c.args[0] == "div" else "inc_ok", net=fmt.coins(r["net"], c.lang), extra=""))
+    except GameError as e:
+        toast = plain(err_text(c.lang, e))
+    view = views.portfolio_view(c.db, c.lang, c.uid)
+    view.edit, view.toast = True, toast
+    return view
+
+
+@cmd("daily")
+async def h_daily(c: Ctx):
+    r = progress.daily(c.db, c.uid)
+    return Reply(text=t(c.lang, "daily_ok", amount=fmt.coins(r["amount"], c.lang), streak=fmt.num(r["streak"], c.lang), pct=fmt.num(r["pct"], c.lang)) + lvl_line(c.lang, r))
+
+
+# ---- companies -------------------------------------------------------------------------------------------
+@cmd("createcompany")
+async def h_createcompany(c: Ctx):
+    if len(c.args) < 2:
+        return c.usage("createcompany")
+    co = social.create_company(c.db, c.uid, " ".join(c.args[:-1]), c.args[-1])
+    st = core.stock_row(c.db, co["stock_id"])
+    return Reply(text=t(c.lang, "company.created", name=fmt.esc(co["name"]), tk=fmt.tk(st["ticker"])))
+
+
+@cmd("joincompany")
+async def h_joincompany(c: Ctx):
+    if not c.args:
+        return c.usage("joincompany")
+    co = social.join_company(c.db, c.uid, " ".join(c.args))
+    return Reply(text=t(c.lang, "company.joined", name=fmt.esc(co["name"])))
+
+
+@cmd("leavecompany")
+async def h_leavecompany(c: Ctx):
+    co = social.leave_company(c.db, c.uid)
+    return Reply(text=t(c.lang, "company.left", name=fmt.esc(co["name"])))
+
+
+@cmd("mycompany")
+async def h_mycompany(c: Ctx):
+    return views.company_view(c.db, c.lang, c.uid)
+
+
+@cmd("payout")
+async def h_payout(c: Ctx):
+    r = social.payout_company(c.db, c.uid)
+    return Reply(text=t(c.lang, "company.payout", n=fmt.num(r["members"], c.lang), each=fmt.coins(r["each"], c.lang)))
+
+
+# ---- groups & rankings ------------------------------------------------------------------------------------
+@cmd("group")
+async def h_group(c: Ctx):
+    if not c.is_group:
+        return Reply(text=t(c.lang, "group_only"))
+    return views.group_view(c.db, c.lang, c.chat.id)
+
+
+@cmd("index")
+async def h_index(c: Ctx):
+    if not c.is_group:
+        return Reply(text=t(c.lang, "group_only"))
+    g = social.get_group(c.db, c.chat.id)
+    return views.stock_card(c.db, c.lang, core.stock_row(c.db, g["index_stock"]), None if c.is_group else c.uid)
+
+
+@cmd("leaderboard")
+async def h_leaderboard(c: Ctx):
+    return views.leaderboard_view(c.db, c.lang, c.chat.id) if c.is_group else views.top_view(c.db, c.lang)
+
+
+@cmd("top")
+async def h_top(c: Ctx):
+    return views.top_view(c.db, c.lang)
+
+
+@cmd("grouprank")
+async def h_grouprank(c: Ctx):
+    return views.grouprank_view(c.db, c.lang)
+
+
+@cmd("invite")
+async def h_invite(c: Ctx):
+    return Reply(text=t(c.lang, "invite", link=bot_link(c, f"start=ref_{c.uid}"), glink=bot_link(c, "startgroup=true"),
+                        inviter=fmt.coins(C.REF_BONUS_INVITER, c.lang), new=fmt.coins(C.REF_BONUS_NEW, c.lang), gb=fmt.coins(C.GROUP_ADD_BONUS, c.lang)))
+
+
+# ---- progress ----------------------------------------------------------------------------------------------
+@cmd("level")
+async def h_level(c: Ctx):
+    return views.level_view(c.db, c.lang, c.uid)
+
+
+@cmd("reputation")
+async def h_reputation(c: Ctx):
+    return views.rep_view(c.db, c.lang, c.uid)
+
+
+@cmd("skills")
+async def h_skills(c: Ctx):
+    return views.perks_view(c.db, c.lang, c.uid, "skill")
+
+
+@cmd("legacy")
+async def h_legacy(c: Ctx):
+    return views.perks_view(c.db, c.lang, c.uid, "legacy")
+
+
+@cmd("upgrade")
+async def h_upgrade(c: Ctx):
+    if not c.args:
+        return c.usage("upgrade")
+    key = perk_key(c.args[0])
+    if not key:
+        raise GameError("no_perk")
+    r = progress.upgrade(c.db, c.uid, key)
+    return Reply(text=t(c.lang, "upgrade_ok", name=t(c.lang, f"perk.{key}.name"), level=fmt.num(r["level"], c.lang)))
+
+
+@cbk("up")
+async def cb_upgrade(c: Ctx):
+    key = c.args[0]
+    try:
+        r = progress.upgrade(c.db, c.uid, key)
+        toast = plain(t(c.lang, "upgrade_ok", name=t(c.lang, f"perk.{key}.name"), level=fmt.num(r["level"], c.lang)))
+    except GameError as e:
+        toast = plain(err_text(c.lang, e))
+    view = views.perks_view(c.db, c.lang, c.uid, C.PERKS[key].kind)
+    view.edit, view.toast = True, toast
+    return view
+
+
+@cbk("sk")
+async def cb_sk(c: Ctx):
+    v = views.perks_view(c.db, c.lang, c.uid, "skill")
+    v.edit = True
+    return v
+
+
+@cbk("lg")
+async def cb_lg(c: Ctx):
+    v = views.perks_view(c.db, c.lang, c.uid, "legacy")
+    v.edit = True
+    return v
+
+
+@cmd("rebirth")
+async def h_rebirth(c: Ctx):
+    return views.rebirth_view(c.db, c.lang, c.uid)
+
+
+@cbk("rb")
+async def cb_rebirth(c: Ctx):
+    if c.args[0] == "no":
+        return Reply(text="👍", edit=True)
+    r = progress.rebirth(c.db, c.uid)
+    return Reply(text=t(c.lang, "rb.ok", gain=fmt.num(r["gain"], c.lang), cash=fmt.coins(r["cash"], c.lang), count=fmt.num(r["count"], c.lang)), edit=True)
+
+
+# ---- news / season / shop ---------------------------------------------------------------------------------
+@cmd("news")
+async def h_news(c: Ctx):
+    return views.news_view(c.db, c.lang)
+
+
+@cmd("events")
+async def h_events(c: Ctx):
+    return views.events_view(c.db, c.lang)
+
+
+@cmd("season")
+async def h_season(c: Ctx):
+    return views.season_view(c.db, c.lang)
+
+
+@cmd("shop")
+async def h_shop(c: Ctx):
+    if not c.app.settings.shop:
+        return Reply(text=t(c.lang, "shop.off"))
+    if c.is_group:
+        return Reply(text=t(c.lang, "open_private"), kb=kb([[(t(c.lang, "open_private_btn"), bot_link(c, "start=shop"), "url")]]))
+    return views.shop_view(c.lang)
+
+
+@cbk("shop")
+async def cb_shop(c: Ctx):
+    if c.is_group or not c.app.settings.shop:
+        return Reply(toast=t(c.lang, "private_only"), alert=True)
+    item = c.args[0]
+    spec = shop.item_check(c.db, c.uid, item)
+    title = plain(t(c.lang, f"shop.{item}.t"), 32)
+    desc = plain(t(c.lang, f"shop.{item}.d"), 250)
+    await _call(c.bot.send_invoice, chat_id=c.uid, title=title, description=desc, payload=item, provider_token="", currency="XTR",
+                prices=[LabeledPrice(label=title, amount=spec["stars"])])
+    return Reply()
+
+
+# ---- group admin ------------------------------------------------------------------------------------------
+MODES = ["quiet", "live", "off"]
+CAPS = [0, 50, 100, 200, 300]
+
+
+async def _admin_group(c: Ctx):
+    if not c.is_group:
+        return Reply(text=t(c.lang, "group_only"))
+    if not await is_admin(c):
+        return Reply(text=t(c.lang, "admin_only"))
+    return None
+
+
+@cmd("settings")
+async def h_settings(c: Ctx):
+    return await _admin_group(c) or views.settings_view(c.db, c.lang, c.chat.id)
+
+
+@cmd("quiet")
+async def h_quiet(c: Ctx):
+    deny = await _admin_group(c)
+    if deny:
+        return deny
+    social.set_news_mode(c.db, c.chat.id, "quiet")
+    return Reply(text=t(c.lang, "settings.saved") + "\n" + t(c.lang, "mode.quiet"))
+
+
+@cmd("msglimit")
+async def h_msglimit(c: Ctx):
+    deny = await _admin_group(c)
+    if deny:
+        return deny
+    cap = textparse.to_int(c.args[0]) if c.args else None
+    if cap is None:
+        return c.usage("msglimit")
+    social.set_msg_cap(c.db, c.chat.id, cap)
+    return Reply(text=t(c.lang, "settings.saved"))
+
+
+@cbk("set")
+async def cb_set(c: Ctx):
+    what, chat_id = c.args[0], int(c.args[1])
+    if chat_id != c.chat.id or not await is_admin(c):
+        return Reply(toast=t(c.lang, "admin_only"), alert=True)
+    g = social.get_group(c.db, chat_id)
+    if what == "lang":
+        social.set_group_lang(c.db, chat_id, "en" if g["lang"] == "fa" else "fa")
+    elif what == "mode":
+        social.set_news_mode(c.db, chat_id, MODES[(MODES.index(g["news_mode"]) + 1) % len(MODES)])
+    elif what == "cap":
+        social.set_msg_cap(c.db, chat_id, CAPS[(CAPS.index(g["msg_cap"]) + 1) % len(CAPS)] if g["msg_cap"] in CAPS else CAPS[0])
+    g = social.get_group(c.db, chat_id)
+    v = views.settings_view(c.db, g["lang"], chat_id)
+    v.edit = True
+    return v
+
+
+# ---- owner-only maintenance -----------------------------------------------------------------------------------
+@cmd("stats")
+async def h_stats(c: Ctx):
+    if c.uid not in c.app.settings.admins:
+        raise Ignore
+    q = lambda sql: c.db.q1(sql)[0]
+    return Reply(text=t(c.lang, "stats", users=q("SELECT COUNT(*) FROM users"), groups=q("SELECT COUNT(*) FROM groups WHERE active=1"),
+                        stocks=q("SELECT COUNT(*) FROM stocks WHERE status='active'"), minted=fmt.coins(core.kv_int(c.db, "minted"), c.lang), burned=fmt.coins(core.kv_int(c.db, "burned"), c.lang)))
+
+
+@cmd("give")
+async def h_give(c: Ctx):
+    if c.uid not in c.app.settings.admins:
+        raise Ignore
+    if len(c.args) != 2 or not c.args[0].lstrip("-").isdigit() or textparse.to_number(c.args[1]) is None:
+        return Reply(text="/give <user_id> <coins>")
+    amount = int(textparse.to_number(c.args[1]) * C.UNIT)
+    with c.db.tx():
+        core.need_user(c.db, int(c.args[0]))
+        c.db.x("UPDATE users SET cash=cash+? WHERE id=?", (amount, int(c.args[0])))
+        core.mint(c.db, amount)
+    return Reply(text="✅")
+
+
+@cmd("fire")
+async def h_fire(c: Ctx):
+    if c.uid not in c.app.settings.admins:
+        raise Ignore
+    kind = events.fire_event(c.db, c.args[0] if c.args else None)
+    return Reply(text=f"🔥 {kind}")
+
+
+# =============================== dispatch =======================================================
+async def run(c: Ctx, fn, *, is_cb: bool) -> None:
+    try:
+        reply = await fn(c)
+    except Ignore:
+        return
+    except GameError as e:
+        text = err_text(c.lang, e)
+        reply = Reply(toast=plain(text), alert=True) if is_cb else Reply(text=text)
+    except Exception:
+        log.exception("handler failed: %s", c.cmd)
+        reply = Reply(toast=plain(t(c.lang, "err")), alert=True) if is_cb else Reply(text=t(c.lang, "err"))
+    done = quests.drain_events(c.db, c.uid)      # the actor sees completions inline; other players get a DM
+    if done and reply is not None:
+        line = views.quest_done_lines(c.lang, done)
+        if is_cb:
+            reply.toast = plain(line, 120) + ("\n" + reply.toast if reply.toast else "")
+        elif reply.text:
+            reply.text += "\n\n" + line
+    if reply is None:
+        if is_cb:
+            await _call(c.cb.answer)
+        return
+    try:
+        await send(c, reply)
+        await flush_outbox(c.app)
+    except Exception:
+        log.exception("sending the reply failed (old message, deleted chat?)")
+
+
+def _lang_for(app: App, chat, uid: int) -> str:
+    if chat.type in GROUPS:
+        g = social.get_group(app.db, chat.id)
+        return g["lang"] if g else app.settings.lang
+    u = core.get_user(app.db, uid)
+    return u["lang"] if u else app.settings.lang
+
+
+def _prepare(app: App, tg: User, chat, referrer: int | None = None) -> str:
+    """Register the group and the player if needed and return the language to answer in."""
+    if chat.type in GROUPS:
+        social.ensure_group(app.db, chat.id, chat.title or "Group", lang=app.settings.lang)
+    core.ensure_user(app.db, tg.id, tg.username, tg.full_name, lang=app.settings.lang, referrer=referrer)
+    return _lang_for(app, chat, tg.id)
+
+
+async def handle_message(m: Message, app: App, text: str) -> None:
+    tg = m.from_user
+    if not tg or tg.is_bot:
+        return
+    chat = m.chat
+    group = chat.type in GROUPS
+    if group:
+        app.note_activity(tg.id, chat.id)
+    p = textparse.parse(text, app.botname)
+    if not p or p.cmd not in HANDLERS:
+        return
+    soft = group and not p.prefixed
+    if soft and not soft_ok(app, p):
+        return
+    if app.throttled(tg.id):
+        return
+    referrer = None
+    if p.cmd == "start" and p.args and p.args[0].startswith("ref_") and p.args[0][4:].isdigit():
+        referrer = int(p.args[0][4:])
+    lang = _prepare(app, tg, chat, referrer)
+    c = Ctx(app=app, bot=app.bot, tg=tg, chat=chat, lang=lang, cmd=p.cmd, args=p.args, soft=soft, msg=m)
+    if p.cmd == "start" and p.args and p.args[0] == "shop":
+        c.cmd = "shop"
+    await run(c, HANDLERS[c.cmd], is_cb=False)
+
+
+@router.message(F.text)
+async def on_text(m: Message, app: App) -> None:
+    await handle_message(m, app, m.text)
+
+
+@router.message(F.photo & F.caption)
+async def on_photo(m: Message, app: App) -> None:
+    await handle_message(m, app, m.caption)
+
+
+BOUND = {"pf", "cl", "up", "sk", "lg", "rb", "rug", "hp", "qs", "wh"}
+
+
+@router.callback_query()
+async def on_callback(cb: CallbackQuery, app: App) -> None:
+    if not cb.data or not cb.message:
+        await _call(cb.answer)
+        return
+    tg, chat = cb.from_user, cb.message.chat
+    parts = cb.data.split(":")
+    fn = CALLBACKS.get(parts[0])
+    if not fn:
+        await _call(cb.answer)
+        return
+    if app.throttled(tg.id, 0.4):
+        await _call(cb.answer)
+        return
+    lang = _prepare(app, tg, chat)
+    c = Ctx(app=app, bot=app.bot, tg=tg, chat=chat, lang=lang, cmd=parts[0], args=parts[1:], cb=cb, msg=cb.message)
+    if parts[0] in BOUND and parts[-1] != str(tg.id):
+        await _call(cb.answer, t(lang, "not_yours"))
+        return
+    await run(c, fn, is_cb=True)
+
+
+# =============================== group membership, payments ==========================================
+@router.my_chat_member()
+async def on_my_chat_member(ev: ChatMemberUpdated, app: App) -> None:
+    chat = ev.chat
+    if chat.type not in GROUPS:
+        return
+    new, old = ev.new_chat_member.status, ev.old_chat_member.status
+    if new in ("member", "administrator") and old in ("left", "kicked"):
+        social.ensure_group(app.db, chat.id, chat.title or "Group", added_by=ev.from_user.id, lang=app.settings.lang)
+        adder = ev.from_user
+        if adder and not adder.is_bot:
+            core.ensure_user(app.db, adder.id, adder.username, adder.full_name, lang=app.settings.lang)
+            try:
+                count = await app.bot.get_chat_member_count(chat.id)
+            except Exception:
+                count = 0
+            bonus = social.group_add_bonus(app.db, chat.id, adder.id, count)
+            if bonus:
+                core.notify(app.db, adder.id, "group_bonus", amount=bonus)
+        g = social.get_group(app.db, chat.id)
+        await _call(app.bot.send_message, chat.id, t(g["lang"], "group.welcome", brand=t(g["lang"], "brand")))
+        await flush_outbox(app)
+    elif new in ("left", "kicked"):
+        social.deactivate_group(app.db, chat.id)
+
+
+@router.pre_checkout_query()
+async def on_pre_checkout(q: PreCheckoutQuery, app: App) -> None:
+    ok = q.currency == "XTR" and q.invoice_payload in C.SHOP_ITEMS and core.get_user(app.db, q.from_user.id) is not None
+    await _call(q.answer, ok=ok, error_message=None if ok else "Invalid order")
+
+
+@router.message(F.successful_payment)
+async def on_paid(m: Message, app: App) -> None:
+    sp = m.successful_payment
+    uid = m.from_user.id
+    lang = _lang_for(app, m.chat, uid)
+    try:
+        first = shop.grant(app.db, uid, sp.invoice_payload, sp.telegram_payment_charge_id, sp.total_amount)
+    except Exception:
+        log.exception("PAID BUT NOT GRANTED: user=%s item=%s charge=%s", uid, sp.invoice_payload, sp.telegram_payment_charge_id)
+        for admin in app.settings.admins:
+            await _call(app.bot.send_message, admin, f"⚠️ Paid but not granted: user={uid} item={sp.invoice_payload} charge={sp.telegram_payment_charge_id}")
+        await _call(m.answer, t(lang, "err"))
+        return
+    if first:
+        await _call(m.answer, t(lang, "shop.thanks", item=t(lang, f"shop.{sp.invoice_payload}.t")))
