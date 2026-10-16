@@ -6,11 +6,12 @@ import pytest
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.client.session.base import BaseSession
-from aiogram.methods import (AnswerCallbackQuery, AnswerPreCheckoutQuery, EditMessageCaption, EditMessageMedia, EditMessageText, GetChatMember,
+from aiogram.methods import (SendDocument, AnswerCallbackQuery, AnswerPreCheckoutQuery, EditMessageCaption, EditMessageMedia, EditMessageText, GetChatMember,
                              GetChatMemberCount, SendInvoice, SendMessage, SendPhoto)
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 from aiogram.types import Chat, ChatMemberOwner, ChatMemberMember, Message, User
 
-from hypemarket import config as C, core, handlers, jobs, progress, social, trading
+from hypemarket import config as C, core, exchange, handlers, jobs, progress, social, trading
 from hypemarket.db import Database
 from hypemarket.handlers import App, router
 
@@ -37,6 +38,7 @@ class FakeSession(BaseSession):
         super().__init__()
         self.calls = []
         self.mid = 1000
+        self.forbidden = set()      # chat ids that blocked the bot
 
     async def close(self):
         pass
@@ -46,13 +48,18 @@ class FakeSession(BaseSession):
 
     async def make_request(self, bot, method, timeout=None):
         self.calls.append(method)
+        if getattr(method, 'chat_id', None) in self.forbidden:
+            raise TelegramForbiddenError(method=method, message='Forbidden: bot was blocked by the user')
+        cap = getattr(method, "caption", None) or (getattr(getattr(method, "media", None), "caption", None))
+        if isinstance(cap, str) and len(cap) > 1024:       # the real Telegram limit for photo/document captions
+            raise TelegramBadRequest(method=method, message="Bad Request: message caption is too long")
         for attr in ("text", "caption"):
             v = getattr(method, attr, None)
             if isinstance(v, str) and getattr(method, "parse_mode", None) in ("HTML", None) and not isinstance(method, AnswerCallbackQuery):
                 assert_valid_telegram_html(v)
         self.mid += 1
         chat_id = getattr(method, "chat_id", 1)
-        if isinstance(method, (SendMessage, SendPhoto, EditMessageText, EditMessageCaption, EditMessageMedia)):
+        if isinstance(method, (SendMessage, SendPhoto, SendDocument, EditMessageText, EditMessageCaption, EditMessageMedia)):
             return Message(message_id=self.mid, date=datetime.datetime.now(), chat=Chat(id=chat_id if isinstance(chat_id, int) else 1, type="private"))
         if isinstance(method, GetChatMemberCount):
             return 25
@@ -95,12 +102,18 @@ class Harness:
         self.run(self.dp.feed_raw_update(self.bot, update))
         return self.session.calls[before:]
 
-    def say(self, uid, text, chat=None, name=None, caption=False):
+    def say(self, uid, text, chat=None, name=None, caption=False, reply_to=None, photo=False, reply_photo=False):
         chat = chat if chat is not None else uid
         ctype = "private" if chat == uid else "supergroup"
         msg = {"message_id": self.n + 1, "date": 0, "chat": {"id": chat, "type": ctype, "title": "Friends"},
                "from": {"id": uid, "is_bot": False, "first_name": name or f"User{uid}", "username": f"u{uid}"}}
         msg["caption" if caption else "text"] = text
+        pic = [{"file_id": "FILE_ID_1", "file_unique_id": "u1", "width": 10, "height": 10}, {"file_id": "FILE_ID_BIG", "file_unique_id": "u2", "width": 100, "height": 100}]
+        if photo:
+            msg["photo"] = pic
+        if reply_to or reply_photo:
+            msg["reply_to_message"] = {"message_id": 1, "date": 0, "chat": msg["chat"], "from": {"id": reply_to or uid, "is_bot": False, "first_name": f"User{reply_to or uid}"},
+                                       **({"photo": pic} if reply_photo else {"text": "hi"})}
         return self.feed({"message": msg})
 
     def press(self, uid, data, chat=None, mid=5, photo=False):
@@ -361,7 +374,7 @@ def test_outbox_dm_for_alert(h):
 
 def test_owner_commands_blocked_for_others(h):
     h.say(1, "شروع")
-    assert "کاربر" in h.texts(h.say(1, "/stats"))
+    assert "داشبورد" in h.texts(h.say(1, "/stats"))
     assert h.say(2, "/stats") == []
     assert h.say(2, "/give 2 1000") == []
 
@@ -385,7 +398,7 @@ def test_every_command_runs_without_crashing(h):
     g = -100321
     ADMIN_IN_CHAT.add((g, 1))
     try:
-        # world: 12 players, stock owners, holders, a company, an index, alerts and shorts
+        # world: 12 players, stock owners, holders, a company, an index, alerts and the listed exchange
         for uid in range(1, 13):
             h.say(uid, "!شروع", chat=g)
             h.db.x("UPDATE users SET cash=cash+? WHERE id=?", (C.coins(80_000), uid))
@@ -401,16 +414,17 @@ def test_every_command_runs_without_crashing(h):
             h.advance(3)
         idx = core.stock_row(h.db, h.db.q1("SELECT index_stock FROM groups WHERE id=?", (g,))["index_stock"])["ticker"]
         h.say(5, f"خرید 10 {idx}", chat=g)
-        h.db.x("INSERT OR REPLACE INTO perks(user_id,perk,level) VALUES(12,'short',1),(12,'alerts',2)")
+        h.db.x("INSERT OR REPLACE INTO perks(user_id,perk,level) VALUES(12,'alerts',2)")
+        exchange.ensure_listed(h.db)
         h.advance(7 * 3600)
         h.say(1, "ساخت شرکت رفقا RAFA", chat=g)
         h.say(3, "عضویت شرکت رفقا", chat=g)
         h.say(3, "ویرایش سهام توضیح سلام", chat=g)
 
         commands = [
-            "شروع", "راهنما", "ماموریت", "ماموریت‌ها", "نهنگ", "نمودار SPEED 1h", "نمودار SPEED 7d", "quests", "whales", "help", "پروفایل", "زبان", "بازار", "قیمت SPEED", "نمودار SPEED", "نمودار SPEED 7d", "پورتفوی", "هشدار", "هشدار SPEED 9", "هشدار حذف",
-            "شورت SPEED 5", "بستن شورت SPEED", "سهام من", "ویرایش سهام نام اسپید جدید", "ویرایش سهام توضیح خوبه", "تنظیم سود 10", "سود", "درآمد", "روزانه",
-            "شرکت من", "تقسیم سود شرکت", "گروه", "شاخص", "رتبه گروه‌ها", "رتبه", "برترین‌ها", "دعوت", "سطح", "اعتبار", "مهارت‌ها", "ارتقا fee", "ارتقا short", "میراث",
+            "شروع", "راهنما", "ماموریت", "ماموریت‌ها", "نهنگ", "نمودار SPEED 1h", "نمودار SPEED 7d", "quests", "whales", "help", "اعتماد", "اعتماد SPEED", "بی اعتماد SPEED", "trust", "distrust DOGE", "گزارش SPEED rug مشکوک بود", "report DOGE fake", "دستاوردها", "achievements", "/backup", "/ban 999", "/unban 999", "/delist NOPE", "پروفایل", "زبان", "بازار", "قیمت SPEED", "نمودار SPEED", "نمودار SPEED 7d", "پورتفوی", "هشدار", "هشدار SPEED 9", "هشدار حذف",
+            "بورس", "exchange", "گزارش مالی", "earnings", "قیمت CHAT", "خرید 3 CHAT", "نمودار CHAT", "فروش 1 CHAT", "فروش همه CHAT", "خرید 2 LEVI", "سهام من", "ویرایش سهام نام اسپید جدید", "ویرایش سهام توضیح خوبه", "تنظیم سود 10", "سود", "درآمد", "روزانه",
+            "شرکت من", "تقسیم سود شرکت", "گروه", "شاخص", "رتبه گروه‌ها", "رتبه", "برترین‌ها", "دعوت", "سطح", "اعتبار", "مهارت‌ها", "ارتقا fee", "ارتقا alerts", "میراث",
             "تولد دوباره", "اخبار", "رویداد", "فصل", "فروشگاه", "تنظیمات", "تنظیم زبان fa", "محدودیت پیام 100", "حالت سکوت", "ترک شرکت",
             "/start", "/help", "/market", "/daily", "/portfolio", "/top", "/skills", "/invite", "/news", "/events", "/season", "/stats", "/fire pump",
             "buy 2 SPEED", "sell all SPEED", "price DOGE", "chart DOGE", "level", "reputation", "legacy", "leaderboard", "group", "index", "grouprank", "mycompany",

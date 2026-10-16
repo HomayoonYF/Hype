@@ -10,7 +10,7 @@ from aiogram.methods import EditMessageMedia, EditMessageText, SendMessage, Send
 
 from hypemarket import bots, charts, config as C, core, events, progress, quests, social, trading, views
 from hypemarket.core import GameError
-from hypemarket.db import Database
+from hypemarket.db import SCHEMA_VERSION, Database
 
 import test_bot as tb
 from test_game import T, adv, db, user          # noqa: F401  (shared fixture/helpers)
@@ -328,7 +328,8 @@ def test_help_is_a_three_section_menu(h):
     assert "یکی از بخش‌ها" in msg.text
     assert buttons(msg) == ["hp:guide:10", "hp:cmds:10", "hp:about:10"]
     out = h.texts(h.press(10, "hp:cmds:10"))
-    assert "خرید 10 SPEED" in out and "ماموریت" in out and "نهنگ" in out
+    assert "همه‌ی دستورها" in out
+    assert "خرید 10 SPEED" in h.texts(h.press(10, "hp:cat:1:10")) and "ماموریت" in h.texts(h.press(10, "hp:cat:6:10")) and "نهنگ" in h.texts(h.press(10, "hp:cat:7:10"))
     out = h.texts(h.press(10, "hp:about:10"))
     assert "🤖" in out and "ذخیره" in out and "نهنگ" in out
     out = h.texts(h.press(10, "hp:menu:10"))
@@ -428,7 +429,9 @@ def test_old_database_is_upgraded_in_place(tmp_path):
     d = Database(path)
     u = core.get_user(d, 5)
     assert u["name"] == "Alice" and u["cash"] == 777 and u["whale_dm"] == 1 and u["bot"] == 0 and u["bonus_points"] == 0
-    assert d.q1("PRAGMA user_version")[0] == 2
+    assert d.q1("PRAGMA user_version")[0] == SCHEMA_VERSION
+    for table in ("reports", "trust", "achievements", "seen", "modlog", "quests", "salary"):
+        assert d.q1("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,))
     quests.ensure(d, 5)
     assert d.q1("SELECT COUNT(*) c FROM quests WHERE user_id=5")["c"] >= 6
     d.close()
@@ -442,3 +445,43 @@ def test_old_database_is_upgraded_in_place(tmp_path):
     con.close()
     with pytest.raises(RuntimeError):
         Database(path)
+
+
+def test_database_from_the_previous_release_upgrades_to_the_latest(tmp_path):
+    """Schema 2 (no reports/trust/achievements/seen/modlog/salary tables) must upgrade all the way."""
+    path = str(tmp_path / "v2.db")
+    d = Database(path)
+    core.ensure_user(d, 7, "b", "Bob")
+    d.x("UPDATE users SET cash=4242 WHERE id=7")
+    d.close()
+    con = sqlite3.connect(path)
+    for table in ("reports", "trust", "achievements", "seen", "modlog", "salary"):
+        con.execute(f"DROP TABLE {table}")
+    con.execute("PRAGMA user_version=2")
+    con.commit()
+    con.close()
+    d = Database(path)
+    assert d.q1("PRAGMA user_version")[0] == SCHEMA_VERSION
+    assert core.get_user(d, 7)["cash"] == 4242
+    d.x("INSERT INTO seen(day,user_id) VALUES(1,7)")      # the new tables work
+    d.close()
+
+
+def test_database_from_schema_3_upgrades_to_the_latest(tmp_path):
+    """Schema 3 (before the salary table): the upgrade only adds tables, and no data may be touched."""
+    path = str(tmp_path / "v3.db")
+    d = Database(path)
+    core.ensure_user(d, 7, "b", "Bob")
+    d.x("UPDATE users SET cash=999 WHERE id=7")
+    d.x("INSERT INTO trust(target,voter,value,weight,ts) VALUES(7,8,1,1,1)")
+    d.close()
+    con = sqlite3.connect(path)
+    con.execute("DROP TABLE salary")
+    con.execute("PRAGMA user_version=3")
+    con.commit()
+    con.close()
+    d = Database(path)
+    assert d.q1("PRAGMA user_version")[0] == SCHEMA_VERSION
+    assert core.get_user(d, 7)["cash"] == 999 and d.q1("SELECT COUNT(*) c FROM trust")["c"] == 1
+    d.x("INSERT INTO salary(user_id) VALUES(7)")
+    d.close()

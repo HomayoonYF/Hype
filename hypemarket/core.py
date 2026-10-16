@@ -56,15 +56,39 @@ def kv_add(db: Database, key: str, delta: int) -> int:
     return v
 
 
+def counter(db: Database, name: str, n: int = 1) -> None:
+    """Per-day analytics counter (kept 60 days) plus a lifetime total `tot:<name>` (the exchange reads deltas of it)."""
+    kv_add(db, f"ctr:{now() // 86400}:{name}", n)
+    kv_add(db, f"tot:{name}", n)
+
+
+def total_get(db: Database, name: str) -> int:
+    return kv_int(db, f"tot:{name}")
+
+
+def counter_get(db: Database, day: int, name: str) -> int:
+    return kv_int(db, f"ctr:{day}:{name}")
+
+
+def _mark_day(db: Database) -> None:
+    """Remember the money supply at the first mint/burn of each day, so daily totals are exact."""
+    day = now() // 86400
+    if kv_get(db, f"mint_at:{day}") is None:
+        kv_set(db, f"mint_at:{day}", kv_int(db, "minted"))
+        kv_set(db, f"burn_at:{day}", kv_int(db, "burned"))
+
+
 def mint(db: Database, n: int) -> None:
     """Coins created from nothing (bonuses, rewards). Tracked for monitoring."""
     if n > 0:
+        _mark_day(db)
         kv_add(db, "minted", n)
 
 
 def burn(db: Database, n: int) -> None:
     """Coins destroyed (fees, launch costs, taxes)."""
     if n > 0:
+        _mark_day(db)
         kv_add(db, "burned", n)
 
 
@@ -265,7 +289,6 @@ def net_worth(db: Database, uid: int) -> int:
     total = u["cash"] + u["pending_div"] + u["pending_inc"]
     for r in holdings_rows(db, uid):
         total += liq(r, r["shares"])
-    total += db.q1("SELECT COALESCE(SUM(margin),0) AS m FROM shorts WHERE user_id=?", (uid,))["m"]
     return total
 
 
@@ -282,5 +305,7 @@ def check_level(db: Database, uid: int):
     lvl = E.level_for(nw)
     if lvl > u["max_level"]:
         db.x("UPDATE users SET max_level=? WHERE id=?", (lvl, uid))
+        from . import achievements
+        achievements.check(db, uid, "level")
         return nw, lvl
     return nw, None

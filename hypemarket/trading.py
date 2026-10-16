@@ -5,9 +5,9 @@ import random
 
 from . import config as C
 from . import engine as E
-from . import quests
+from . import achievements, exchange, quests
 from .core import (
-    GameError, add_dividend, add_news, burn, change_pct, check_level, check_text, clean, clear_event, eff, get_user, holdings_rows,
+    GameError, add_dividend, add_news, burn, change_pct, check_level, check_text, clean, clear_event, counter, eff, get_user, holdings_rows,
     kv_get, kv_int, kv_set, liq, mint, need_stock, need_user, net_worth, norm_ticker, notify, now, perk, price, record, resync,
     set_event, settle, stock_row, TICKER_RE, RESERVED,
 )
@@ -25,6 +25,9 @@ def _distribute_fee(db: Database, s, fee: int, beneficiary: bool = True) -> None
     """Split a trade fee between the stock's beneficiary and the burn pile. `s` is the PRE-trade row.
     Automated market traders (beneficiary=False) pay the fee but nobody earns it, so they can't be farmed."""
     if fee <= 0:
+        return
+    if s["kind"] == "listed":                       # house-priced company: part goes to the holders, the rest burns
+        exchange.distribute_levy(db, s["id"], fee)
         return
     if not beneficiary:
         burn(db, fee)
@@ -51,6 +54,19 @@ def _distribute_fee(db: Database, s, fee: int, beneficiary: bool = True) -> None
     db.x("UPDATE users SET pending_inc=pending_inc+? WHERE id=?", (cut - div, s["owner_id"]))
 
 
+def _count_trade(db: Database, s, amount: int) -> None:
+    """Analytics counters of a player trade. Trades in listed companies are counted apart: the exchange's own prices
+    read the ordinary counters, and they must never feed back from the trades made in the exchange itself."""
+    if s["kind"] == "listed":
+        counter(db, "ex_trades")
+        counter(db, "ex_volume", amount)
+        return
+    counter(db, "trades")
+    counter(db, "volume", amount)
+    if s["kind"] == "meme":
+        counter(db, "meme_trades")
+
+
 def _bump_rep(db: Database, owner_id: int) -> None:
     key = f"rep:{owner_id}:{now() // 86400}"
     if kv_int(db, key) >= C.REP_DAILY_GAIN_CAP:
@@ -61,7 +77,7 @@ def _bump_rep(db: Database, owner_id: int) -> None:
 
 def _after_buy_news(db: Database, sid: int, new_holder: bool) -> None:
     s = stock_row(db, sid)
-    if s["kind"] == "index":
+    if s["kind"] in ("index", "listed"):
         return
     if new_holder and s["holders"] in (10, 25, 50, 100, 250, 500, 1000):
         add_news(db, "holders", sid, ticker=s["ticker"], n=s["holders"])
@@ -98,6 +114,7 @@ def _check_funded(db: Database, sid: int) -> None:
     if add_dividend(db, sid, special):
         mint(db, special)
     add_news(db, "funded", sid, ticker=s["ticker"])
+    achievements.check(db, s["owner_id"], "funded")
 
 
 def _activate(db: Database, uid: int) -> None:
@@ -111,6 +128,7 @@ def _activate(db: Database, uid: int) -> None:
         mint(db, C.REF_BONUS_INVITER)
         notify(db, ref, "referral", name=u["name"], amount=C.REF_BONUS_INVITER)
         quests.track(db, ref, "invite")
+        achievements.check(db, ref, "invite")
 
 
 def _whale(db: Database, s, u, side: str, amount: int, reserve_before: int, shares: int) -> None:
@@ -124,6 +142,9 @@ def _whale(db: Database, s, u, side: str, amount: int, reserve_before: int, shar
     pct = min(999, round(amount * 100 / reserve_before)) if reserve_before > 0 else 100
     params = dict(ticker=s["ticker"], who=u["name"], amount=amount, pct=pct, shares=shares)
     add_news(db, f"whale_{side}", s["id"], **params)
+    if s["kind"] != "listed":
+        counter(db, "whales")
+    achievements.check(db, u["id"], "whale")
     for r in db.qa(
         "SELECT h.user_id FROM holdings h JOIN users x ON x.id=h.user_id WHERE h.stock_id=? AND h.user_id!=? AND x.whale_dm=1 AND x.bot=0 LIMIT ?",
         (s["id"], u["id"], C.WHALE_DM_MAX),
@@ -190,6 +211,8 @@ def launch(db: Database, uid: int, ticker: str, name: str, kind: str = "personal
         record(db, sid)
         add_news(db, "launch", sid, ticker=ticker, name=name, owner=u["name"], asset=kind)
         quests.track(db, uid, "launch")
+        counter(db, "launches")
+        achievements.check(db, uid, "launch")
         check_level(db, uid)
         return stock_row(db, sid)
 
@@ -203,16 +226,17 @@ def buy(db: Database, uid: int, ticker: str, n: int = 0, spend_all: bool = False
         t = now()
         if t - u["last_trade"] < C.TRADE_COOLDOWN:
             raise GameError("cooldown")
+        listed = s["kind"] == "listed"
         fee_bps = trade_fee_bps(db, uid)
         a = (s["p0"], s["k"], eff(s))
         if spend_all:
-            n = E.max_affordable(s["supply"], u["cash"], *a, fee_bps)
+            n = exchange.max_affordable(db, s, u["cash"]) if listed else E.max_affordable(s["supply"], u["cash"], *a, fee_bps)
             if n <= 0:
                 raise GameError("funds", need=E.quote_buy(s["supply"], 1, *a), have=u["cash"])
         if n <= 0 or n > C.MAX_SHARES_PER_TRADE:
             raise GameError("bad_amount")
         cost = E.quote_buy(s["supply"], n, *a)
-        fee = E.fee_of(cost, fee_bps)
+        fee = exchange.levy(db, s, cost) if listed else E.fee_of(cost, fee_bps)
         total = cost + fee
         if u["cash"] < total:
             raise GameError("funds", need=total, have=u["cash"])
@@ -235,11 +259,14 @@ def buy(db: Database, uid: int, ticker: str, n: int = 0, spend_all: bool = False
             db.x("INSERT INTO holdings(user_id,stock_id,shares,cost,debt,last_buy,last_bonus) VALUES(?,?,?,?,?,?,?)", (uid, s["id"], new_shares, total, debt, t, t))
         else:
             db.x("UPDATE holdings SET shares=?, cost=cost+?, debt=?, last_buy=? WHERE user_id=? AND stock_id=?", (new_shares, total, debt, t, uid, s["id"]))
+        if listed:
+            exchange.add_flow(db, s["id"], cost)
         record(db, s["id"])
         if not is_bot:
             if new_holder and s["owner_id"] and s["owner_id"] != uid:
                 _bump_rep(db, s["owner_id"])
                 quests.track(db, s["owner_id"], "investor")
+                achievements.check(db, s["owner_id"], "investor")
             _after_buy_news(db, s["id"], new_holder)
             _whale(db, s, u, "buy", cost, reserve_before, n)
             quests.track(db, uid, "buy")
@@ -247,6 +274,10 @@ def buy(db: Database, uid: int, ticker: str, n: int = 0, spend_all: bool = False
                 quests.track(db, uid, "trade_ok")
             quests.track(db, uid, "buy_volume", cost)
             quests.track(db, uid, "volume", cost)
+            _count_trade(db, s, cost)
+            achievements.check(db, uid, "trade")
+        else:
+            counter(db, "bot_trades")
         _check_funded(db, s["id"])
         lvl = None
         if not is_bot:
@@ -274,13 +305,16 @@ def sell(db: Database, uid: int, ticker: str, n: int = 0, sell_all: bool = False
             raise GameError("shares", have=have)
         if not force and t - h["last_buy"] < C.SELL_LOCK:
             raise GameError("locked", secs=C.SELL_LOCK - (t - h["last_buy"]))
+        listed = s["kind"] == "listed"
+        override = fee_bps                      # an explicit fee (rebirth liquidation: 0) replaces the whole levy
         if fee_bps is None:
             fee_bps = trade_fee_bps(db, uid)
         proceeds = E.quote_sell(s["supply"], n, s["p0"], s["k"], eff(s))
-        fee = E.fee_of(proceeds, fee_bps)
+        fee = exchange.levy(db, s, proceeds, spread_bps=override, slippage=override is None) if listed else E.fee_of(proceeds, fee_bps)
         net = proceeds - fee
         reserve_before = s["reserve"]
-        _distribute_fee(db, s, fee, beneficiary=not is_bot)
+        if not listed:
+            _distribute_fee(db, s, fee, beneficiary=not is_bot)
         s2 = stock_row(db, s["id"])
         settle(db, uid, h, s2)
         new_shares = have - n
@@ -294,6 +328,10 @@ def sell(db: Database, uid: int, ticker: str, n: int = 0, sell_all: bool = False
             db.x("DELETE FROM holdings WHERE user_id=? AND stock_id=?", (uid, s["id"]))
         else:
             db.x("UPDATE holdings SET shares=?, cost=cost-?, debt=? WHERE user_id=? AND stock_id=?", (new_shares, cost_removed, new_shares * s2["acc_div"] // C.ACC, uid, s["id"]))
+        if listed:
+            _distribute_fee(db, s, fee, beneficiary=not is_bot)     # AFTER the sale: the sold shares don't share in their own levy
+            if override is None:
+                exchange.add_flow(db, s["id"], proceeds)
         record(db, s["id"])
         lvl = None
         if not is_bot:
@@ -304,7 +342,13 @@ def sell(db: Database, uid: int, ticker: str, n: int = 0, sell_all: bool = False
                 quests.track(db, uid, "volume", proceeds)
                 if net - cost_removed > 0:
                     quests.track(db, uid, "profit", net - cost_removed)
+                _count_trade(db, s, proceeds)
+                achievements.check(db, uid, "trade")
+                achievements.check(db, uid, "profit", pnl=net - cost_removed)
             _activate(db, uid)
+        else:
+            counter(db, "bot_trades")
+        if not is_bot:
             nw, lvl = check_level(db, uid)
         new = stock_row(db, s["id"])
         return {"stock": new, "shares": n, "proceeds": proceeds, "fee": fee, "net": net, "pnl": net - cost_removed, "price": price(new), "levelup": lvl, "holding": new_shares}
@@ -322,6 +366,8 @@ def accrue_bonus(db: Database, uid: int) -> int:
     mult = 100 + 50 * perk(db, uid, "bonus")
     t, total = now(), 0
     for r in holdings_rows(db, uid):
+        if r["kind"] == "listed":                # house-priced companies pay no minted yield (only a share of other traders' levies)
+            continue
         hours = min(C.BONUS_MAX_HOURS, (t - r["last_bonus"]) / 3600.0)
         if hours <= 0:
             continue
@@ -360,7 +406,11 @@ def claim_dividends(db: Database, uid: int) -> dict:
             raise GameError("nothing")
         net, tax, bonus = _payout(db, u, amt)
         db.x("UPDATE users SET cash=cash+?, pending_div=0 WHERE id=?", (net, uid))
+        if not u["bot"]:
+            counter(db, "payouts")
         quests.track(db, uid, "claim")
+        kv_set(db, f"pi:{uid}", kv_int(db, f"pi:{uid}") + net)
+        achievements.check(db, uid, "claim")
         nw, lvl = check_level(db, uid)
         return {"gross": amt, "net": net, "tax": tax, "bonus": bonus, "levelup": lvl}
 
@@ -375,7 +425,11 @@ def claim_income(db: Database, uid: int) -> dict:
             raise GameError("nothing")
         net, tax, bonus = _payout(db, u, amt)
         db.x("UPDATE users SET cash=cash+?, pending_inc=0 WHERE id=?", (net, uid))
+        if not u["bot"]:
+            counter(db, "payouts")
         quests.track(db, uid, "claim")
+        kv_set(db, f"pi:{uid}", kv_int(db, f"pi:{uid}") + net)
+        achievements.check(db, uid, "claim")
         nw, lvl = check_level(db, uid)
         return {"gross": amt, "net": net, "tax": tax, "bonus": bonus, "holder_bonus": bonus_acc, "levelup": lvl}
 
@@ -424,13 +478,6 @@ def edit_stock(db: Database, uid: int, field: str, value: str, ticker: str | Non
 
 
 # --- rug pull / delisting ----------------------------------------------------------
-def _close_shorts_at_entry(db: Database, sid: int) -> None:
-    for r in db.qa("SELECT * FROM shorts WHERE stock_id=?", (sid,)):
-        db.x("UPDATE users SET cash=cash+? WHERE id=?", (r["margin"], r["user_id"]))
-        db.x("DELETE FROM shorts WHERE id=?", (r["id"],))
-        notify(db, r["user_id"], "short_voided", ticker=stock_row(db, sid)["ticker"])
-
-
 def rug(db: Database, uid: int, ticker: str | None = None, pct: int = 50, allowed: bool = True) -> dict:
     """Owner drains `pct`% of the reserve: the price crashes for everyone, the owner takes the coins."""
     if not allowed:
@@ -456,8 +503,8 @@ def rug(db: Database, uid: int, ticker: str | None = None, pct: int = 50, allowe
         db.x("UPDATE stocks SET reserve=? WHERE id=?", (target, s["id"]))
         db.x("UPDATE users SET cash=cash+?, rep=MAX(0, rep-?) WHERE id=?", (taken - tax, C.RUG_REP_PENALTY, uid))
         burn(db, tax)
-        _close_shorts_at_entry(db, s["id"])
         record(db, s["id"])
+        counter(db, "rugs")
         add_news(db, "rug", s["id"], ticker=s["ticker"], owner=need_user(db, uid)["name"], pct=pct)
         for r in db.qa("SELECT user_id FROM holdings WHERE stock_id=? AND user_id!=? LIMIT 200", (s["id"], uid)):
             notify(db, r["user_id"], "rugged", ticker=s["ticker"], pct=pct)
@@ -481,89 +528,8 @@ def delist(db: Database, sid: int) -> None:
     burn(db, s["reserve"] - paid)
     db.x("DELETE FROM holdings WHERE stock_id=?", (sid,))
     db.x("DELETE FROM alerts WHERE stock_id=?", (sid,))
-    _close_shorts_at_entry(db, sid)
     db.x("UPDATE stocks SET status='delisted', supply=0, reserve=0, holders=0, event_bps=?, event_until=0, event_kind='' WHERE id=?", (C.BPS, sid))
     add_news(db, "delist", sid, ticker=s["ticker"])
-
-
-# --- short selling ------------------------------------------------------------------
-def open_short(db: Database, uid: int, ticker: str, n: int) -> dict:
-    if n <= 0 or n > C.MAX_SHARES_PER_TRADE:
-        raise GameError("bad_amount")
-    with db.tx():
-        u = need_user(db, uid)
-        if perk(db, uid, "short") < 1:
-            raise GameError("short_locked")
-        s = need_stock(db, ticker)
-        if s["owner_id"] == uid or db.q1("SELECT 1 FROM holdings WHERE user_id=? AND stock_id=?", (uid, s["id"])):
-            raise GameError("short_own")
-        if s["kind"] == "index" or now() - s["created_at"] < C.SHORT_MIN_AGE or s["supply"] < C.SHORT_MIN_SUPPLY or s["holders"] < C.SHORT_MIN_HOLDERS:
-            raise GameError("short_thin", age=C.SHORT_MIN_AGE // 3600, supply=C.SHORT_MIN_SUPPLY, holders=C.SHORT_MIN_HOLDERS)
-        if db.q1("SELECT 1 FROM shorts WHERE user_id=? AND stock_id=?", (uid, s["id"])):
-            raise GameError("short_exists")
-        if db.q1("SELECT COUNT(*) c FROM shorts WHERE user_id=?", (uid,))["c"] >= C.SHORT_MAX_OPEN:
-            raise GameError("short_max", n=C.SHORT_MAX_OPEN)
-        p = price(s)
-        notional = p * n
-        margin = notional * C.SHORT_MARGIN_BPS // C.BPS
-        fee = E.fee_of(notional, C.SHORT_OPEN_FEE_BPS)
-        if u["cash"] < margin + fee:
-            raise GameError("funds", need=margin + fee, have=u["cash"])
-        db.x("UPDATE users SET cash=cash-? WHERE id=?", (margin + fee, uid))
-        burn(db, fee)
-        db.x("INSERT INTO shorts(user_id,stock_id,shares,entry,margin,opened) VALUES(?,?,?,?,?,?)", (uid, s["id"], n, p, margin, now()))
-        return {"stock": s, "shares": n, "entry": p, "margin": margin, "fee": fee}
-
-
-def _short_pnl(s, sh) -> int:
-    hours = (now() - sh["opened"]) / 3600.0
-    borrow = int(sh["entry"] * sh["shares"] * C.SHORT_BORROW_BPS_HOUR * hours / C.BPS)
-    pnl = (sh["entry"] - price(s)) * sh["shares"] - borrow
-    return max(-sh["margin"], min(sh["margin"], pnl))
-
-
-def _settle_short(db: Database, sh, pnl: int) -> int:
-    payout = sh["margin"] + pnl
-    (mint if pnl > 0 else burn)(db, abs(pnl))
-    db.x("UPDATE users SET cash=cash+? WHERE id=?", (payout, sh["user_id"]))
-    db.x("DELETE FROM shorts WHERE id=?", (sh["id"],))
-    return payout
-
-
-def close_short(db: Database, uid: int, ticker: str) -> dict:
-    with db.tx():
-        s = need_stock(db, ticker, active=False)
-        sh = db.q1("SELECT * FROM shorts WHERE user_id=? AND stock_id=?", (uid, s["id"]))
-        if not sh:
-            raise GameError("no_short", ticker=s["ticker"])
-        pnl = _short_pnl(s, sh)
-        payout = _settle_short(db, sh, pnl)
-        nw, lvl = check_level(db, uid)
-        return {"stock": s, "pnl": pnl, "payout": payout, "shares": sh["shares"], "levelup": lvl}
-
-
-def list_shorts(db: Database, uid: int) -> list:
-    out = []
-    for sh in db.qa("SELECT * FROM shorts WHERE user_id=?", (uid,)):
-        s = stock_row(db, sh["stock_id"])
-        out.append({"short": sh, "stock": s, "pnl": _short_pnl(s, sh)})
-    return out
-
-
-def liquidate_shorts(db: Database) -> int:
-    n = 0
-    for sh in db.qa("SELECT * FROM shorts"):
-        with db.tx():
-            s = stock_row(db, sh["stock_id"])
-            if s["status"] != "active":
-                _close_shorts_at_entry(db, sh["stock_id"])
-                continue
-            pnl = _short_pnl(s, sh)
-            if -pnl >= sh["margin"] * C.SHORT_LIQUIDATION_BPS // C.BPS:
-                payout = _settle_short(db, sh, pnl)
-                notify(db, sh["user_id"], "short_liquidated", ticker=s["ticker"], payout=payout)
-                n += 1
-    return n
 
 
 # --- alerts ------------------------------------------------------------------------
@@ -619,11 +585,11 @@ def portfolio(db: Database, uid: int) -> dict:
         value = liq(r, r["shares"])
         rows.append({"stock": r, "shares": r["shares"], "value": value, "cost": r["cost"], "pnl": value - r["cost"],
                      "pct": (value - r["cost"]) * 100.0 / r["cost"] if r["cost"] else 0.0})
-    return {"user": u, "rows": rows, "shorts": list_shorts(db, uid), "networth": net_worth(db, uid)}
+    return {"user": u, "rows": rows, "networth": net_worth(db, uid)}
 
 
 def market(db: Database, view: str = "top", limit: int = 8) -> list:
-    rows = db.qa("SELECT * FROM stocks WHERE status='active' AND supply>0")
+    rows = db.qa("SELECT * FROM stocks WHERE status='active' AND (supply>0 OR kind='listed')")
     t = now()
     if view == "trend":
         rows = sorted(rows, key=lambda r: (r["hype"], r["volume"]), reverse=True)

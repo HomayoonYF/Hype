@@ -4,6 +4,7 @@ from __future__ import annotations
 import html
 import logging
 import re
+import urllib.parse
 import time
 from collections import deque
 from dataclasses import dataclass, field
@@ -12,7 +13,7 @@ from aiogram import Bot, F, Router
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramRetryAfter
 from aiogram.types import BufferedInputFile, CallbackQuery, ChatMemberUpdated, InputMediaPhoto, LabeledPrice, Message, PreCheckoutQuery, User
 
-from . import charts, config as C, core, events, fmt, progress, quests, shop, social, textparse, trading, views
+from . import achievements, analytics, backups, charts, salary, config as C, core, events, fmt, progress, quests, shop, social, textparse, trading, trust, views
 from .core import GameError
 from .db import Database
 from .texts import ALIASES, SOFT_ARGS, SOFT_EXACT, EXAMPLES, level_title, t
@@ -39,6 +40,29 @@ class App:
     last_count: dict = field(default_factory=dict)
     last_cmd: dict = field(default_factory=dict)
     chat_sent: dict = field(default_factory=dict)
+    touched: set = field(default_factory=set)
+    touched_day: int = 0
+    alert_ts: dict = field(default_factory=dict)
+
+    async def alert_admins(self, text: str, key: str = "generic", every: int = 600) -> None:
+        """DM every admin (throttled per key so a crash loop can't spam you)."""
+        t0 = time.time()
+        if t0 - self.alert_ts.get(key, 0) < every or self.bot is None:
+            return
+        self.alert_ts[key] = t0
+        for admin in self.settings.admins:
+            try:
+                await self.bot.send_message(admin, html.escape(text))
+            except Exception:
+                log.warning("could not alert admin %s", admin)
+
+    def touch(self, uid: int) -> None:
+        day = int(time.time()) // 86400
+        if day != self.touched_day:
+            self.touched, self.touched_day = set(), day
+        if uid not in self.touched:
+            self.touched.add(uid)
+            analytics.touch(self.db, uid)
 
     def swap_buffers(self):
         counts, seen = self.counts, self.seen
@@ -87,6 +111,7 @@ class Ctx:
     soft: bool = False
     msg: Message | None = None
     cb: CallbackQuery | None = None
+    created: bool = False        # True when this very message registered the player
 
     @property
     def db(self) -> Database:
@@ -162,9 +187,20 @@ def perk_key(tok: str) -> str | None:
 LANGS = {"fa": "fa", "farsi": "fa", "persian": "fa", "فارسی": "fa", "en": "en", "english": "en", "انگلیسی": "en"}
 
 
+BOT_WORDS = {"editstock", "setdividend", "createcompany", "joincompany", "msglimit", "setlang"}
+
+
+def unambiguous(p: textparse.Parsed) -> bool:
+    """Commands that can't be mistaken for normal chat (two-word Persian commands like «ویرایش سهام», or bot-only words).
+    These always get an answer, with a helpful message instead of silence when the input is wrong."""
+    return p.cmd in SOFT_ARGS and (p.words >= 2 or p.cmd in BOT_WORDS)
+
+
 def soft_ok(app: App, p: textparse.Parsed) -> bool:
     """Plain-word commands in groups must look unmistakably like commands, so ordinary chat doesn't trigger the bot."""
     a, db = p.args, app.db
+    if unambiguous(p):
+        return True
     if p.cmd in SOFT_EXACT and p.cmd != "alert":
         return not a
     if p.cmd == "alert":
@@ -174,7 +210,7 @@ def soft_ok(app: App, p: textparse.Parsed) -> bool:
     if p.cmd in ("buy", "sell"):
         tkr, amt = textparse.split_trade(a)
         return len(a) <= 3 and bool(tkr) and ticker_exists(db, tkr)
-    if p.cmd in ("price", "chart", "short", "cover", "cashout"):
+    if p.cmd in ("price", "chart", "cashout"):
         return bool(a) and textparse.looks_like_ticker(a[0]) and ticker_exists(db, a[0])
     if p.cmd in ("launch", "project", "meme"):
         return len(a) >= 2 and textparse.looks_like_ticker(a[0]) and not ticker_exists(db, a[0])
@@ -226,6 +262,16 @@ async def _call(coro_fn, *a, **kw):
     return None
 
 
+def fit_caption(text: str | None, limit: int = 1024) -> str | None:
+    """Telegram rejects photo captions over 1024 characters: drop trailing lines until it fits."""
+    if text is None or len(text) <= limit:
+        return text
+    lines = text.split("\n")
+    while len("\n".join(lines)) > limit and len(lines) > 1:
+        lines.pop()
+    return "\n".join(lines)[:limit]
+
+
 def _photo(r: Reply):
     return BufferedInputFile(r.photo, "chart.png") if isinstance(r.photo, (bytes, bytearray)) else r.photo
 
@@ -238,12 +284,12 @@ async def send(c: Ctx, r: Reply) -> None:
         if not m:
             return
         if r.photo and r.edit and m.photo:
-            await _call(m.edit_media, media=InputMediaPhoto(media=_photo(r), caption=r.text), reply_markup=r.kb)
+            await _call(m.edit_media, media=InputMediaPhoto(media=_photo(r), caption=fit_caption(r.text)), reply_markup=r.kb)
         elif r.photo:
-            await _call(m.answer_photo, _photo(r), caption=r.text, reply_markup=r.kb)
+            await _call(m.answer_photo, _photo(r), caption=fit_caption(r.text), reply_markup=r.kb)
         elif r.text and r.edit:
             if m.photo:
-                await _call(m.edit_caption, caption=r.text, reply_markup=r.kb)
+                await _call(m.edit_caption, caption=fit_caption(r.text), reply_markup=r.kb)
             else:
                 await _call(m.edit_text, r.text, reply_markup=r.kb)
         elif r.text:
@@ -254,7 +300,7 @@ async def send(c: Ctx, r: Reply) -> None:
         return
     m = c.msg
     if r.photo:
-        await _call(m.reply_photo, _photo(r), caption=r.text, reply_markup=r.kb)
+        await _call(m.reply_photo, _photo(r), caption=fit_caption(r.text), reply_markup=r.kb)
     elif r.text:
         await _call(m.reply, r.text, reply_markup=r.kb)
 
@@ -301,10 +347,19 @@ def uname(c: Ctx) -> str:
 
 
 # =============================== commands ==================================================
+STOCK_PAYLOAD = re.compile(r"^s_([A-Za-z0-9]{2,10})(?:_r(\d+))?$")
+
+
 @cmd("start")
 async def h_start(c: Ctx):
     u = core.need_user(c.db, c.uid)
-    return c.reply(t(c.lang, "welcome", name=fmt.esc(core.display_name(u, False)), brand=t(c.lang, "brand"), cash=fmt.coins(u["cash"], c.lang)))
+    welcome = c.reply(t(c.lang, "welcome", name=fmt.esc(core.display_name(u, False)), brand=t(c.lang, "brand"), cash=fmt.coins(u["cash"], c.lang)))
+    m = STOCK_PAYLOAD.match(c.args[0]) if c.args else None
+    if m and ticker_exists(c.db, m.group(1)):             # opened from a shared stock card: show that stock
+        s = core.need_stock(c.db, m.group(1), active=False)
+        card = views.stock_card(c.db, c.lang, s, None if c.is_group else c.uid)
+        return [welcome, card] if c.created else card
+    return welcome
 
 
 @cmd("help")
@@ -314,7 +369,8 @@ async def h_help(c: Ctx):
 
 @cbk("hp")
 async def cb_help(c: Ctx):
-    return views.help_section(c.db, c.lang, c.uid, c.args[0])
+    arg = c.args[1] if len(c.args) > 2 else ""          # hp:cat:<n>:<uid>  /  hp:cmds:<uid>
+    return views.help_section(c.db, c.lang, c.uid, c.args[0], arg, c.uid in c.app.settings.admins)
 
 
 @cmd("quests")
@@ -402,6 +458,8 @@ async def h_buy(c: Ctx):
     s = r["stock"]
     text = t(c.lang, "buy_ok", tk=fmt.tk(s["ticker"]), shares=fmt.num(r["shares"], c.lang), cost=fmt.coins(r["cost"], c.lang), fee=fmt.coins(r["fee"], c.lang),
              price=fmt.price(r["price"], c.lang), holding=fmt.num(r["holding"], c.lang)) + lvl_line(c.lang, r)
+    if trust.flagged(c.db, s["id"]):
+        text += t(c.lang, "warn.flagged")
     return Reply(text=text, kb=trade_kb(c.db, c.lang, s))
 
 
@@ -507,22 +565,21 @@ async def h_alert(c: Ctx):
     return Reply(text=t(c.lang, "alert_ok", tk=fmt.tk(r["stock"]["ticker"]), dir=t(c.lang, "dir." + r["direction"]), target=fmt.price(r["target"], c.lang)))
 
 
-@cmd("short")
-async def h_short(c: Ctx):
-    tkr, amt = textparse.split_trade(c.args)
-    if not tkr or not amt:
-        return c.usage("short")
-    r = trading.open_short(c.db, c.uid, tkr, amt)
-    return Reply(text=t(c.lang, "short_ok", tk=fmt.tk(r["stock"]["ticker"]), ticker=r["stock"]["ticker"], shares=fmt.num(r["shares"], c.lang),
-                        entry=fmt.price(r["entry"], c.lang), margin=fmt.coins(r["margin"], c.lang), fee=fmt.coins(r["fee"], c.lang)))
+@cmd("exchange")
+async def h_exchange(c: Ctx):
+    return views.exchange_view(c.db, c.lang, None if c.is_group else c.uid)
 
 
-@cmd("cover")
-async def h_cover(c: Ctx):
-    if not c.args:
-        return c.usage("cover")
-    r = trading.close_short(c.db, c.uid, c.args[0])
-    return Reply(text=t(c.lang, "cover_ok", tk=fmt.tk(r["stock"]["ticker"]), pnl=fmt.pnl(r["pnl"], c.lang), payout=fmt.coins(r["payout"], c.lang)) + lvl_line(c.lang, r))
+@cmd("earnings")
+async def h_earnings(c: Ctx):
+    return views.earnings_view(c.db, c.lang)
+
+
+@cbk("ex")
+async def cb_exchange(c: Ctx):
+    r = views.earnings_view(c.db, c.lang) if c.args and c.args[0] == "e" else views.exchange_view(c.db, c.lang, None if c.is_group else c.uid)
+    r.edit = True
+    return r
 
 
 @cbk("b")
@@ -562,6 +619,8 @@ def _launch(c: Ctx, kind: str, name_idx: int, goal: int = 0):
     text = t(c.lang, "launch_ok", tk=fmt.tk(s["ticker"]), ticker=s["ticker"], name=fmt.esc(s["name"]), price=fmt.price(core.price(s), c.lang))
     if goal:
         text += "\n" + t(c.lang, "launch_goal", goal=fmt.coins(goal, c.lang))
+        if goal == C.DEFAULT_PROJECT_GOAL:
+            text += "\n" + t(c.lang, "launch_goal_default")
     return Reply(text=text, kb=trade_kb(c.db, c.lang, s))
 
 
@@ -581,9 +640,16 @@ async def h_meme(c: Ctx):
 
 @cmd("project")
 async def h_project(c: Ctx):
-    if len(c.args) < 3 or textparse.to_number(c.args[1]) is None:
+    if len(c.args) < 2:
         return c.usage("project")
-    return _launch(c, "project", 2, goal=int(round(textparse.to_number(c.args[1]) * C.UNIT)))
+    if not textparse.looks_like_ticker(c.args[0]):
+        return Reply(text=t(c.lang, "e.bad_ticker") + "\n\n" + t(c.lang, "usage", ex=html.escape(EXAMPLES["project"][0 if c.lang == "fa" else 1])))
+    goal = textparse.to_number(c.args[1])
+    if goal is not None and len(c.args) >= 3:                      # عرضه پروژه TRIP 20000 نام | توضیح
+        return _launch(c, "project", 2, goal=int(round(goal * C.UNIT)))
+    if goal is not None:                                           # a number but no name
+        return c.usage("project")
+    return _launch(c, "project", 1, goal=C.DEFAULT_PROJECT_GOAL)  # عرضه پروژه TRIP نام | توضیح   (default goal)
 
 
 @cmd("mystock")
@@ -597,26 +663,44 @@ async def h_mystock(c: Ctx):
     return card
 
 
-EDIT_FIELDS = {"نام": "name", "name": "name", "اسم": "name", "توضیح": "descr", "توضیحات": "descr", "descr": "descr", "description": "descr", "لوگو": "logo", "logo": "logo"}
+EDIT_FIELDS = {
+    "نام": "name", "اسم": "name", "عنوان": "name", "name": "name", "title": "name",
+    "توضیح": "descr", "توضیحات": "descr", "بیو": "descr", "درباره": "descr", "descr": "descr", "description": "descr", "bio": "descr", "about": "descr",
+    "لوگو": "logo", "عکس": "logo", "تصویر": "logo", "پروفایل": "logo", "logo": "logo", "photo": "logo", "image": "logo",
+}
+
+
+def _edit_parts(db, args: list):
+    """Accepts  [TICKER] <field> <text...>  or  <field> [TICKER] <text...>. Returns (ticker|None, field|None, text)."""
+    ticker, field_, rest = None, None, []
+    for i, a in enumerate(args):
+        k = textparse.key(a)
+        if field_ is None and k in EDIT_FIELDS:
+            field_ = EDIT_FIELDS[k]
+        elif field_ is None and ticker is None and textparse.looks_like_ticker(a) and i == 0:
+            ticker = a
+        elif field_ is not None and ticker is None and not rest and field_ != "descr" and textparse.looks_like_ticker(a) and ticker_exists(db, a):
+            ticker = a
+        else:
+            rest.append(a)
+    return ticker, field_, " ".join(rest)
 
 
 @cmd("editstock")
 async def h_editstock(c: Ctx):
-    if not c.args or textparse.key(c.args[0]) not in EDIT_FIELDS:
+    ticker, field_, text = _edit_parts(c.db, c.args)
+    if not field_:
         return c.usage("editstock")
-    field_ = EDIT_FIELDS[textparse.key(c.args[0])]
     if field_ == "logo":
         m = c.msg
         photo = (m.photo if m and m.photo else None) or (m.reply_to_message.photo if m and m.reply_to_message and m.reply_to_message.photo else None)
         if not photo:
-            raise GameError("bad_usage")
-        value = photo[-1].file_id
-    else:
-        value = " ".join(c.args[1:])
-        if not value and field_ != "descr":
-            return c.usage("editstock")
-    trading.edit_stock(c.db, c.uid, field_, value)
-    return Reply(text=t(c.lang, "edit_ok"))
+            return Reply(text=t(c.lang, "edit.logo_how"))
+        text = photo[-1].file_id
+    elif not text and field_ == "name":
+        return c.usage("editstock")
+    s = trading.edit_stock(c.db, c.uid, field_, text, ticker)
+    return Reply(text=t(c.lang, "edit_ok2", tk=fmt.tk(s["ticker"]), field=t(c.lang, f"edit.f_{field_}")))
 
 
 @cmd("setdividend")
@@ -947,9 +1031,249 @@ async def cb_set(c: Ctx):
 async def h_stats(c: Ctx):
     if c.uid not in c.app.settings.admins:
         raise Ignore
-    q = lambda sql: c.db.q1(sql)[0]
-    return Reply(text=t(c.lang, "stats", users=q("SELECT COUNT(*) FROM users"), groups=q("SELECT COUNT(*) FROM groups WHERE active=1"),
-                        stocks=q("SELECT COUNT(*) FROM stocks WHERE status='active'"), minted=fmt.coins(core.kv_int(c.db, "minted"), c.lang), burned=fmt.coins(core.kv_int(c.db, "burned"), c.lang)))
+    return views.dashboard_view(c.db, c.lang)
+
+
+@cmd("backup")
+async def h_backup(c: Ctx):
+    if c.uid not in c.app.settings.admins:
+        raise Ignore
+    res = await backups.send_backup(c.app, "manual")
+    if not res["ok"]:
+        return Reply(text=t(c.lang, "backup.failed"))
+    m = res["meta"]
+    return Reply(text=t(c.lang, "backup.manual", n=fmt.num(res["sent"], c.lang), size=fmt.num(res["size"] // 1024, c.lang), users=fmt.num(m["users"], c.lang), stocks=fmt.num(m["stocks"], c.lang)))
+
+
+@cmd("ban")
+async def h_ban(c: Ctx):
+    if c.uid not in c.app.settings.admins:
+        raise Ignore
+    if not c.args or not c.args[0].isdigit():
+        return Reply(text="/ban <user_id>")
+    r = trust.admin_ban(c.db, c.uid, int(c.args[0]))
+    return Reply(text=t(c.lang, "mod.done_ban", oid=r["user"]["id"], tickers=", ".join(fmt.tk(x) for x in r["delisted"]) or "-"))
+
+
+@cmd("unban")
+async def h_unban(c: Ctx):
+    if c.uid not in c.app.settings.admins:
+        raise Ignore
+    if not c.args or not c.args[0].isdigit():
+        return Reply(text="/unban <user_id>")
+    trust.admin_unban(c.db, c.uid, int(c.args[0]))
+    return Reply(text=t(c.lang, "mod.ok"))
+
+
+@cmd("delist")
+async def h_delist(c: Ctx):
+    if c.uid not in c.app.settings.admins:
+        raise Ignore
+    if not c.args:
+        return Reply(text="/delist <TICKER>")
+    r = trust.admin_delist(c.db, c.uid, core.need_stock(c.db, c.args[0])["id"])
+    return Reply(text=t(c.lang, "mod.done_delist", tk=fmt.tk(r["stock"]["ticker"])))
+
+
+@cbk("mod")
+async def cb_mod(c: Ctx):
+    if c.uid not in c.app.settings.admins:
+        return Reply(toast=t(c.lang, "mod.not_admin"), alert=True)
+    action, sid = c.args[0], int(c.args[1])
+    s = core.stock_row(c.db, sid)
+    if not s or (action == "delist" and s["status"] != "active"):
+        return Reply(text=t(c.lang, "mod.gone"), edit=True)
+    if action == "delist":
+        trust.admin_delist(c.db, c.uid, sid)
+        text = t(c.lang, "mod.done_delist", tk=fmt.tk(s["ticker"]))
+    elif action == "ban":
+        r = trust.admin_ban(c.db, c.uid, s["owner_id"])
+        text = t(c.lang, "mod.done_ban", oid=r["user"]["id"], tickers=", ".join(fmt.tk(x) for x in r["delisted"]) or "-")
+    else:
+        trust.admin_dismiss(c.db, c.uid, sid)
+        text = t(c.lang, "mod.done_dismiss", tk=fmt.tk(s["ticker"]))
+    return Reply(text=text, edit=True)
+
+
+async def send_mod_alerts(app: App) -> None:
+    """Tell every admin about stocks whose scam reports just crossed an alert level (with action buttons)."""
+    events_, app.db.mod_events = app.db.mod_events, []
+    for _kind, sid in events_:
+        for admin in app.settings.admins:
+            u = core.get_user(app.db, admin)
+            r = views.mod_alert(app.db, u["lang"] if u else "en", sid)
+            await _call(app.bot.send_message, admin, r.text, reply_markup=r.kb)
+
+
+# ---- trust, reports, achievements ----------------------------------------------------------------
+REASON_WORDS = {"rug": "rug", "راگ": "rug", "خروج": "rug", "fake": "fake", "دروغ": "fake", "جعلی": "fake", "spam": "spam", "اسپم": "spam", "توهین": "spam", "other": "other", "دیگر": "other"}
+
+
+def _trust_target(c: Ctx):
+    if c.args and textparse.looks_like_ticker(c.args[0]) and ticker_exists(c.db, c.args[0]):
+        s = core.need_stock(c.db, c.args[0], active=False)
+        if s["owner_id"] and s["kind"] in C.OWNER_KINDS:
+            return s["owner_id"]
+        raise GameError("trust_target")
+    rm = c.msg.reply_to_message if c.msg else None
+    if rm and rm.from_user and not rm.from_user.is_bot:
+        return rm.from_user.id
+    return None
+
+
+def _vote(c: Ctx, value: int):
+    target = _trust_target(c)
+    if target is None:
+        if value == 1:
+            return views.trust_board_view(c.db, c.lang)
+        return c.usage("distrust")
+    if not core.get_user(c.db, target):
+        raise GameError("trust_target")
+    return Reply(text=views.trust_result(c.db, c.lang, trust.vote(c.db, c.uid, target, value)))
+
+
+@cmd("trust")
+async def h_trust(c: Ctx):
+    return _vote(c, 1)
+
+
+@cmd("distrust")
+async def h_distrust(c: Ctx):
+    return _vote(c, -1)
+
+
+@cbk("tr")
+async def cb_trust(c: Ctx):
+    s = core.stock_row(c.db, int(c.args[0]))
+    if not s or not s["owner_id"]:
+        return Reply(toast=t(c.lang, "e.no_stock", ticker="?"))
+    r = trust.vote(c.db, c.uid, s["owner_id"], int(c.args[1]))
+    card = views.stock_card(c.db, c.lang, s, None if c.is_group else c.uid)
+    card.edit, card.toast = True, plain(views.trust_result(c.db, c.lang, r))
+    return card
+
+
+def _do_report(c: Ctx, s, reason: str, note: str = "") -> Reply:
+    r = trust.report(c.db, c.uid, s["ticker"], reason, note)
+    key = "report.ok" if r["new"] else "report.updated"
+    extra = t(c.lang, "report.flagged") if r["flagged"] else ""
+    return Reply(text=t(c.lang, key, tk=fmt.tk(s["ticker"]), extra=extra))
+
+
+@cmd("report")
+async def h_report(c: Ctx):
+    if not c.args:
+        return c.usage("report")
+    s = core.need_stock(c.db, c.args[0])
+    rest = list(c.args[1:])
+    reason = None
+    if rest and textparse.key(rest[0]) in REASON_WORDS:
+        reason = REASON_WORDS[textparse.key(rest.pop(0))]
+    note = " ".join(rest)
+    trust.can_act(c.db, c.uid)
+    if reason is None and not note:
+        return views.report_menu(c.lang, s)
+    return _do_report(c, s, reason or "other", note)
+
+
+@cbk("rp")
+async def cb_report_menu(c: Ctx):
+    s = core.stock_row(c.db, int(c.args[0]))
+    if not s or s["status"] != "active":
+        return Reply(toast=t(c.lang, "e.no_stock", ticker="?"))
+    trust.can_act(c.db, c.uid)
+    return views.report_menu(c.lang, s)
+
+
+@cbk("rp2")
+async def cb_report(c: Ctx):
+    s = core.stock_row(c.db, int(c.args[0]))
+    if not s or s["status"] != "active":
+        return Reply(toast=t(c.lang, "e.no_stock", ticker="?"))
+    r = _do_report(c, s, c.args[1])
+    r.edit = True
+    return r
+
+
+@cmd("salary")
+async def h_salary(c: Ctx):
+    if c.is_group:
+        return Reply(text=t(c.lang, "private_only"))
+    return views.salary_status(c.db, c.lang, c.uid)
+
+
+@cbk("sal")
+async def cb_salary(c: Ctx):
+    action = c.args[0]
+    if action in ("off", "tog"):
+        on = (not salary.get(c.db, c.uid)["enabled"]) if action == "tog" else False
+        salary.set_enabled(c.db, c.uid, on)
+        r = views.salary_status(c.db, c.lang, c.uid)
+        r.edit = True
+        return r
+    if action == "claim":
+        r = progress.daily(c.db, c.uid)                 # raises daily_wait (shown as a toast) if already claimed
+        view = views.salary_message(c.db, c.lang, c.uid)
+        rows = [[b for b in row if not (b.callback_data or "").startswith("sal:claim")] for row in view.kb.inline_keyboard]
+        view.kb = kb([[(b.text, b.callback_data) for b in row] for row in rows if row])
+        view.text = t(c.lang, "salary.claimed", amount=fmt.coins(r["amount"], c.lang), streak=fmt.num(r["streak"], c.lang), pct=fmt.num(r["pct"], c.lang)) + lvl_line(c.lang, r)
+        view.edit = True
+        return view
+    if action == "inc":
+        total = 0
+        for fn in (trading.claim_income, trading.claim_dividends):
+            try:
+                total += fn(c.db, c.uid)["net"]
+            except GameError:
+                pass
+        view = views.salary_message(c.db, c.lang, c.uid)
+        view.edit = True
+        view.toast = t(c.lang, "salary.income_ok", amount=fmt.coins(total, c.lang)) if total else t(c.lang, "salary.income_none")
+        return view
+    return Reply(toast=t(c.lang, "e.bad_usage"))
+
+
+PORTFOLIO_WORDS = {"پورتفوی", "پرتفوی", "پورتفولیو", "portfolio", "pf"}
+RANK_WORDS = {"رتبه", "رتبه‌ام", "رتبهام", "rank", "profile", "پروفایل"}
+
+
+def _share(c: Ctx, kind: str, s=None) -> Reply:
+    return views.share_reply(c.db, c.lang, kind, c.uid, c.app.botname, s, c.chat.id if c.is_group else None)
+
+
+@cmd("share")
+async def h_share(c: Ctx):
+    if not c.args:
+        return views.share_menu(c.db, c.lang, c.uid)
+    k = textparse.key(c.args[0])
+    if k in {textparse.key(w) for w in PORTFOLIO_WORDS}:
+        return _share(c, "p")
+    if k in {textparse.key(w) for w in RANK_WORDS}:
+        return _share(c, "r")
+    return _share(c, "s", core.need_stock(c.db, c.args[0]))
+
+
+@cbk("scp")
+async def cb_share_portfolio(c: Ctx):
+    return _share(c, "p")
+
+
+@cbk("scr")
+async def cb_share_rank(c: Ctx):
+    return _share(c, "r")
+
+
+@cbk("scs")
+async def cb_share_stock(c: Ctx):
+    s = core.stock_row(c.db, int(c.args[0]))
+    if not s or s["status"] != "active":
+        return Reply(toast=t(c.lang, "e.no_stock", ticker="?"))
+    return _share(c, "s", s)
+
+
+@cmd("achievements")
+async def h_achievements(c: Ctx):
+    return views.achievements_view(c.db, c.lang, c.uid)
 
 
 @cmd("give")
@@ -983,23 +1307,29 @@ async def run(c: Ctx, fn, *, is_cb: bool) -> None:
     except GameError as e:
         text = err_text(c.lang, e)
         reply = Reply(toast=plain(text), alert=True) if is_cb else Reply(text=text)
-    except Exception:
+    except Exception as e:
         log.exception("handler failed: %s", c.cmd)
+        await c.app.alert_admins(f"Handler '{c.cmd}' crashed: {type(e).__name__}: {e}", key=f"h:{c.cmd}")
         reply = Reply(toast=plain(t(c.lang, "err")), alert=True) if is_cb else Reply(text=t(c.lang, "err"))
     done = quests.drain_events(c.db, c.uid)      # the actor sees completions inline; other players get a DM
-    if done and reply is not None:
-        line = views.quest_done_lines(c.lang, done)
+    unlocked = achievements.drain_events(c.db, c.uid)
+    replies = [r for r in (reply if isinstance(reply, list) else [reply]) if r is not None]
+    if (done or unlocked) and replies:
+        line = "\n".join(x for x in (views.quest_done_lines(c.lang, done) if done else "", views.ach_done_lines(c.lang, unlocked) if unlocked else "") if x)
+        last = replies[-1]
         if is_cb:
-            reply.toast = plain(line, 120) + ("\n" + reply.toast if reply.toast else "")
-        elif reply.text:
-            reply.text += "\n\n" + line
-    if reply is None:
+            last.toast = plain(line, 120) + ("\n" + last.toast if last.toast else "")
+        elif last.text:
+            last.text += "\n\n" + line
+    if not replies:
         if is_cb:
             await _call(c.cb.answer)
         return
     try:
-        await send(c, reply)
+        for r in replies:
+            await send(c, r)
         await flush_outbox(c.app)
+        await send_mod_alerts(c.app)
     except Exception:
         log.exception("sending the reply failed (old message, deleted chat?)")
 
@@ -1012,12 +1342,15 @@ def _lang_for(app: App, chat, uid: int) -> str:
     return u["lang"] if u else app.settings.lang
 
 
-def _prepare(app: App, tg: User, chat, referrer: int | None = None) -> str:
-    """Register the group and the player if needed and return the language to answer in."""
+def _prepare(app: App, tg: User, chat, referrer: int | None = None):
+    """Register the group and the player if needed. Returns (language to answer in, player was just created)."""
     if chat.type in GROUPS:
         social.ensure_group(app.db, chat.id, chat.title or "Group", lang=app.settings.lang)
-    core.ensure_user(app.db, tg.id, tg.username, tg.full_name, lang=app.settings.lang, referrer=referrer)
-    return _lang_for(app, chat, tg.id)
+    _u, created = core.ensure_user(app.db, tg.id, tg.username, tg.full_name, lang=app.settings.lang, referrer=referrer)
+    app.touch(tg.id)
+    if chat.type == "private":
+        salary.unblock(app.db, tg.id)                  # they can obviously receive messages from the bot now
+    return _lang_for(app, chat, tg.id), created
 
 
 async def handle_message(m: Message, app: App, text: str) -> None:
@@ -1031,16 +1364,23 @@ async def handle_message(m: Message, app: App, text: str) -> None:
     p = textparse.parse(text, app.botname)
     if not p or p.cmd not in HANDLERS:
         return
-    soft = group and not p.prefixed
-    if soft and not soft_ok(app, p):
+    soft = group and not p.prefixed and not unambiguous(p)
+    if group and not p.prefixed and not unambiguous(p) and not soft_ok(app, p):
         return
+    banned = core.get_user(app.db, tg.id)
+    if banned and banned["banned"]:
+        return                                   # banned players are ignored completely
     if app.throttled(tg.id):
         return
     referrer = None
-    if p.cmd == "start" and p.args and p.args[0].startswith("ref_") and p.args[0][4:].isdigit():
-        referrer = int(p.args[0][4:])
-    lang = _prepare(app, tg, chat, referrer)
-    c = Ctx(app=app, bot=app.bot, tg=tg, chat=chat, lang=lang, cmd=p.cmd, args=p.args, soft=soft, msg=m)
+    if p.cmd == "start" and p.args:
+        payload = p.args[0]
+        if payload.startswith("ref_") and payload[4:].isdigit():
+            referrer = int(payload[4:])
+        elif STOCK_PAYLOAD.match(payload) and STOCK_PAYLOAD.match(payload).group(2):       # s_SPEED_r123: a shared stock link also invites
+            referrer = int(STOCK_PAYLOAD.match(payload).group(2))
+    lang, created = _prepare(app, tg, chat, referrer)
+    c = Ctx(app=app, bot=app.bot, tg=tg, chat=chat, lang=lang, cmd=p.cmd, args=p.args, soft=soft, msg=m, created=created)
     if p.cmd == "start" and p.args and p.args[0] == "shop":
         c.cmd = "shop"
     await run(c, HANDLERS[c.cmd], is_cb=False)
@@ -1056,7 +1396,7 @@ async def on_photo(m: Message, app: App) -> None:
     await handle_message(m, app, m.caption)
 
 
-BOUND = {"pf", "cl", "up", "sk", "lg", "rb", "rug", "hp", "qs", "wh"}
+BOUND = {"pf", "cl", "up", "sk", "lg", "rb", "rug", "hp", "qs", "wh", "scp", "scr", "sal"}
 
 
 @router.callback_query()
@@ -1070,10 +1410,11 @@ async def on_callback(cb: CallbackQuery, app: App) -> None:
     if not fn:
         await _call(cb.answer)
         return
-    if app.throttled(tg.id, 0.4):
+    banned = core.get_user(app.db, tg.id)
+    if (banned and banned["banned"]) or app.throttled(tg.id, 0.4):
         await _call(cb.answer)
         return
-    lang = _prepare(app, tg, chat)
+    lang, _created = _prepare(app, tg, chat)
     c = Ctx(app=app, bot=app.bot, tg=tg, chat=chat, lang=lang, cmd=parts[0], args=parts[1:], cb=cb, msg=cb.message)
     if parts[0] in BOUND and parts[-1] != str(tg.id):
         await _call(cb.answer, t(lang, "not_yours"))

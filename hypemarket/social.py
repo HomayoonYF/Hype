@@ -3,12 +3,12 @@ from __future__ import annotations
 
 from . import config as C
 from .core import (
-    GameError, TICKER_RE, RESERVED, add_dividend, add_news, burn, check_level, check_text, clean, get_user, kv_add, mint, need_user,
+    GameError, TICKER_RE, RESERVED, add_dividend, add_news, burn, check_level, check_text, clean, counter, get_user, kv_add, mint, need_user,
     norm_ticker, notify, now, record, stock_row,
 )
 from .db import Database
 from . import engine as E
-from . import quests, trading
+from . import achievements, quests, trading
 
 
 # --- groups ---------------------------------------------------------------------
@@ -94,6 +94,7 @@ def flush_activity(db: Database, counts: dict, seen: set) -> int:
                 continue
             db.x("INSERT INTO activity(user_id,chat_id,day,count) VALUES(?,?,?,?) ON CONFLICT(user_id,chat_id,day) DO UPDATE SET count=count+excluded.count", (uid, chat, day, allowed))
             quests.track(db, uid, "chat", allowed)
+            counter(db, "chat", allowed)
             amount = allowed * C.ACT_UNITS
             targets = []
             if g and g["index_stock"]:
@@ -169,6 +170,7 @@ def create_company(db: Database, uid: int, name: str, ticker: str):
         db.x("UPDATE companies SET stock_id=? WHERE id=?", (sid, cid))
         db.x("UPDATE users SET company_id=?, company_joined=? WHERE id=?", (cid, now(), uid))
         record(db, sid)
+        achievements.check(db, uid, "company")
         add_news(db, "company", sid, ticker=ticker, name=name, owner=u["name"])
         return db.q1("SELECT * FROM companies WHERE id=?", (cid,))
 
@@ -199,6 +201,7 @@ def join_company(db: Database, uid: int, name: str) -> dict:
             raise GameError("company_full", n=C.COMPANY_MAX_MEMBERS)
         db.x("UPDATE users SET company_id=?, company_joined=? WHERE id=?", (c["id"], now(), uid))
         notify(db, c["owner_id"], "company_join", name=u["name"], company=c["name"])
+        achievements.check(db, uid, "company")
         return c
 
 

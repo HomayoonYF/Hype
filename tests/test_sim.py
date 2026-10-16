@@ -1,7 +1,7 @@
 """Chaos test: random players do random things; money must be conserved to the unit.
 
 Conservation law:  everything that exists  ==  coins minted - coins burned
-  everything = player cash + pending income/dividends + short margins + stock reserves
+  everything = player cash + pending income/dividends + stock reserves (listed companies included)
                + company treasuries + dividends accrued but not yet settled
 """
 import random
@@ -9,7 +9,7 @@ import random
 import pytest
 
 from hypemarket import config as C
-from hypemarket import bots, core, events, progress, quests, social, trading
+from hypemarket import analytics, bots, core, events, exchange, progress, quests, social, trading, trust
 from hypemarket import engine as E
 from hypemarket.core import GameError
 from hypemarket.db import Database
@@ -19,13 +19,12 @@ T = [1_700_000_000]
 
 def total_money(db):
     users = db.q1("SELECT COALESCE(SUM(cash+pending_div+pending_inc),0) v FROM users")["v"]
-    margins = db.q1("SELECT COALESCE(SUM(margin),0) v FROM shorts")["v"]
     reserves = db.q1("SELECT COALESCE(SUM(reserve),0) v FROM stocks")["v"]
     treasuries = db.q1("SELECT COALESCE(SUM(treasury),0) v FROM companies")["v"]
     owed = 0
     for r in db.qa("SELECT h.shares, h.debt, s.acc_div FROM holdings h JOIN stocks s ON s.id=h.stock_id WHERE s.status='active'"):
         owed += r["shares"] * r["acc_div"] // C.ACC - r["debt"]
-    return users + margins + reserves + treasuries + owed
+    return users + reserves + treasuries + owed
 
 
 def check(db):
@@ -56,9 +55,10 @@ def test_money_is_conserved_under_chaos(seed):
         core.mint(db, 0)
     # fix accounting for the cash we injected directly
     core.mint(db, db.q1("SELECT SUM(cash) s FROM users")["s"] - (core.kv_int(db, "minted") - core.kv_int(db, "burned")))
-    for i in range(1, N + 1):
-        db.x("INSERT INTO perks(user_id,perk,level) VALUES(?,?,1)", (i, "short"))
+    exchange.ensure_listed(db, rnd)
+    listed = [co.ticker for co in exchange.COMPANIES]
     bots.ensure_bots(db)
+    db.x("UPDATE users SET trades=5 WHERE bot=0")          # everyone may vote/report
     C.BOT_ACT_PROB = 0.7
     social.ensure_group(db, -1, "G1")
     social.ensure_group(db, -2, "G2")
@@ -77,6 +77,17 @@ def test_money_is_conserved_under_chaos(seed):
         uid = rnd.randint(1, N)
         roll = rnd.random()
         # everything below can happen on top of the main action, like in a live market
+        analytics.touch(db, uid)
+        if rnd.random() < 0.06:
+            attempt(trust.vote, db, uid, rnd.randint(1, N), rnd.choice([1, -1]))
+        if tickers and rnd.random() < 0.05:
+            attempt(trust.report, db, uid, rnd.choice(tickers), rnd.choice(trust.REASONS), "note")
+        if rnd.random() < 0.012:                              # an admin acts on a reported stock (or bans someone, rarely)
+            row = db.q1("SELECT stock_id FROM reports WHERE status='open' ORDER BY RANDOM() LIMIT 1")
+            if row:
+                rnd.choice([lambda: trust.admin_dismiss(db, 1, row["stock_id"]), lambda: attempt(trust.admin_delist, db, 1, row["stock_id"])])()
+            elif rnd.random() < 0.05:
+                attempt(trust.admin_ban, db, 1, rnd.randint(2, N))
         if rnd.random() < 0.30:
             bots.tick(db, rnd)
         if rnd.random() < 0.03:
@@ -99,6 +110,12 @@ def test_money_is_conserved_under_chaos(seed):
                 tickers.append(tk)
         elif roll < 0.46 and tickers:
             attempt(trading.buy, db, uid, rnd.choice(tickers), rnd.randint(1, 400), spend_all=rnd.random() < 0.1)
+        elif roll < 0.52:                                  # the exchange: buys and sells (no limits), price steps, earnings nights
+            tk = rnd.choice(listed)
+            if rnd.random() < 0.55:
+                attempt(trading.buy, db, uid, tk, rnd.randint(1, 300), spend_all=rnd.random() < 0.15)
+            else:
+                attempt(trading.sell, db, uid, tk, rnd.randint(1, 300), sell_all=rnd.random() < 0.3)
         elif roll < 0.62 and tickers:
             attempt(trading.sell, db, uid, rnd.choice(tickers), rnd.randint(1, 200), sell_all=rnd.random() < 0.3)
         elif roll < 0.67:
@@ -111,11 +128,11 @@ def test_money_is_conserved_under_chaos(seed):
             attempt(trading.set_dividend, db, uid, rnd.randint(0, 50))
         elif roll < 0.81 and tickers:
             db.x("UPDATE users SET max_level=MAX(max_level,3) WHERE id=?", (uid,))
-            attempt(progress.upgrade, db, uid, rnd.choice(["short", "fee", "daily", "bonus", "alerts"]))
-        elif roll < 0.85 and tickers:
-            attempt(trading.open_short, db, uid, rnd.choice(tickers), rnd.randint(1, 60))
-        elif roll < 0.865 and tickers:
-            attempt(trading.close_short, db, uid, rnd.choice(tickers))
+            attempt(progress.upgrade, db, uid, rnd.choice(["fee", "daily", "bonus", "alerts"]))
+        elif roll < 0.865:
+            exchange.tick(db, rnd)
+            if exchange.earnings_due(db):
+                exchange.run_earnings(db, rnd)
         elif roll < 0.88:
             attempt(trading.rug, db, uid, None, rnd.choice([25, 50, 70]))
         elif roll < 0.90:
@@ -138,7 +155,7 @@ def test_money_is_conserved_under_chaos(seed):
             attempt(progress.rebirth, db, uid)
         elif roll < 0.99:
             events.tick(db, random_events=False)
-            trading.liquidate_shorts(db)
+            exchange.tick(db, rnd)
         else:
             progress.end_season_if_due(db)
         if step % 25 == 0:
@@ -151,3 +168,5 @@ def test_money_is_conserved_under_chaos(seed):
     # make sure the chaos actually exercised the interesting paths
     assert db.q1("SELECT COUNT(*) c FROM stocks")["c"] >= 4
     assert db.q1("SELECT COUNT(*) c FROM history")["c"] > 100
+    assert core.kv_int(db, "tot:ex_trades") > 20 and core.kv_int(db, "tot:ex_earnings") >= 1     # the exchange was really exercised
+    assert exchange.house_stats(db)["levy_total"] > 0

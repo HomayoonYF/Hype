@@ -2,15 +2,16 @@
 from __future__ import annotations
 
 import json
+import urllib.parse
 from dataclasses import dataclass
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from . import config as C
-from . import charts, core, engine as E, events, fmt, progress, quests, social, trading
+from . import cards, docs, salary, achievements, analytics, charts, core, engine as E, events, exchange, fmt, progress, quests, social, trading, trust
 from .core import display_name, price
 from .fmt import esc
-from .texts import level_title, t
+from .texts import ALIASES, level_title, t
 
 
 @dataclass
@@ -38,7 +39,7 @@ def kb(rows: list) -> InlineKeyboardMarkup | None:
     return InlineKeyboardMarkup(inline_keyboard=out) if out else None
 
 
-KIND_EMOJI = {"personal": "👤", "meme": "🤪", "project": "🎯", "bluechip": "💎", "company": "🏢", "index": "👥"}
+KIND_EMOJI = {"personal": "👤", "meme": "🤪", "project": "🎯", "bluechip": "💎", "company": "🏢", "index": "👥", "listed": "🏛"}
 
 
 # --- stock card ---------------------------------------------------------------------
@@ -49,6 +50,8 @@ def stock_card(db, lang: str, s, uid: int | None = None) -> Reply:
     if s["status"] != "active":
         lines.append(t(L, "e.delisted", ticker=fmt.tk(s["ticker"])))
         return Reply(text="\n".join(lines))
+    if s["kind"] == "listed":
+        return listed_card(db, lang, s, uid)
     if s["descr"]:
         lines.append(f"<i>{esc(s['descr'])}</i>")
     lines.append(t(L, "card.price", price=fmt.price(price(s), L), chg=fmt.pct(core.change_pct(db, s), L)))
@@ -65,6 +68,13 @@ def stock_card(db, lang: str, s, uid: int | None = None) -> Reply:
         lines.append(t(L, "card.company", owner=esc(display_name(o)) if o else "-"))
     elif s["kind"] == "index":
         lines.append(t(L, "card.index"))
+    if s["owner_id"] and s["kind"] in C.OWNER_KINDS:
+        tr = trust.score(db, s["owner_id"])
+        if tr["voters"]:
+            lines.append(t(L, "card.trust", label=t(L, "trust." + tr["label"]), up=fmt.num(tr["up"], L), down=fmt.num(tr["down"], L)))
+        if trust.flagged(db, s["id"]):
+            n = db.q1("SELECT COUNT(*) c FROM reports WHERE stock_id=? AND status='open'", (s["id"],))["c"]
+            lines.append(t(L, "card.flag", n=fmt.num(n, L)))
     if s["goal"]:
         if s["funded"]:
             lines.append(t(L, "card.funded"))
@@ -85,9 +95,119 @@ def stock_card(db, lang: str, s, uid: int | None = None) -> Reply:
     rows = [
         [(t(L, "btn.buy", n=fmt.num(n, L)), f"b:{sid}:{n}") for n in (1, 10, 100)],
         [(t(L, "btn.sell", n=fmt.num(10, L)), f"s:{sid}:10"), (t(L, "btn.sellall"), f"s:{sid}:0"), (t(L, "btn.buymax"), f"b:{sid}:0")],
-        [(t(L, "btn.refresh"), f"st:{sid}"), (t(L, "btn.chart"), f"ch:{sid}:24h")],
+        [(t(L, "btn.refresh"), f"st:{sid}"), (t(L, "btn.chart"), f"ch:{sid}:24h"), ("📤", f"scs:{sid}")],
+    ]
+    if s["owner_id"] and s["kind"] in C.OWNER_KINDS:
+        rows.append([(t(L, "btn.trust"), f"tr:{sid}:1"), (t(L, "btn.distrust"), f"tr:{sid}:-1"), (t(L, "btn.report"), f"rp:{sid}")])
+    return Reply(text="\n".join(lines), kb=kb(rows))
+
+
+# --- the exchange (house-priced listed companies) -----------------------------------------
+def _pcts(db, L: str, s) -> tuple[str, str]:
+    """(fixed levy, slippage right now) as percent strings."""
+    spread = fmt.pct(C.LISTED_SPREAD_BPS / 100, L, arrows=False)
+    slip = fmt.pct(exchange.slip_bps_x100(exchange.flow_now(db, s["id"]), 0) / 10000, L, arrows=False)
+    return spread, slip
+
+
+def _quote_line(L: str, key: str, row: dict) -> tuple[str, str]:
+    """(CEO quote, CEO name). On earnings night the CEO talks about the REAL numbers of the week (row["act"]: +1 activity grew,
+    -1 it shrank); the price jump itself is random and has nothing to do with it. Headlines about a price move use its direction."""
+    word = "up" if row.get("act", row.get("jump", row.get("pct", 0))) >= 0 else "down"
+    return t(L, f"ex.{key}.{word}{row.get('q', 1)}"), t(L, f"ex.{key}.ceo")
+
+
+def listed_card(db, lang: str, s, uid: int | None = None) -> Reply:
+    L = lang
+    co = exchange.company_of(db, s)
+    name = t(L, f"ex.{co.key}.name") if co else esc(s["name"])
+    lines = [f"{co.emoji if co else '🏛'} <b>{name}</b> {fmt.tk(s['ticker'])}"]
+    if co:
+        lines.append(t(L, "ex.card.tag", tag=t(L, f"ex.{co.key}.tag")))
+    lines.append(t(L, "ex.card.rules"))
+    lines.append(t(L, "card.price", price=fmt.price(price(s), L), chg=fmt.pct(core.change_pct(db, s), L)))
+    lines.append(t(L, "card.stats", mcap=fmt.coins(core.mcap(s), L), supply=fmt.num(s["supply"], L), holders=fmt.num(s["holders"], L)))
+    spread, slip = _pcts(db, L, s)
+    lines.append(t(L, "ex.card.levy", spread=spread, slip=slip))
+    lines.append(t(L, "ex.card.next", left=fmt.dur(max(0, exchange.next_earnings(db) - core.now()), L)))
+    rep = exchange.last_report(db)
+    row = next((r for r in rep["rows"] if co and r["key"] == co.key), None) if rep else None
+    if row:
+        quote, ceo = _quote_line(L, co.key, row)
+        lines.append(t(L, "ex.card.last", jump=fmt.pct(row["jump"], L), ceo=esc(ceo), quote=esc(quote)))
+    if uid:
+        h = db.q1("SELECT shares FROM holdings WHERE user_id=? AND stock_id=?", (uid, s["id"]))
+        if h:
+            lines.append(t(L, "card.mine", shares=fmt.num(h["shares"], L), value=fmt.coins(core.liq(s, h["shares"]), L)))
+    sid = s["id"]
+    rows = [
+        [(t(L, "btn.buy", n=fmt.num(n, L)), f"b:{sid}:{n}") for n in (1, 5, 25)],
+        [(t(L, "btn.sell", n=fmt.num(5, L)), f"s:{sid}:5"), (t(L, "btn.sellall"), f"s:{sid}:0"), (t(L, "btn.buymax"), f"b:{sid}:0")],
+        [(t(L, "btn.refresh"), f"st:{sid}"), (t(L, "btn.chart"), f"ch:{sid}:24h"), ("📤", f"scs:{sid}"), (t(L, "ex.btn_ex"), "ex:r")],
     ]
     return Reply(text="\n".join(lines), kb=kb(rows))
+
+
+def exchange_view(db, lang: str, uid: int | None = None) -> Reply:
+    L = lang
+    mine = {r["stock_id"]: r["shares"] for r in db.qa("SELECT stock_id, shares FROM holdings WHERE user_id=?", (uid,))} if uid else {}
+    lines = [t(L, "ex.title"), t(L, "ex.intro"), ""]
+    btns, first = [], None
+    for co, s in exchange.listed_rows(db):
+        first = first or s
+        sh = mine.get(s["id"])
+        lines.append(t(L, "ex.row", emoji=co.emoji, tk=fmt.tk(s["ticker"]), name=t(L, f"ex.{co.key}.name"), price=fmt.price(price(s), L),
+                       chg=fmt.pct(core.change_pct(db, s), L), mine=t(L, "ex.mine", shares=fmt.num(sh, L)) if sh else ""))
+        btns.append((f"{co.emoji} {s['ticker']}", f"st:{s['id']}"))
+    if first:
+        spread, slip = _pcts(db, L, first)
+        lines += ["", t(L, "ex.footer", spread=spread, slip=slip, left=fmt.dur(max(0, exchange.next_earnings(db) - core.now()), L))]
+    grid = [btns[i:i + 3] for i in range(0, len(btns), 3)]
+    grid.append([(t(L, "ex.btn_earn"), "ex:e"), (t(L, "btn.refresh"), "ex:r")])
+    return Reply(text="\n".join(lines), kb=kb(grid))
+
+
+def earnings_text(lang: str, rep: dict, compact: bool = True) -> str:
+    """The earnings-night report. compact=True fits a photo caption (1024 chars); False adds the real numbers and the footer."""
+    L = lang
+    lines = [t(L, "ex.earn.head", week=fmt.num(rep["week"] % 100, L)), ""]
+    for r in rep["rows"]:
+        co = exchange.BY_KEY.get(r["key"])
+        if not co:
+            continue
+        quote, ceo = _quote_line(L, co.key, r)
+        lines.append(t(L, "ex.earn.row", emoji=co.emoji, tk=fmt.tk(r["ticker"]), wk=fmt.pct(r["wk_pct"], L), jump=fmt.pct(r["jump"], L)))
+        if not compact:
+            delta = ""
+            if r["prev"]:
+                delta = t(L, "ex.earn.delta", delta=fmt.pct((r["metric"] - r["prev"]) * 100.0 / r["prev"], L))
+            lines.append(t(L, "ex.earn.metric", metric=t(L, f"ex.{co.key}.metric"), cur=fmt.num(round(r["metric"]), L), delta=delta))
+        lines.append(t(L, "ex.earn.quote", quote=esc(quote), ceo=esc(ceo)))
+    if not compact:
+        lines += ["", t(L, "ex.earn.foot")]
+    return "\n".join(lines)
+
+
+def earnings_view(db, lang: str) -> Reply:
+    rep = exchange.last_report(db)
+    back = kb([[(t(lang, "ex.btn_ex"), "ex:r")]])
+    if not rep:
+        return Reply(text=t(lang, "ex.earn.none", left=fmt.dur(max(0, exchange.next_earnings(db) - core.now()), lang)), kb=back)
+    return Reply(text=earnings_text(lang, rep, compact=False), kb=back)
+
+
+def exchange_news_line(lang: str, row) -> str:
+    p = json.loads(row["params"] or "{}")
+    co = exchange.BY_KEY.get(p.get("key", ""))
+    if not co:
+        return ""
+    L = lang
+    if row["kind"] == "ex_earn":
+        quote, ceo = _quote_line(L, co.key, {"act": p.get("act", p.get("jump", 0)), "q": p.get("q", 1)})
+        return t(L, "ex.news_earn", tk=fmt.tk(p.get("ticker", co.ticker)), wk=fmt.pct(p.get("pct", 0), L), ceo=esc(ceo), quote=esc(quote))
+    up = row["kind"] == "ex_up"
+    quote, ceo = _quote_line(L, co.key, {"jump": 1 if up else -1, "q": p.get("q", 1)})
+    return t(L, "ex.news_up" if up else "ex.news_down", emoji=co.emoji, tk=fmt.tk(p.get("ticker", co.ticker)), pct=fmt.pct(p.get("pct", 0), L, arrows=False), ceo=esc(ceo), quote=esc(quote))
 
 
 # --- market ---------------------------------------------------------------------------
@@ -95,7 +215,7 @@ def market_view(db, lang: str, view: str = "top") -> Reply:
     L = lang
     view = view if view in ("top", "trend", "gain", "lose", "new") else "top"
     rows = trading.market(db, view, 8)
-    tabs = [[(t(L, f"btn.{v}"), f"mk:{v}") for v in ("top", "trend", "gain", "lose", "new")]]
+    tabs = [[(t(L, f"btn.{v}"), f"mk:{v}") for v in ("top", "trend", "gain", "lose", "new")], [(t(L, "ex.btn_ex"), "ex:r")]]
     if not rows:
         return Reply(text=t(L, "market.empty"), kb=kb(tabs))
     lines = [f"<b>{t(L, 'market.' + view)}</b>", ""]
@@ -119,12 +239,8 @@ def portfolio_view(db, lang: str, uid: int) -> Reply:
         lines.append(t(L, "port.empty"))
     for r in p["rows"]:
         lines.append(t(L, "port.row", tk=fmt.tk(r["stock"]["ticker"]), shares=fmt.num(r["shares"], L), value=fmt.coins(r["value"], L), pnl=fmt.pct(r["pct"], L)))
-    if p["shorts"]:
-        lines += ["", t(L, "shorts_head")]
-        for x in p["shorts"]:
-            lines.append(f"{fmt.tk(x['stock']['ticker'])} × {fmt.num(x['short']['shares'], L)} @ {fmt.price(x['short']['entry'], L)} → {fmt.pnl(x['pnl'], L)}")
     rows = [[(t(L, "btn.claim") + " " + ("سود" if L == "fa" else "dividends"), f"cl:div:{uid}"), (t(L, "btn.claim") + " " + ("درآمد" if L == "fa" else "income"), f"cl:inc:{uid}")],
-            [(t(L, "btn.refresh"), f"pf:{uid}")]]
+            [(t(L, "btn.refresh"), f"pf:{uid}"), ("📤", f"scp:{uid}")]]
     return Reply(text="\n".join(lines), kb=kb(rows))
 
 
@@ -138,8 +254,9 @@ def profile_view(db, lang: str, uid: int) -> Reply:
         c = db.q1("SELECT name FROM companies WHERE id=?", (u["company_id"],))
         company = esc(c["name"]) if c else t(L, "none")
     text = t(L, "profile", name=esc(display_name(u)), level=fmt.num(info["level"], L), title=level_title(L, info["level"]), cash=fmt.coins(u["cash"], L),
-             nw=fmt.coins(info["nw"], L), rep=fmt.num(u["rep"], L), rb=fmt.num(u["rebirths"], L), streak=fmt.num(u["streak"], L), company=company, stocks=stocks)
-    return Reply(text=text)
+             nw=fmt.coins(info["nw"], L), rep=fmt.num(u["rep"], L), rb=fmt.num(u["rebirths"], L), streak=fmt.num(u["streak"], L), company=company, stocks=stocks,
+             ach=f"{fmt.num(len(achievements.unlocked(db, uid)), L)}/{fmt.num(len(achievements.ALL_A), L)}")
+    return Reply(text=text, kb=kb([[("📤", f"scr:{uid}")]]))
 
 
 def level_view(db, lang: str, uid: int) -> Reply:
@@ -206,6 +323,8 @@ INT_KEYS = {"pct", "minutes", "n", "season", "shares"}
 
 
 def render_news(lang: str, row) -> str:
+    if row["kind"] in ("ex_up", "ex_down", "ex_earn"):
+        return exchange_news_line(lang, row)
     kw = {}
     for k, v in json.loads(row["params"] or "{}").items():
         if k == "ticker":
@@ -333,12 +452,17 @@ def alerts_view(db, lang: str, uid: int) -> Reply:
 # --- group board / direct messages -----------------------------------------------------------------
 def board_text(db, lang: str) -> str:
     L = lang
-    rows = trading.market(db, "top", 5)
+    rows = [s for s in trading.market(db, "top", 20) if s["kind"] != "listed"][:5]          # the exchange has its own block below
+    listed = exchange.listed_rows(db)
     lines = [t(L, "board.head", brand=t(L, "brand")), ""]
     for s in rows:
         lines.append(f"{KIND_EMOJI.get(s['kind'], '')} {fmt.tk(s['ticker'])} {fmt.price(price(s), L)} {fmt.pct(core.change_pct(db, s), L)}")
-    if not rows:
+    if not rows and not listed:
         lines.append(t(L, "market.empty"))
+    if listed:
+        lines += ["", t(L, "board.ex")]
+        for co, s in listed:
+            lines.append(f"{co.emoji} {fmt.tk(s['ticker'])} {fmt.price(price(s), L)} {fmt.pct(core.change_pct(db, s), L)}")
     news = db.qa("SELECT * FROM news ORDER BY id DESC LIMIT 3")
     if news:
         lines += ["", t(L, "board.news")] + [render_news(L, r) for r in news]
@@ -350,6 +474,10 @@ def dm_text(lang: str, key: str, kw: dict) -> str:
     if key == "quest_done":
         pts = t(lang, "quests.pts", n=fmt.num(kw["points"], lang)) if kw.get("points") else ""
         return t(lang, "n.quest_done", text=quest_text(lang, kw["qid"], kw["n"]), amount=fmt.coins(kw["amount"], lang), pts=pts)
+    if key == "ach_done":
+        a = achievements.BY_ID[kw["aid"]]
+        pts = t(lang, "quests.pts", n=fmt.num(kw["points"], lang)) if kw.get("points") else ""
+        return t(lang, "n.ach_done", emoji=a.emoji, text=t(lang, "a." + a.id), amount=fmt.coins(kw["amount"], lang), pts=pts)
     if key == "levelup":
         out["title"] = level_title(lang, kw["level"])
     for k, v in kw.items():
@@ -386,12 +514,48 @@ def help_menu(lang: str, uid: int) -> Reply:
     return Reply(text=t(lang, "help.menu", brand=t(lang, "brand")), kb=kb(rows))
 
 
-def help_section(db, lang: str, uid: int, section: str) -> Reply:
-    back = kb([[(t(lang, "help.btn_back"), f"hp:menu:{uid}")]])
+def cmd_name(lang: str, cmd: str) -> str:
+    words = ALIASES[cmd]
+    persian = [w for w in words if not w.isascii()]
+    return (persian[0] if lang == "fa" and persian else next((w for w in words if w.isascii()), words[0]))
+
+
+def visible_categories(is_admin: bool) -> list:
+    return [(i, cid, cmds) for i, (cid, cmds) in enumerate(docs.CATEGORIES) if is_admin or cid != "botadmin"]
+
+
+def help_commands_menu(lang: str, uid: int, is_admin: bool) -> Reply:
+    btns = [(f"{docs.CATEGORY_EMOJI[cid]} {t(lang, 'cat.' + cid)}", f"hp:cat:{i}:{uid}") for i, cid, _ in visible_categories(is_admin)]
+    rows = [btns[k:k + 2] for k in range(0, len(btns), 2)]
+    rows.append([(t(lang, "help.tips_btn"), f"hp:tips:{uid}")])
+    rows.append([(t(lang, "help.btn_back"), f"hp:menu:{uid}")])
+    return Reply(text=t(lang, "help.cmds_menu"), kb=kb(rows), edit=True)
+
+
+def help_category(lang: str, uid: int, idx: int, is_admin: bool) -> Reply:
+    if not 0 <= idx < len(docs.CATEGORIES) or (docs.CATEGORIES[idx][0] == "botadmin" and not is_admin):
+        return help_commands_menu(lang, uid, is_admin)
+    cid, cmds = docs.CATEGORIES[idx]
+    lines = [f"{docs.CATEGORY_EMOJI[cid]} <b>{t(lang, 'cat.' + cid)}</b>", ""]
+    for c in cmds:
+        fa_d, fa_e, en_d, en_e = docs.DOCS[c]
+        desc, ex = (fa_d, fa_e) if lang == "fa" else (en_d, en_e)
+        lines.append(t(lang, "help.cat_row", name=esc(cmd_name(lang, c)), desc=esc(desc), examples="\n".join(f"   <code>{esc(x)}</code>" for x in ex.split("\n"))))
+        lines.append("")
+    rows = [[(t(lang, "help.btn_cmds"), f"hp:cmds:{uid}"), (t(lang, "help.btn_back"), f"hp:menu:{uid}")]]
+    return Reply(text="\n".join(lines).rstrip(), kb=kb(rows), edit=True)
+
+
+def help_section(db, lang: str, uid: int, section: str, arg: str = "", is_admin: bool = False) -> Reply:
     if section == "cmds":
-        return Reply(text=t(lang, "help", brand=t(lang, "brand")), kb=back, edit=True)
+        return help_commands_menu(lang, uid, is_admin)
+    if section == "cat":
+        return help_category(lang, uid, int(arg) if arg.isdigit() else -1, is_admin)
+    if section == "tips":
+        return Reply(text=t(lang, "help.tips"), kb=kb([[(t(lang, "help.btn_cmds"), f"hp:cmds:{uid}")]]), edit=True)
+    back = kb([[(t(lang, "help.btn_back"), f"hp:menu:{uid}")]])
     if section == "about":
-        return Reply(text=t(lang, "help.about"), kb=back, edit=True)
+        return Reply(text=t(lang, "help.about", ex=t(lang, "help.ex")), kb=back, edit=True)
     if section == "guide":
         r = guide_view(db, lang, uid)
         r.edit = True
@@ -462,16 +626,25 @@ def whales_view(db, lang: str, uid: int) -> Reply:
     return Reply(text="\n".join(lines), kb=kb([[(t(lang, "whales.btn_off" if on else "whales.btn_on"), f"wh:{uid}")]]))
 
 
+def _chart_misc(db, L: str, s) -> str:
+    if s["kind"] == "listed":
+        co = exchange.company_of(db, s)
+        spread, _slip = _pcts(db, L, s)
+        return t(L, "ex.chart_misc", spread=spread, tag=t(L, f"ex.{co.key}.tag") if co else "")
+    return t(L, "chart.misc", div=fmt.num(s["div_pct"], L), fees=fmt.coins(s["fees_earned"], L), hype=fmt.num(round(s["hype"]), L), rugs=fmt.num(s["rugs"], L))
+
+
 def chart_caption(db, lang: str, s, d: dict) -> str:
     L = lang
-    lines = [t(L, "chart.title", emoji=KIND_EMOJI.get(s["kind"], "📈"), name=esc(s["name"]), tk=fmt.tk(s["ticker"]), span=d["span"]),
+    co = exchange.company_of(db, s)
+    lines = [t(L, "chart.title", emoji=KIND_EMOJI.get(s["kind"], "📈"), name=t(L, f"ex.{co.key}.name") if co else esc(s["name"]), tk=fmt.tk(s["ticker"]), span=d["span"]),
              t(L, "chart.price", price=fmt.price(d["close"], L), chg=fmt.pct(d["change"], L)),
              t(L, "chart.range", high=fmt.price(d["high"], L), low=fmt.price(d["low"], L)),
              t(L, "chart.open", open=fmt.price(d["open"], L), close=fmt.price(d["close"], L)),
              t(L, "chart.volume", vol=fmt.coins(d["volume"], L)),
              t(L, "chart.market", mcap=fmt.coins(core.mcap(s), L), supply=fmt.num(s["supply"], L), holders=fmt.num(s["holders"], L)),
              t(L, "chart.changes", h1=fmt.pct(d["h1"], L), d1=fmt.pct(d["d1"], L), d7=fmt.pct(d["d7"], L)),
-             t(L, "chart.misc", div=fmt.num(s["div_pct"], L), fees=fmt.coins(s["fees_earned"], L), hype=fmt.num(round(s["hype"]), L), rugs=fmt.num(s["rugs"], L))]
+             _chart_misc(db, L, s)]
     if s["event_until"] > core.now() and s["event_kind"]:
         lines.append(t(L, "chart.event", kind=t(L, "ev." + s["event_kind"]), left=fmt.dur(s["event_until"] - core.now(), L)))
     if d["whales"]:
@@ -479,3 +652,160 @@ def chart_caption(db, lang: str, s, d: dict) -> str:
         lines.append(t(L, "chart.whale", who=esc(w["who"]), side=t(L, "chart.side_" + w["side"]), amount=fmt.coins(w["amount"], L), ago=fmt.dur(core.now() - w["ts"], L)))
     lines.append("<i>" + t(L, "chart.legend") + "</i>")
     return "\n".join(lines)
+
+
+# --- achievements, trust, moderation, analytics -----------------------------------------------------------
+def ach_done_lines(lang: str, items: list) -> str:
+    out = []
+    for aid, reward, points in items:
+        a = achievements.BY_ID[aid]
+        pts = t(lang, "quests.pts", n=fmt.num(points, lang)) if points else ""
+        out.append(t(lang, "ach.done", emoji=a.emoji, text=t(lang, "a." + aid), reward=fmt.coins(reward, lang), pts=pts))
+    return "\n".join(out)
+
+
+def achievements_view(db, lang: str, uid: int) -> Reply:
+    got = achievements.unlocked(db, uid)
+    lines = [t(lang, "ach.head", done=fmt.num(len(got), lang), total=fmt.num(len(achievements.ALL_A), lang)), ""]
+    for a in achievements.ALL_A:
+        if a.id in got:
+            lines.append(t(lang, "ach.row", emoji=a.emoji, text=t(lang, "a." + a.id)))
+    for a in achievements.ALL_A:
+        if a.id not in got:
+            lines.append(t(lang, "ach.row_locked", text=t(lang, "a." + a.id)))
+    lines.append(t(lang, "ach.footer"))
+    return Reply(text="\n".join(lines))
+
+
+def trust_label(lang: str, tr: dict) -> str:
+    return t(lang, "trust." + tr["label"])
+
+
+def trust_result(db, lang: str, r: dict) -> str:
+    key = {1: "trust.up", -1: "trust.down", 0: "trust.removed"}[r["value"]]
+    tr = r["score"]
+    return t(lang, key, name=esc(display_name(r["target"])), label=trust_label(lang, tr), up=fmt.num(tr["up"], lang), down=fmt.num(tr["down"], lang))
+
+
+def trust_board_view(db, lang: str) -> Reply:
+    b = trust.trust_board(db)
+    row = lambda rs: "\n".join(t(lang, "trust.row", name=esc(display_name(r)), net=fmt.num(r["net"], lang), voters=fmt.num(r["voters"], lang)) for r in rs) or t(lang, "trust.none")
+    return Reply(text=t(lang, "trust.board", good=row(b["good"]), bad=row(b["bad"])))
+
+
+def report_menu(lang: str, s) -> Reply:
+    sid = s["id"]
+    rows = [[(t(lang, f"reason.{r}"), f"rp2:{sid}:{r}")] for r in trust.REASONS]
+    return Reply(text=t(lang, "report.menu", tk=fmt.tk(s["ticker"])), kb=kb(rows))
+
+
+def mod_alert(db, lang: str, sid: int) -> Reply:
+    sm = trust.summary(db, sid)
+    s, o = sm["stock"], sm["owner"]
+    reasons = "  ".join(f"{t(lang, 'reason.' + k)}: {fmt.num(v, lang)}" for k, v in sm["reasons"].items())
+    notes = "\n".join(f"• {esc(n)}" for n in sm["notes"])
+    tr = sm["trust"]
+    text = t(lang, "mod.alert", tk=fmt.tk(s["ticker"]), name=esc(s["name"]), owner=esc(display_name(o)) if o else "-", oid=o["id"] if o else "-", rep=fmt.num(o["rep"], lang) if o else "-",
+             trust=f"{trust_label(lang, tr)} ({fmt.num(tr['up'], lang)}👍 {fmt.num(tr['down'], lang)}👎)" if tr else "-", mcap=fmt.coins(core.mcap(s), lang), holders=fmt.num(s["holders"], lang),
+             rugs=fmt.num(s["rugs"], lang), n=fmt.num(sm["reporters"], lang), w=fmt.num(sm["weight"], lang), reasons=reasons,
+             notes=("\n" + t(lang, "mod.notes", notes=notes)) if notes else "")
+    rows = [[(t(lang, "mod.btn_delist"), f"mod:delist:{sid}"), (t(lang, "mod.btn_ban"), f"mod:ban:{sid}")], [(t(lang, "mod.btn_dismiss"), f"mod:dismiss:{sid}")]]
+    return Reply(text=text, kb=kb(rows))
+
+
+def dashboard_view(db, lang: str) -> Reply:
+    d = analytics.dashboard(db)
+    L = lang
+    pl, rt, ec, mk, en, mo, gr = d["players"], d["retention"], d["economy"], d["market"], d["engagement"], d["moderation"], d["groups"]
+    ex = exchange.house_stats(db)
+    pc = lambda v: fmt.pct(v, L, arrows=False) if v is not None else "—"
+    n = lambda v: fmt.num(v, L)
+    c = lambda v: fmt.coins(v, L)
+    parts = [t(L, "an.head", brand=t(L, "brand")),
+             t(L, "an.players", total=n(pl["total"]), new_today=n(pl["new_today"]), new_7d=n(pl["new_7d"]), dau=n(pl["dau"]), dau_y=n(pl["dau_yesterday"]), wau=n(pl["wau"]), mau=n(pl["mau"]),
+               stick=pc(pl["dau"] * 100.0 / pl["mau"] if pl["mau"] else None), banned=n(pl["banned"])),
+             t(L, "an.retention", d1=pc(rt["d1"]), d1n=n(rt["d1_n"]), d7=pc(rt["d7"]), d7n=n(rt["d7_n"]))]
+    if d["funnel"]:
+        parts.append(t(L, "an.funnel", rows="\n".join(f"• {t(L, 'q.' + qid)}: {pc(p)}" for qid, p in d["funnel"])))
+    parts += [t(L, "an.economy", supply=c(ec["supply"]), minted=c(ec["minted"]), burned=c(ec["burned"]), mt=c(ec["minted_today"]), bt=c(ec["burned_today"]), my=c(ec["minted_yesterday"]), by=c(ec["burned_yesterday"])),
+              t(L, "an.market", stocks=n(mk["stocks"]), mcap=c(mk["mcap"]), trades=n(mk["trades"]), bot=n(mk["bot_trades"]), volume=c(mk["volume"]), launches=n(mk["launches"]), whales=n(mk["whales"]),
+                rugs=n(mk["rugs"]), trades_y=n(mk["trades_yesterday"]), volume_y=c(mk["volume_yesterday"])),
+              t(L, "an.exchange", holders=n(ex["holders"]), mcap=c(ex["mcap"]), trades=n(ex["trades_today"]), volume=c(ex["volume_today"]), levy=c(ex["levy_today"]), div=c(ex["div_today"]),
+                minted=c(ex["minted_today"]), burned=c(ex["burned_today"]), pnl=fmt.pnl(ex["pnl"], L), levy_total=c(ex["levy_total"])),
+              t(L, "an.engagement", quests=n(en["quests"]), ach=n(en["achievements"]), votes=n(en["votes"]), reports=n(en["reports"]), qy=n(en["quests_yesterday"]), ay=n(en["achievements_yesterday"])),
+              t(L, "an.moderation", open=n(mo["open_reports"]), flagged=n(mo["flagged"]), actions=n(mo["actions_7d"])),
+              t(L, "an.groups", active=n(gr["active"]), chatting=n(gr["chatting_today"]), top=("\n" + "\n".join(f"   {i}. {esc(g['title'])} — {c(g['score'])}" for i, g in enumerate(gr["top"], 1))) if gr["top"] else "")]
+    return Reply(text="\n\n".join(parts))
+
+
+# --- share cards ---------------------------------------------------------------------------------------------
+def share_url(link: str, text: str) -> str:
+    return "https://t.me/share/url?" + urllib.parse.urlencode({"url": link, "text": text}, quote_via=urllib.parse.quote)
+
+
+def share_menu(db, lang: str, uid: int) -> Reply:
+    rows = [[(t(lang, "share.btn_p"), f"scp:{uid}"), (t(lang, "share.btn_r"), f"scr:{uid}")]]
+    mine = trading.my_stocks(db, uid)
+    if mine:
+        s = max(mine, key=lambda r: price(r) * r["supply"])
+        rows.append([(t(lang, "share.btn_s", tk="$" + s["ticker"]), f"scs:{s['id']}")])
+    return Reply(text=t(lang, "share.menu"), kb=kb(rows))
+
+
+def share_reply(db, lang: str, kind: str, uid: int, botname: str, s=None, chat_id: int | None = None) -> Reply:
+    """A picture card + caption + a Telegram 'send to friends' button. kind: p(ortfolio) / r(ank) / s(tock)."""
+    L = lang
+    ref = f"https://t.me/{botname}?start=ref_{uid}"
+    u = core.need_user(db, uid)
+    name = esc(display_name(u, False))
+    bonus = fmt.coins(C.REF_BONUS_NEW, L)
+    brand = t(L, "brand")
+    if kind == "p":
+        info = progress.level_info(db, uid)
+        png, link = cards.portfolio_card(db, L, uid, ref), ref
+        caption = t(L, "share.cap_p", name=name, brand=brand, nw=fmt.coins(info["nw"], L), bonus=bonus, link=link)
+        text = t(L, "share.txt_p", brand=brand, nw=fmt.coins(info["nw"], L))
+    elif kind == "r":
+        info = progress.level_info(db, uid)
+        rank = cards.global_rank(db, uid)
+        png, link = cards.rank_card(db, L, uid, ref, chat_id), ref
+        rtxt = f"#{fmt.num(rank, L)}" if rank else "—"
+        caption = t(L, "share.cap_r", name=name, brand=brand, rank=rtxt, nw=fmt.coins(info["nw"], L), level=fmt.num(info["level"], L), bonus=bonus, link=link)
+        text = t(L, "share.txt_r", brand=brand, rank=rtxt)
+    else:
+        link = f"https://t.me/{botname}?start=s_{s['ticker']}_r{uid}"
+        png = cards.stock_card(db, L, s, link)
+        chg = fmt.pct(core.change_pct(db, s), L)
+        caption = t(L, "share.cap_s", tk=fmt.tk(s["ticker"]), name=esc(s["name"]), price=fmt.price(price(s), L), chg=chg, bonus=bonus, link=link)
+        text = t(L, "share.txt_s", tk="$" + s["ticker"], brand=brand, price=fmt.price(price(s), L), chg=fmt.pct(core.change_pct(db, s), L, arrows=False))
+    return Reply(photo=png, text=caption, kb=kb([[(t(L, "share.send"), share_url(link, text), "url")]]))
+
+
+# --- daily salary DM ------------------------------------------------------------------------------------------
+def salary_message(db, lang: str, uid: int) -> Reply:
+    L = lang
+    sm = salary.summary(db, uid)
+    u = sm["user"]
+    change = t(L, "salary.change", chg=fmt.pct(sm["change"], L)) if sm["change"] is not None else ""
+    extra = ""
+    if sm["pending"] > 0:
+        extra += t(L, "salary.pending", x=fmt.coins(sm["pending"], L))
+    if sm["best"]:
+        extra += t(L, "salary.best", tk=fmt.tk(sm["best"][0]), chg=fmt.pct(sm["best"][1], L))
+    pv = sm["preview"]
+    pay = t(L, "salary.pay", amount=fmt.coins(pv["amount"], L), pct=fmt.num(pv["pct"], L)) if pv else t(L, "salary.pay_done")
+    text = t(L, "salary.dm", name=esc(display_name(u, False)), nw=fmt.coins(sm["nw"], L), change=change, rank=f"#{fmt.num(sm['rank'], L)}" if sm["rank"] else "—",
+             streak=fmt.num(sm["streak"], L), extra=extra, qdone=fmt.num(sm["quests_done"], L), qtotal=fmt.num(sm["quests_total"], L), pay=pay)
+    rows = []
+    if pv:
+        rows.append([(t(L, "salary.btn_claim"), f"sal:claim:{uid}")])
+    if sm["pending"] > 0:
+        rows.append([(t(L, "salary.btn_income"), f"sal:inc:{uid}")])
+    rows.append([(t(L, "salary.btn_quests"), f"qs:{uid}"), (t(L, "salary.btn_pf"), f"pf:{uid}")])
+    rows.append([(t(L, "salary.btn_off"), f"sal:off:{uid}")])
+    return Reply(text=text, kb=kb(rows))
+
+
+def salary_status(db, lang: str, uid: int) -> Reply:
+    on = bool(salary.get(db, uid)["enabled"])
+    return Reply(text=t(lang, "salary.on" if on else "salary.off"), kb=kb([[(t(lang, "salary.turn_off" if on else "salary.turn_on"), f"sal:tog:{uid}")]]))

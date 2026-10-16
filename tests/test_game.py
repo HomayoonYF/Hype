@@ -31,6 +31,15 @@ def user(db, uid, name="u", cash=None, **kw):
     return u
 
 
+def bonuses(db, uid=None):
+    """Coins paid out as quest + achievement rewards (these are minted on top of trading)."""
+    from hypemarket import achievements
+    where, args = ("WHERE user_id=?", (uid,)) if uid else ("", ())
+    q = db.q1(f"SELECT COALESCE(SUM(reward),0) FROM quests {where + (' AND' if where else 'WHERE')} done=1", args)[0]
+    a = sum(achievements.reward_of(achievements.BY_ID[r["aid"]]) for r in db.qa(f"SELECT aid FROM achievements {where}", args))
+    return q + a
+
+
 def check_invariants(db):
     """Reserve must always equal the integral of the curve; supply must equal the sum of holdings."""
     for s in db.qa("SELECT * FROM stocks WHERE status='active'"):
@@ -118,7 +127,7 @@ def test_buy_sell_roundtrip_and_fees(db):
     trading.launch(db, 1, "SPEED", "Speeed")
     adv(60)
     minted_before = core.kv_int(db, "minted")
-    rewards_before = db.q1("SELECT COALESCE(SUM(reward),0) FROM quests WHERE done=1")[0]
+    rewards_before = bonuses(db)
     r = trading.buy(db, 2, "SPEED", 50)
     check_invariants(db)
     assert r["total"] == r["cost"] + r["fee"]
@@ -129,9 +138,9 @@ def test_buy_sell_roundtrip_and_fees(db):
     check_invariants(db)
     assert sr["net"] == sr["proceeds"] - sr["fee"]
     # a round trip can only lose money (fees), never gain -- ignoring quest rewards, which are paid for being active
-    rewards = db.q1("SELECT COALESCE(SUM(reward),0) FROM quests WHERE user_id=2 AND done=1")[0]
+    rewards = bonuses(db, 2)
     assert core.get_user(db, 2)["cash"] - rewards < C.START_CASH
-    assert core.kv_int(db, "minted") == minted_before + db.q1("SELECT COALESCE(SUM(reward),0) FROM quests WHERE done=1")[0] - rewards_before
+    assert core.kv_int(db, "minted") == minted_before + bonuses(db) - rewards_before
 
 
 def test_sell_lock_and_cooldown(db):
@@ -179,8 +188,8 @@ def test_buy_max(db):
     trading.launch(db, 2, "SPEED", "Speeed")
     adv(10)
     r = trading.buy(db, 1, "SPEED", spend_all=True)
-    rewards = db.q1("SELECT COALESCE(SUM(reward),0) FROM quests WHERE user_id=1 AND done=1")[0]
-    left = core.get_user(db, 1)["cash"] - rewards      # quest rewards arrive after the purchase
+    rewards = bonuses(db, 1)
+    left = core.get_user(db, 1)["cash"] - rewards      # quest/achievement rewards arrive after the purchase
     assert left < r["price"] * 2  # cannot afford one more share
     check_invariants(db)
 
@@ -383,8 +392,20 @@ def test_bubble_and_correction(db):
     assert "bubble" in kinds or "surge" in kinds
 
 
-# ---------------------------------------------------------------------------- shorts
-def test_shorts(db):
+# ---------------------------------------------------------------------------- shorting is gone
+def test_shorting_is_gone(db):
+    """Shorting was farmed with alt accounts (dump with one, short with another), so it no longer exists anywhere."""
+    assert not hasattr(trading, "open_short") and not hasattr(trading, "close_short") and not hasattr(trading, "liquidate_shorts")
+    assert db.q1("SELECT 1 FROM sqlite_master WHERE name='shorts'") is None
+    assert "short" not in C.PERKS
+    user(db, 1)
+    db.x("UPDATE users SET max_level=5 WHERE id=1")
+    with pytest.raises(GameError):
+        progress.upgrade(db, 1, "short")
+
+
+def test_rug_pays_only_the_owner(db):
+    """A rug pull moves the drained reserve to the owner (minus tax); nobody else gets side payouts, and the curve stays exact."""
     user(db, 1)
     for i in range(2, 9):
         user(db, i, cash=C.coins(20_000))
@@ -393,68 +414,12 @@ def test_shorts(db):
     for i in range(2, 9):
         trading.buy(db, i, "AAA", 40)
         adv(3)
-    user(db, 20, cash=C.coins(10_000))
     adv(7 * 3600)
-    with pytest.raises(GameError) as e:
-        trading.open_short(db, 20, "AAA", 10)
-    assert e.value.code == "short_locked"
-    db.x("UPDATE users SET max_level=3 WHERE id=20")
-    progress.upgrade(db, 20, "short")
-    db.x("UPDATE users SET max_level=3 WHERE id=1")
-    progress.upgrade(db, 1, "short")
-    with pytest.raises(GameError) as e:
-        trading.open_short(db, 1, "AAA", 10)
-    assert e.value.code == "short_own"
-    sh = trading.open_short(db, 20, "AAA", 20)
-    with pytest.raises(GameError) as e:
-        trading.open_short(db, 20, "AAA", 20)
-    assert e.value.code == "short_exists"
-    adv(100)
-    trading.sell(db, 2, "AAA", sell_all=True)   # price falls a bit
-    res = trading.close_short(db, 20, "AAA")
-    assert res["payout"] >= 0 and res["pnl"] <= sh["margin"]
-    assert trading.list_shorts(db, 20) == []
-
-
-def test_short_liquidation(db):
-    user(db, 1)
-    for i in range(2, 9):
-        user(db, i, cash=C.coins(500_000))
-    trading.launch(db, 1, "AAA", "Aaa")
-    adv(10)
-    for i in range(2, 9):
-        trading.buy(db, i, "AAA", 60)
-        adv(3)
-    user(db, 20, cash=C.coins(10_000))
-    db.x("UPDATE users SET max_level=3 WHERE id=20")
-    progress.upgrade(db, 20, "short")
-    adv(7 * 3600)
-    trading.open_short(db, 20, "AAA", 50)
-    adv(100)
-    trading.buy(db, 2, "AAA", 5000)   # price explodes
-    n = trading.liquidate_shorts(db)
-    assert n == 1 and trading.list_shorts(db, 20) == []
-    assert any(o[1] == "short_liquidated" for o in db.outbox)
-
-
-def test_short_voided_by_rug(db):
-    user(db, 1)
-    for i in range(2, 9):
-        user(db, i, cash=C.coins(20_000))
-    trading.launch(db, 1, "AAA", "Aaa")
-    adv(10)
-    for i in range(2, 9):
-        trading.buy(db, i, "AAA", 40)
-        adv(3)
-    user(db, 20, cash=C.coins(10_000))
-    db.x("UPDATE users SET max_level=3 WHERE id=20")
-    progress.upgrade(db, 20, "short")
-    adv(7 * 3600)
-    trading.open_short(db, 20, "AAA", 20)
-    cash_after_open = core.get_user(db, 20)["cash"]
-    trading.rug(db, 1, pct=50)
-    assert trading.list_shorts(db, 20) == []
-    assert core.get_user(db, 20)["cash"] > cash_after_open   # margin refunded, no windfall beyond it
+    before = {i: core.get_user(db, i)["cash"] for i in range(1, 9)}
+    r = trading.rug(db, 1, pct=50)
+    check_invariants(db)
+    assert core.get_user(db, 1)["cash"] == before[1] + r["taken"]
+    assert all(core.get_user(db, i)["cash"] == before[i] for i in range(2, 9))
 
 
 # ---------------------------------------------------------------------------- alerts
@@ -551,7 +516,8 @@ def test_rebirth(db):
     r = progress.rebirth(db, 1)
     assert r["gain"] >= 3 and r["count"] == 1
     u = core.get_user(db, 1)
-    assert u["cash"] == C.START_CASH and u["max_level"] == 0 and u["legacy_pts"] == r["gain"]
+    assert u["cash"] == C.START_CASH + C.ACH_REWARD["gold"]      # fresh start cash + the "Rebirth" achievement reward
+    assert u["max_level"] == 0 and u["legacy_pts"] == r["gain"]
     assert core.stock_row(db, 1)["status"] == "delisted"
     assert core.get_user(db, 2)["cash"] > C.coins(1000) - C.coins(1000) // 2   # holder was paid out
     check_invariants(db)

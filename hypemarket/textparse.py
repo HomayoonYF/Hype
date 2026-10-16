@@ -46,6 +46,7 @@ class Parsed:
     cmd: str
     args: list          # original (un-normalized) argument words
     prefixed: bool      # started with / ! or .
+    words: int = 1      # how many words the command itself used ("ویرایش سهام" = 2)
 
 
 _PREFIX = re.compile(r"^[/!.]+")
@@ -72,7 +73,7 @@ def parse(text: str, botname: str | None = None) -> Parsed | None:
     for n in range(min(LONGEST, len(toks)), 0, -1):
         cmd = TABLE.get(tuple(keys[:n]))
         if cmd:
-            return Parsed(cmd, toks[n:], prefixed)
+            return Parsed(cmd, toks[n:], prefixed, n)
     return None
 
 

@@ -58,15 +58,42 @@ RUG_REP_PENALTY = 40
 RUG_TAX_BPS = 1000
 RUG_COOLDOWN = 24 * 3600
 
-# --- shorting --------------------------------------------------------------
-SHORT_MARGIN_BPS = 5000
-SHORT_OPEN_FEE_BPS = 100
-SHORT_BORROW_BPS_HOUR = 5
-SHORT_MIN_AGE = 6 * 3600
-SHORT_MIN_SUPPLY = 50
-SHORT_MIN_HOLDERS = 5
-SHORT_MAX_OPEN = 3
-SHORT_LIQUIDATION_BPS = 9000        # liquidated when 90% of the margin is lost
+# --- exchange: house-priced listed companies --------------------------------------------
+# The house is the only counterparty: nobody's trades move these prices, so alt-account pump & dump is impossible.
+# Safety rule enforced by tests (tests/test_exchange.py attacks it with simulated farmers):
+#     2 x EX_YCAP + EX_EARN_BETA x EX_ZCLIP  <  2 x LISTED_SPREAD_BPS x (1 - LISTED_HOLDER_SHARE_BPS)
+# i.e. the most that anybody can predict or steer (a perfectly timed swing of the activity "heat" from its lowest to its
+# highest point, plus the activity part of one earnings night) is smaller than the cheapest possible round trip, even for
+# a lone holder who gets the maximum share of his own levies back. So no strategy beats the levy.
+LISTED_SPREAD_BPS = 150             # fixed levy on every buy and sell (perks and fee-free hours don't touch it)
+LISTED_SLIP_COEF_BPS = 100          # extra levy: this many bps per 1.0 of (recent market-wide flow / depth)...
+LISTED_SLIP_MAX_BPS = 300           # ...but never more than this
+LISTED_DEPTH = coins(20_000)        # how much flow the market absorbs before slippage reaches LISTED_SLIP_COEF_BPS
+LISTED_FLOW_HALF_LIFE = 600         # seconds; recent flow fades by half every 10 minutes
+LISTED_HOLDER_SHARE_BPS = 3000      # at most this share of every levy is paid to the other holders as a dividend; the rest is burned
+EX_TICK = 60                        # seconds between two price steps
+EX_NOISE = 0.0011                   # hidden random move per step (the bulk of every move; unpredictable by design)
+EX_MAX_STEP = 0.006                 # no single step moves a price by more than 0.6%
+EX_BETA = 0.00025                   # activity "heat" pushed into the price per unit of surprise (z) per step
+EX_ZCLIP = 3.0                      # activity surprises are clipped to +-3 sigma
+EX_Y_HALF_LIFE = 240                # steps; the activity heat fades away by half in 4 hours
+EX_YCAP = 0.008                     # the heat never moves a price by more than +-0.8% (a swing from the lowest to the highest point is at most 1.6%)
+EX_ALPHA_LEVEL = 0.01               # how fast the "normal activity" estimate adapts (per step)
+EX_ALPHA_VAR = 0.01
+EX_ALPHA_BIAS = 0.02                # learns the average surprise of each half hour of the day and cancels it
+EX_FLOOR_FRAC = 0.25                # the surprise scale is never smaller than 25% of normal activity...
+EX_FLOOR_ABS = 0.7                  # ...plus this many events per step (so small communities can't be steered by one account)
+EX_WARMUP = 30                      # steps of learning before activity may touch the price
+EX_EARN_SD = 0.025                  # weekly earnings-night surprise (random, zero-mean)
+EX_EARN_BETA = 0.001                # tiny activity part of the earnings jump (at most 3 x this = 0.3%)
+EX_EARN_MAX = 0.07
+EX_EARN_WEEKDAY = 3                 # Thursday (Monday=0)
+EX_EARN_HOUR = 17                   # UTC (20:30 Tehran)
+EX_PRICE_FLOOR = 0.10               # a price never leaves [10%, 10x] of its listing price
+EX_PRICE_CEIL = 10.0
+EX_NEWS_1H = 0.018                  # a company headline when a price moves this much in an hour...
+EX_NEWS_6H = 0.032                  # ...or this much in six hours (after the fact, never before)
+EX_NEWS_COOLDOWN = 5 * 3600
 
 # --- companies -------------------------------------------------------------
 COMPANY_COST = coins(5000)
@@ -78,6 +105,7 @@ COMPANY_SYNERGY_PER_MEMBER = 2      # +2% daily bonus per extra member (cap 20%)
 # --- projects --------------------------------------------------------------
 PROJECT_MIN_GOAL = coins(5000)
 PROJECT_MAX_GOAL = coins(1_000_000)
+DEFAULT_PROJECT_GOAL = coins(10_000)   # used when the player doesn't type a goal
 PROJECT_REWARD_BPS = 500            # minted to the owner when the goal is reached
 PROJECT_DIVIDEND_BPS = 200          # minted as a special dividend to the investors
 
@@ -103,6 +131,25 @@ BOT_MIN_SUPPLY = 30
 BOT_MIN_REAL_HOLDERS = 2            # and with at least two real (non-bot) holders
 BOT_MAX_POSITION = coins(1500)      # value cap of one trader's position in one stock
 BOT_MAX_SUPPLY_PCT = 20             # a trader never holds more than 20% of a stock
+
+# --- scam reports & trust ------------------------------------------------------------
+REPORT_MIN_TRADES = 3               # only players with at least 3 trades can report or vote (blocks brand-new throw-away accounts)
+REPORT_DAILY_LIMIT = 5
+VOTE_DAILY_LIMIT = 20
+REPORT_FLAG_WEIGHT = 3              # open report weight at which a stock shows a public 🚩 warning
+REPORT_ALERT_LEVELS = (3, 6, 10)    # report weights at which the admins get a moderation message
+TRUST_MIN_VOTERS = 3                # a trust label needs at least this many different voters
+TRUST_GOOD = 3
+TRUST_BAD = -3
+
+# --- achievements --------------------------------------------------------------------
+ACH_REWARD = {"bronze": coins(100), "silver": coins(300), "gold": coins(800), "legend": coins(2000)}
+
+# --- daily salary DM -------------------------------------------------------------------
+SALARY_WINDOW_HOURS = 6             # DMs only go out in the first 6 hours after SALARY_HOUR_UTC ("good morning" stays true)
+SALARY_BATCH = 150                  # players per 5-minute round (about 20 messages per second)
+SALARY_SEEN_DAYS = 14               # only players seen in the last 14 days
+SALARY_MAX_IGNORED = 3              # stop after 3 unclaimed salaries in a row
 
 # --- misc ------------------------------------------------------------------
 HISTORY_KEEP_DAYS = 7
@@ -143,7 +190,6 @@ PERKS = {p.key: p for p in [
     Perk("daily", "skill", 10, 1),     # +15% daily bonus per level
     Perk("bonus", "skill", 5, 1),      # +50% holder bonus per level
     Perk("alerts", "skill", 3, 1),     # unlocks price alerts, 3 alerts per level
-    Perk("short", "skill", 1, 3),      # unlocks short selling
     Perk("head", "legacy", 10, 1),     # +20% start cash per level
     Perk("owner", "legacy", 5, 1),     # +10% owner share of trading fees per level
     Perk("boost", "legacy", 5, 1),     # +10% price boost for 1h on every launch per level
@@ -176,8 +222,12 @@ class Settings:
     log_level: str
     proxy: str = ""            # e.g. socks5://127.0.0.1:1080 or http://host:port (needed where Telegram is blocked)
     backup_dir: str = "backups"  # empty string disables automatic backups
-    backup_keep: int = 14
+    backup_keep: int = 48
     bots: bool = True          # automated market traders
+    backup_every_min: int = 60   # how often the database is sent to the admins
+    report_hour: int = 5         # UTC hour of the daily analytics report to the admins
+    salary: bool = True          # the daily salary DM
+    salary_hour: int = 5         # UTC hour from which the salary DMs go out (05:00 UTC = 08:30 Tehran)
 
 
 def _load_dotenv(path: Path) -> None:
@@ -209,6 +259,10 @@ def load_settings() -> Settings:
         log_level=os.environ.get("LOG_LEVEL", "INFO").upper(),
         proxy=os.environ.get("PROXY_URL", "").strip(),
         backup_dir=os.environ.get("BACKUP_DIR", "backups").strip(),
-        backup_keep=max(1, int(os.environ.get("BACKUP_KEEP", "14") or 14)),
+        backup_keep=max(1, int(os.environ.get("BACKUP_KEEP", "48") or 48)),
+        backup_every_min=max(5, int(os.environ.get("BACKUP_EVERY_MIN", "60") or 60)),
+        report_hour=int(os.environ.get("REPORT_HOUR_UTC", "5") or 5) % 24,
+        salary=_flag("SALARY_DM", "1"),
+        salary_hour=int(os.environ.get("SALARY_HOUR_UTC", "5") or 5) % 24,
         bots=_flag("MARKET_BOTS", "1"),
     )

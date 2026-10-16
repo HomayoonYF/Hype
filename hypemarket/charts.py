@@ -199,9 +199,12 @@ def render(s, d: dict) -> bytes:
 
     cells = [                                 # statistics strip
         ("MARKET CAP", _money(core.mcap(s))), ("SHARES", f"{s['supply']:,}"), ("HOLDERS", f"{s['holders']:,}"),
-        ("1H", _pct(d["h1"])), ("24H", _pct(d["d1"])), ("7D", _pct(d["d7"])), ("DIVIDEND", f"{s['div_pct']}%"),
-        ("HYPE", f"{s['hype']:.0f}"), ("RUG PULLS", str(s["rugs"])), ("FEES EARNED", _money(s["fees_earned"])),
+        ("1H", _pct(d["h1"])), ("24H", _pct(d["d1"])), ("7D", _pct(d["d7"])),
     ]
+    if s["kind"] == "listed":                 # house-priced company: nothing a player does moves it
+        cells += [("SPREAD", f"{C.LISTED_SPREAD_BPS / 100:.2f}%"), ("PRICED BY", "THE HOUSE"), ("EARNINGS", "WEEKLY"), ("TRADES MOVE IT", "NO")]
+    else:
+        cells += [("DIVIDEND", f"{s['div_pct']}%"), ("HYPE", f"{s['hype']:.0f}"), ("RUG PULLS", str(s["rugs"])), ("FEES EARNED", _money(s["fees_earned"]))]
     cw = (W - 56) / 5
     for idx, (k, v) in enumerate(cells):
         cx, cy = 28 + (idx % 5) * cw, 628 + (idx // 5) * 44
@@ -210,7 +213,52 @@ def render(s, d: dict) -> bytes:
         g.text((cx + 10, cy + 18), v, fill=UP if v.startswith("+") else DOWN if v.startswith("-") else FG, font=f_m)
     g.text((W - 28 - g.textlength("Hype Market", font=f_s), H - 24), "Hype Market", fill=MUTED, font=f_s)
     out = io.BytesIO()
-    img.save(out, "PNG", optimize=True)
+    img.save(out, "PNG", compress_level=6)
+    return out.getvalue()
+
+
+def earnings_chart(report: dict) -> bytes:
+    """The picture posted to the groups on earnings night: one bar per company (the week's change) and a marker for the
+    night's own jump. Latin text only; the Persian report travels in the caption."""
+    from . import exchange                                  # (late import: exchange imports core, charts is imported by jobs only)
+    rows = list(report.get("rows") or [])
+    W = 1100
+    top, rh = 150, 78
+    H = top + max(1, len(rows)) * rh + 72
+    img = Image.new("RGB", (W, H), BG)
+    g = ImageDraw.Draw(img)
+    f_xl, f_l, f_m, f_s = _font(40), _font(26), _font(19), _font(15)
+    g.text((28, 16), "ROFAQA EXCHANGE", fill=FG, font=f_xl)
+    g.text((30, 66), f"EARNINGS NIGHT  |  WEEK {int(report.get('week', 0)) % 100}", fill=AMBER, font=f_l)
+    g.text((30, 106), "bar = change over the week   |   diamond = tonight's earnings jump", fill=MUTED, font=f_s)
+    L, R = 330, W - 190
+    mid = (L + R) / 2
+    scale = max([5.0] + [abs(float(r.get("wk_pct", 0))) for r in rows] + [abs(float(r.get("jump", 0))) for r in rows])
+    scale = min(40.0, scale * 1.15)
+    px = lambda v: mid + max(-1.0, min(1.0, v / scale)) * (R - L) / 2
+    g.rounded_rectangle([20, top - 14, W - 20, top + max(1, len(rows)) * rh + 6], 12, fill=PANEL)
+    for k in (-1, -0.5, 0, 0.5, 1):
+        x = mid + k * (R - L) / 2
+        g.line([(x, top - 8), (x, top + len(rows) * rh)], fill=GRID, width=2 if k == 0 else 1)
+        lbl = f"{k * scale:+.0f}%" if k else "0"
+        g.text((x - g.textlength(lbl, font=f_s) / 2, top + len(rows) * rh + 8), lbl, fill=MUTED, font=f_s)
+    for i, r in enumerate(rows):
+        co = exchange.BY_KEY.get(r.get("key", ""))
+        y = top + i * rh
+        wk, jump = float(r.get("wk_pct", 0)), float(r.get("jump", 0))
+        col = UP if wk >= 0 else DOWN
+        g.text((40, y + 6), f"${r.get('ticker', '?')}", fill=FG, font=f_l)
+        g.text((42, y + 40), co.en_name if co else "", fill=MUTED, font=f_s)
+        x1, x2 = sorted((mid, px(wk)))
+        g.rounded_rectangle([x1, y + 12, max(x2, x1 + 3), y + 44], 5, fill=col)
+        jx, jy = px(jump), y + 58
+        jc = UP if jump >= 0 else DOWN
+        g.polygon([(jx, jy - 9), (jx + 9, jy), (jx, jy + 9), (jx - 9, jy)], fill=jc, outline=FG)
+        g.text((R + 18, y + 6), _pct(wk), fill=col, font=f_l)
+        g.text((R + 18, y + 40), _money(r.get("price", 0)) + " coins", fill=MUTED, font=f_s)
+    g.text((W - 28 - g.textlength("Hype Market", font=f_s), H - 24), "Hype Market", fill=MUTED, font=f_s)
+    out = io.BytesIO()
+    img.save(out, "PNG", compress_level=6)
     return out.getvalue()
 
 

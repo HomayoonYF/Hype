@@ -12,7 +12,7 @@ from __future__ import annotations
 import random
 
 from . import config as C
-from . import core, engine as E, trading
+from . import core, engine as E, trading, trust
 from .core import GameError
 from .db import Database
 
@@ -47,6 +47,12 @@ def eligible_stocks(db: Database) -> list:
     ):
         if s["last_rug"] and t - s["last_rug"] < C.RUG_COOLDOWN:
             continue
+        if trust.flagged(db, s["id"]):                           # reported as a scam by players
+            continue
+        if s["owner_id"]:
+            owner = core.get_user(db, s["owner_id"])
+            if owner and (owner["banned"] or trust.score(db, s["owner_id"])["label"] == "flagged"):
+                continue
         real = db.q1(
             "SELECT COUNT(*) c FROM holdings h JOIN users u ON u.id=h.user_id WHERE h.stock_id=? AND u.bot=0 AND h.user_id!=?",
             (s["id"], s["owner_id"] or 0),

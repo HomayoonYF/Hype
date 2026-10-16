@@ -10,8 +10,8 @@ from __future__ import annotations
 import random
 from dataclasses import dataclass
 
-from . import config as C
-from .core import mint, now
+from . import achievements, config as C
+from .core import counter, mint, now
 from .db import Database
 
 MIN_TRADE = C.coins(20)
@@ -130,6 +130,8 @@ def _complete(db: Database, row, uid: int) -> None:
     db.x("UPDATE users SET cash=cash+?, bonus_points=bonus_points+? WHERE id=?", (row["reward"], row["points"], uid))
     mint(db, row["reward"])
     db.quest_events.append((uid, row["qid"], row["reward"], row["points"]))
+    counter(db, "quests")
+    achievements.check(db, uid, "quest")
 
 
 def _set(db: Database, row, uid: int, progress: int) -> None:

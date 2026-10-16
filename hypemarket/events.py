@@ -18,7 +18,7 @@ def _eligible(db: Database, min_supply: int = 5) -> list:
 def _global(db: Database, kind: str, bps: int, minutes: int, kinds: tuple | None = None) -> int:
     until = now() + minutes * 60
     n = 0
-    for s in db.qa("SELECT * FROM stocks WHERE status='active' AND event_until=0 AND supply>0"):
+    for s in db.qa("SELECT * FROM stocks WHERE status='active' AND event_until=0 AND supply>0 AND kind!='listed'"):
         if kinds and s["kind"] not in kinds:
             continue
         set_event(db, s["id"], bps, until, kind)
@@ -54,7 +54,7 @@ def fire_event(db: Database, kind: str | None = None) -> str | None:
                 return None
             add_news(db, "boom", None, pct=pct, minutes=minutes)
         elif kind == "special":
-            rows = [r for r in db.qa("SELECT * FROM stocks WHERE status='active' AND supply>=5 AND kind!='index'")]
+            rows = [r for r in db.qa("SELECT * FROM stocks WHERE status='active' AND supply>=5 AND kind NOT IN ('index','listed')")]
             if not rows:
                 return None
             s = random.choice(rows)
@@ -113,6 +113,8 @@ def tick(db: Database, random_events: bool = True) -> dict:
 
 
 def prune(db: Database) -> None:
+    from . import analytics
+    analytics.prune(db)
     cut = now() - C.HISTORY_KEEP_DAYS * 86400
     db.x("DELETE FROM history WHERE ts<?", (cut,))
     db.x("DELETE FROM news WHERE ts<?", (cut,))

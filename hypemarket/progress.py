@@ -4,11 +4,11 @@ from __future__ import annotations
 from . import config as C
 from . import engine as E
 from .core import (
-    GameError, add_news, burn, check_level, get_user, holdings_rows, kv_int, kv_set, mint, need_user, net_worth, notify, now,
+    GameError, add_news, burn, check_level, counter, get_user, holdings_rows, kv_int, kv_set, mint, need_user, net_worth, notify, now,
     perk, touch_nw,
 )
 from .db import Database
-from . import quests, trading
+from . import achievements, quests, trading
 
 
 # --- daily ---------------------------------------------------------------------
@@ -19,6 +19,26 @@ def company_synergy_pct(db: Database, u) -> int:
     return min(20, max(0, n - 1) * C.COMPANY_SYNERGY_PER_MEMBER)
 
 
+def _daily_quote(db: Database, u, t: int) -> tuple[int, int, int]:
+    """(streak after claiming, bonus percent, amount) for a player who claims at time t."""
+    streak = u["streak"] + 1 if u["last_daily"] and t - u["last_daily"] < C.DAILY_RESET else 1
+    base = C.DAILY_BASE + C.DAILY_STEP * min(streak, C.DAILY_STREAK_CAP)
+    pct = 100 + 15 * perk(db, u["id"], "daily") + 5 * u["rebirths"] + company_synergy_pct(db, u)
+    if u["pass_season"] and u["pass_season"] == season_id(db):
+        pct += 25
+    return streak, pct, base * pct // 100
+
+
+def daily_preview(db: Database, uid: int) -> dict | None:
+    """What claiming now would pay, or None while the bonus is still cooling down."""
+    u = need_user(db, uid)
+    t = now()
+    if u["last_daily"] and C.DAILY_COOLDOWN - (t - u["last_daily"]) > 0:
+        return None
+    streak, pct, amount = _daily_quote(db, u, t)
+    return {"amount": amount, "streak": streak, "pct": pct}
+
+
 def daily(db: Database, uid: int) -> dict:
     with db.tx():
         u = need_user(db, uid)
@@ -26,15 +46,13 @@ def daily(db: Database, uid: int) -> dict:
         wait = C.DAILY_COOLDOWN - (t - u["last_daily"])
         if u["last_daily"] and wait > 0:
             raise GameError("daily_wait", secs=wait)
-        streak = u["streak"] + 1 if u["last_daily"] and t - u["last_daily"] < C.DAILY_RESET else 1
-        base = C.DAILY_BASE + C.DAILY_STEP * min(streak, C.DAILY_STREAK_CAP)
-        pct = 100 + 15 * perk(db, uid, "daily") + 5 * u["rebirths"] + company_synergy_pct(db, u)
-        if u["pass_season"] and u["pass_season"] == season_id(db):
-            pct += 25
-        amount = base * pct // 100
+        streak, pct, amount = _daily_quote(db, u, t)
         db.x("UPDATE users SET cash=cash+?, last_daily=?, streak=? WHERE id=?", (amount, t, streak, uid))
         mint(db, amount)
+        db.x("UPDATE salary SET ignored=0 WHERE user_id=?", (uid,))      # a claim means the salary DMs are welcome
         quests.track(db, uid, "daily")
+        counter(db, "dailies")
+        achievements.check(db, uid, "daily")
         if streak % 7 == 0:
             db.x("UPDATE users SET rep=MIN(?, rep+1) WHERE id=?", (C.REP_MAX, uid))
         nw, lvl = check_level(db, uid)
@@ -129,10 +147,7 @@ def rebirth(db: Database, uid: int) -> dict:
         # 2. retire everything the player owns (holders are paid pro-rata from the reserve)
         for s in trading.my_stocks(db, uid):
             trading.delist(db, s["id"])
-        # 3. close shorts and alerts
-        for sh in db.qa("SELECT * FROM shorts WHERE user_id=?", (uid,)):
-            s = db.q1("SELECT * FROM stocks WHERE id=?", (sh["stock_id"],))
-            trading._settle_short(db, sh, trading._short_pnl(s, sh))
+        # 3. drop price alerts
         db.x("DELETE FROM alerts WHERE user_id=?", (uid,))
         # 4. liquidate every holding at market, no fee
         for r in holdings_rows(db, uid):
@@ -152,6 +167,7 @@ def rebirth(db: Database, uid: int) -> dict:
         db.x("UPDATE users SET cash=?, season_base=? WHERE id=?", (cash, cash, uid))
         mint(db, cash)
         touch_nw(db, uid)
+        achievements.check(db, uid, "rebirth")
         add_news(db, "rebirth", None, name=u["name"], n=u["rebirths"] + 1)
         return {"gain": gain, "count": u["rebirths"] + 1, "cash": cash}
 
@@ -190,8 +206,6 @@ def refresh_all_networth(db: Database) -> int:
             "JOIN stocks s ON s.id=h.stock_id WHERE s.status='active'"
         ):
             nw[r["uid"]] += E.quote_sell(r["supply"], r["shares"], r["p0"], r["k"], r["base_bps"] * r["event_bps"] // C.BPS)
-        for r in db.qa("SELECT user_id, SUM(margin) m FROM shorts GROUP BY user_id"):
-            nw[r["user_id"]] += r["m"]
         db.conn.executemany("UPDATE users SET nw=? WHERE id=?", [(v, k) for k, v in nw.items()])
         for r in db.qa("SELECT id, max_level, bot FROM users"):
             lvl = E.level_for(nw[r["id"]])
@@ -220,6 +234,7 @@ def end_season_if_due(db: Database) -> dict | None:
             db.x("UPDATE users SET cash=cash+?, legacy_pts=legacy_pts+?, legacy_total=legacy_total+? WHERE id=?", (reward, lp, lp, row["id"]))
             mint(db, reward)
             notify(db, row["id"], "season_prize", coins=reward, lp=lp, rank=len(winners) + 1)
+            achievements.check(db, row["id"], "season")
             winners.append({"id": row["id"], "name": row["name"], "gain": row["gain"]})
         db.x("UPDATE users SET season_base=nw")
         sid = season_id(db)

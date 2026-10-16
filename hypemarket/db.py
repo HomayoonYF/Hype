@@ -57,10 +57,6 @@ CREATE TABLE IF NOT EXISTS groups(
 CREATE TABLE IF NOT EXISTS group_members(group_id INTEGER NOT NULL, user_id INTEGER NOT NULL, last_seen INTEGER NOT NULL, PRIMARY KEY(group_id, user_id));
 CREATE INDEX IF NOT EXISTS ix_gm_user ON group_members(user_id);
 CREATE TABLE IF NOT EXISTS activity(user_id INTEGER NOT NULL, chat_id INTEGER NOT NULL, day INTEGER NOT NULL, count INTEGER NOT NULL, PRIMARY KEY(user_id, chat_id, day));
-CREATE TABLE IF NOT EXISTS shorts(
-  id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, stock_id INTEGER NOT NULL, shares INTEGER NOT NULL,
-  entry INTEGER NOT NULL, margin INTEGER NOT NULL, opened INTEGER NOT NULL, UNIQUE(user_id, stock_id)
-);
 CREATE TABLE IF NOT EXISTS alerts(id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, stock_id INTEGER NOT NULL, price INTEGER NOT NULL, direction TEXT NOT NULL, created INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS companies(
   id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE NOT NULL, owner_id INTEGER NOT NULL, stock_id INTEGER,
@@ -68,6 +64,25 @@ CREATE TABLE IF NOT EXISTS companies(
 );
 CREATE TABLE IF NOT EXISTS purchases(charge_id TEXT PRIMARY KEY, user_id INTEGER NOT NULL, item TEXT NOT NULL, stars INTEGER NOT NULL, ts INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS kv(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS reports(
+  id INTEGER PRIMARY KEY AUTOINCREMENT, stock_id INTEGER NOT NULL, owner_id INTEGER, reporter INTEGER NOT NULL,
+  reason TEXT NOT NULL, note TEXT NOT NULL DEFAULT '', weight INTEGER NOT NULL DEFAULT 1, ts INTEGER NOT NULL,
+  status TEXT NOT NULL DEFAULT 'open', UNIQUE(stock_id, reporter)
+);
+CREATE INDEX IF NOT EXISTS ix_reports_stock ON reports(stock_id, status);
+CREATE TABLE IF NOT EXISTS trust(
+  target INTEGER NOT NULL, voter INTEGER NOT NULL, value INTEGER NOT NULL, weight INTEGER NOT NULL DEFAULT 1, ts INTEGER NOT NULL,
+  PRIMARY KEY(target, voter)
+);
+CREATE INDEX IF NOT EXISTS ix_trust_target ON trust(target);
+CREATE TABLE IF NOT EXISTS achievements(user_id INTEGER NOT NULL, aid TEXT NOT NULL, ts INTEGER NOT NULL, PRIMARY KEY(user_id, aid));
+CREATE TABLE IF NOT EXISTS seen(day INTEGER NOT NULL, user_id INTEGER NOT NULL, PRIMARY KEY(day, user_id));
+CREATE TABLE IF NOT EXISTS modlog(id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, admin INTEGER NOT NULL, action TEXT NOT NULL, target TEXT NOT NULL, note TEXT NOT NULL DEFAULT '');
+CREATE TABLE IF NOT EXISTS salary(
+  user_id INTEGER PRIMARY KEY, enabled INTEGER NOT NULL DEFAULT 1, last_sent_day INTEGER NOT NULL DEFAULT 0,
+  ignored INTEGER NOT NULL DEFAULT 0, last_nw INTEGER NOT NULL DEFAULT 0, blocked INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS exflow(stock_id INTEGER PRIMARY KEY, flow REAL NOT NULL DEFAULT 0, ts INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS quests(
   user_id INTEGER NOT NULL, qid TEXT NOT NULL, period INTEGER NOT NULL, progress INTEGER NOT NULL DEFAULT 0, target INTEGER NOT NULL,
   reward INTEGER NOT NULL, points INTEGER NOT NULL DEFAULT 0, done INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(user_id, qid, period)
@@ -75,14 +90,35 @@ CREATE TABLE IF NOT EXISTS quests(
 """
 
 
-SCHEMA_VERSION = 2
-# version -> SQL upgrading a database FROM version-1. (New tables need no entry: SCHEMA creates them with IF NOT EXISTS.)
+def _migrate_5(conn) -> None:
+    """v0.13: short selling was removed. Refund every open margin to its owner's cash, give back the 3 skill points the
+    'short' skill cost, delete the skill and drop the table. Affected players are told once (kv keys mig5:<id>)."""
+    has = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='shorts'").fetchone() is not None
+    if has:
+        for r in conn.execute("SELECT user_id, SUM(margin) m FROM shorts GROUP BY user_id").fetchall():
+            conn.execute("UPDATE users SET cash=cash+? WHERE id=?", (r[1], r[0]))
+            conn.execute("INSERT OR REPLACE INTO kv(key,value) VALUES(?,?)", (f"mig5:{r[0]}", f"{r[1]},0"))
+    for r in conn.execute("SELECT user_id FROM perks WHERE perk='short'").fetchall():
+        conn.execute("UPDATE users SET spent_points=MAX(0, spent_points-3) WHERE id=?", (r[0],))
+        old = conn.execute("SELECT value FROM kv WHERE key=?", (f"mig5:{r[0]}",)).fetchone()
+        refund = int(str(old[0]).split(",")[0]) if old else 0
+        conn.execute("INSERT OR REPLACE INTO kv(key,value) VALUES(?,?)", (f"mig5:{r[0]}", f"{refund},3"))
+    conn.execute("DELETE FROM perks WHERE perk='short'")
+    conn.execute("DROP TABLE IF EXISTS shorts")
+
+
+SCHEMA_VERSION = 5
+# version -> SQL (or a function taking the connection) upgrading a database FROM version-1.
+# New tables need no entry: SCHEMA creates them with IF NOT EXISTS.
 MIGRATIONS: dict = {
     2: """
     ALTER TABLE users ADD COLUMN whale_dm INTEGER NOT NULL DEFAULT 1;
     ALTER TABLE users ADD COLUMN bot INTEGER NOT NULL DEFAULT 0;
     ALTER TABLE users ADD COLUMN bonus_points INTEGER NOT NULL DEFAULT 0;
     """,
+    3: "SELECT 1;",   # v3 only added new tables (reports, trust, achievements, seen, modlog), which SCHEMA creates
+    4: "SELECT 1;",   # v4 only added the salary table, which SCHEMA creates
+    5: _migrate_5,    # v5: short selling removed; the exchange tables are created by SCHEMA
 }
 
 
@@ -97,6 +133,8 @@ class Database:
         self._open_schema()
         self.outbox: list = []   # (user_id, key, kwargs) direct messages queued by game actions
         self.quest_events: list = []   # (user_id, quest_id, reward_units, points) completed quests waiting to be announced
+        self.ach_events: list = []     # (user_id, achievement_id, reward_units, points) unlocked achievements waiting to be announced
+        self.mod_events: list = []     # ("report", stock_id) moderation alerts waiting to be sent to the admins
 
     def _open_schema(self) -> None:
         """Create tables on a new database, or upgrade an older one in place (data is kept)."""
@@ -110,7 +148,17 @@ class Database:
             return
         cur = ver or 1                           # databases from before versioning are schema 1
         for v in range(cur + 1, SCHEMA_VERSION + 1):
-            self.conn.executescript(MIGRATIONS[v])
+            step = MIGRATIONS[v]
+            if callable(step):                   # a Python migration runs inside one transaction: all or nothing
+                self.conn.execute("BEGIN IMMEDIATE")
+                try:
+                    step(self.conn)
+                    self.conn.execute("COMMIT")
+                except BaseException:
+                    self.conn.execute("ROLLBACK")
+                    raise
+            else:
+                self.conn.executescript(step)
             self.conn.execute(f"PRAGMA user_version={v}")
         if ver == 0 and cur == SCHEMA_VERSION:
             self.conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
@@ -146,7 +194,7 @@ class Database:
             return
         self.conn.execute("BEGIN IMMEDIATE")
         self._depth = 1
-        mark, mark_q = len(self.outbox), len(self.quest_events)
+        mark, mark_q, mark_a, mark_m = len(self.outbox), len(self.quest_events), len(self.ach_events), len(self.mod_events)
         try:
             yield self
             self.conn.execute("COMMIT")
@@ -154,6 +202,8 @@ class Database:
             self.conn.execute("ROLLBACK")
             del self.outbox[mark:]
             del self.quest_events[mark_q:]
+            del self.ach_events[mark_a:]
+            del self.mod_events[mark_m:]
             raise
         finally:
             self._depth = 0
