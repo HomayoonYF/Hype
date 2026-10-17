@@ -60,11 +60,11 @@ FA_EX: dict[str, str] = {
     "ex.news_up": "{emoji} {tk} حدود {pct} بالا رفت. {ceo}: «{quote}»",
     "ex.news_down": "{emoji} {tk} حدود {pct} افت کرد. {ceo}: «{quote}»",
     "ex.news_earn": "📑 گزارش مالی {tk}: {wk} این هفته. {ceo}: «{quote}»",
-    "news.ex_open": "🏛 بورس رفقا باز شد! شش شرکت بورسی (CHAT، RBNK، MEME، LEVI، STRK، TRST) آماده‌ی معامله‌ان؛ قیمتشون رو هیچ بازیکنی تکون نمی‌ده. <code>بورس</code>",
+    "news.ex_open": "🏛 بورس رفقا باز شد! شش شرکت بورسی (CHAT، RBNK، MEME، LEVI، STRK، TRST) آماده‌ی معامله‌ان؛ قیمتشون رو هیچ بازیکنی تکون نمی‌ده. <code>سهام بورس</code>",
     "board.ex": "🏛 بورس:",
     "an.exchange": "🏛 <b>بورس</b>: {holders} سهامدار • ارزش کل {mcap}\n   امروز: {trades} معامله • حجم {volume} • کارمزد و لغزش {levy} (سهم سهامدارها {div})\n   خانه امروز: {minted} ضرب‌شده (قیمت‌ها بالا رفتن) / {burned} سوخته (قیمت‌ها افتادن)\n   سود خانه از ابتدا: {pnl} • کارمزد کل: {levy_total}",
-    "n.short_removed": "ℹ️ شورت از بازی حذف شد. وثیقه‌ی برگشتی به حسابت: {amount} • امتیاز مهارت برگشتی: {points}. به‌جاش بورس رفقا اومده؛ ببین: <code>بورس</code>",
-    "help.ex": "🏛 <b>بورس</b>: شش شرکت بورسی (<code>بورس</code>) که قیمتشون با «واقعیت‌های بازی» و شانس حرکت می‌کنه، نه با خرید و فروش بازیکن‌ها. هیچ‌کس نمی‌تونه پامپ و دامپشون کنه و محدودیتی روی معامله نیست؛ فقط یه کارمزد ثابت + لغزش می‌دی که بخشیش بین سهامدارها تقسیم می‌شه. هر هفته یه شب گزارش مالی هست (<code>گزارش مالی</code>).",
+    "n.short_removed": "ℹ️ شورت از بازی حذف شد. وثیقه‌ی برگشتی به حسابت: {amount} • امتیاز مهارت برگشتی: {points}. به‌جاش بورس رفقا اومده؛ ببین: <code>سهام بورس</code>",
+    "help.ex": "🏛 <b>بورس</b>: شش شرکت بورسی (<code>سهام بورس</code>) که قیمتشون با «واقعیت‌های بازی» و شانس حرکت می‌کنه، نه با خرید و فروش بازیکن‌ها. هیچ‌کس نمی‌تونه پامپ و دامپشون کنه و محدودیتی روی معامله نیست؛ فقط یه کارمزد ثابت + لغزش می‌دی که بخشیش بین سهامدارها تقسیم می‌شه. هر هفته یه شب گزارش مالی هست (<code>سهام گزارش مالی</code>).",
 }
 
 EN_EX: dict[str, str] = {
@@ -122,9 +122,9 @@ EN_EX: dict[str, str] = {
     "ex.news_up": "{emoji} {tk} rose about {pct}. {ceo}: “{quote}”",
     "ex.news_down": "{emoji} {tk} fell about {pct}. {ceo}: “{quote}”",
     "ex.news_earn": "📑 {tk} earnings: {wk} this week. {ceo}: “{quote}”",
-    "news.ex_open": "🏛 The Rofaqa Exchange is open! Six listed companies (CHAT, RBNK, MEME, LEVI, STRK, TRST) are ready to trade; no player can move their prices. <code>exchange</code>",
+    "news.ex_open": "🏛 The Rofaqa Exchange is open! Six listed companies (CHAT, RBNK, MEME, LEVI, STRK, TRST) are ready to trade; no player can move their prices. <code>stocks exchange</code>",
     "board.ex": "🏛 Exchange:",
     "an.exchange": "🏛 <b>Exchange</b>: {holders} holders • total value {mcap}\n   Today: {trades} trades • volume {volume} • levies and slippage {levy} (holders' share {div})\n   House today: {minted} minted (prices up) / {burned} burned (prices down)\n   House result since launch: {pnl} • total levies: {levy_total}",
-    "n.short_removed": "ℹ️ Short selling was removed from the game. Margin returned to your cash: {amount} • skill points returned: {points}. The Rofaqa Exchange takes its place; see <code>exchange</code>",
-    "help.ex": "🏛 <b>Exchange</b>: six listed companies (<code>exchange</code>) whose prices move with what really happens in the game plus luck, never with players' trades. Nobody can pump or dump them and there are no limits; you just pay a fixed levy plus slippage, and part of it is shared with the holders. Every week there is an earnings night (<code>earnings</code>).",
+    "n.short_removed": "ℹ️ Short selling was removed from the game. Margin returned to your cash: {amount} • skill points returned: {points}. The Rofaqa Exchange takes its place; see <code>stocks exchange</code>",
+    "help.ex": "🏛 <b>Exchange</b>: six listed companies (<code>stocks exchange</code>) whose prices move with what really happens in the game plus luck, never with players' trades. Nobody can pump or dump them and there are no limits; you just pay a fixed levy plus slippage, and part of it is shared with the holders. Every week there is an earnings night (<code>stocks earnings</code>).",
 }

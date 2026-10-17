@@ -8,10 +8,10 @@ from dataclasses import dataclass
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from . import config as C
-from . import cards, docs, salary, achievements, analytics, charts, core, engine as E, events, exchange, fmt, progress, quests, social, trading, trust
+from . import cards, docs, salary, sections, achievements, analytics, charts, core, engine as E, events, exchange, fmt, progress, quests, social, trading, trust
 from .core import display_name, price
 from .fmt import esc
-from .texts import ALIASES, level_title, t
+from .texts import ALIASES, STR, level_title, t
 
 
 @dataclass
@@ -509,9 +509,106 @@ def quest_done_lines(lang: str, items: list) -> str:
     return "\n".join(out)
 
 
+# --- the global menu, the stock section menu, the help hub ----------------------------------------------------------
+MAIN_GO = ("profile", "daily", "invite")          # global screens the main menu opens (each one is an ordinary command)
+STOCK_GO = tuple(sorted(sections.MENU_SCREENS))   # screens a stock-menu button may open (ordinary commands, run with no arguments)
+ORIGINS = frozenset({"m"} | {cid for cid, _ in sections.STOCK_CATEGORIES})     # where a button was pressed: "m" = the stock menu, else a category
+
+
+def main_menu(lang: str, uid: int) -> Reply:
+    rows = [[(t(lang, "menu.stocks"), f"sm:menu:{uid}"), (t(lang, "menu.help"), f"hp:menu:{uid}")],
+            [(t(lang, "menu.profile"), f"mn:go:profile:{uid}"), (t(lang, "menu.daily"), f"mn:go:daily:{uid}")],
+            [(t(lang, "menu.invite"), f"mn:go:invite:{uid}")]]
+    return Reply(text=t(lang, "menu.title", brand=t(lang, "brand")), kb=kb(rows))
+
+
+def back_button(lang: str, origin: str, uid: int) -> tuple:
+    """(label, callback) that leads back to where a stock-menu button was pressed."""
+    if origin in ORIGINS and origin != "m":
+        return t(lang, "sm.back_to", name=t(lang, f"sm.catname.{origin}")), f"sm:cat:{origin}:{uid}"
+    return t(lang, "sm.back"), f"sm:menu:{uid}"
+
+
+def cmd_button(lang: str, cmd: str, origin: str, uid: int) -> tuple:
+    """The button of one command: a screen opens in place, typed input is guided, coin-moving actions ask first."""
+    label = t(lang, f"sm.{cmd}")
+    if cmd in sections.ASK_CMDS:
+        return label, f"sm:ask:{cmd}:{origin}:{uid}"
+    if cmd in sections.SURE_CMDS:
+        return label, f"sm:sure:{cmd}:{origin}:{uid}"
+    return label, f"sm:go:{sections.SCREEN_OF.get(cmd, cmd)}:{origin}:{uid}"
+
+
+def stock_menu(lang: str, uid: int) -> Reply:
+    """The stock section's landing page: shortcuts to the everyday screens, then one button per category (every command is inside one)."""
+    rows = [[cmd_button(lang, c, "m", uid) for c in row] for row in sections.STOCK_QUICK]
+    cats = [(t(lang, f"sm.cat.{cid}"), f"sm:cat:{cid}:{uid}") for cid, _ in sections.STOCK_CATEGORIES]
+    rows += [cats[i:i + 2] for i in range(0, len(cats), 2)]
+    rows.append([(t(lang, "sm.help"), f"hp:stock:{uid}")])
+    rows.append([(t(lang, "menu.back"), f"mn:menu:{uid}")])
+    return Reply(text=t(lang, "sm.title"), kb=kb(rows))
+
+
+def stock_category(lang: str, uid: int, cid: str) -> Reply:
+    cmds = dict(sections.STOCK_CATEGORIES).get(cid)
+    if not cmds:
+        return stock_menu(lang, uid)
+    btns = [cmd_button(lang, c, cid, uid) for c in cmds]
+    rows = [btns[i:i + 2] for i in range(0, len(btns), 2)]
+    rows.append([(t(lang, "sm.back"), f"sm:menu:{uid}")])
+    return Reply(text=t(lang, "sm.cat_head", label=esc(t(lang, f"sm.cat.{cid}"))), kb=kb(rows))
+
+
+def _doc(lang: str, cmd: str) -> tuple:
+    """(description, first canonical example) of a command, from the command reference."""
+    fa_d, fa_e, en_d, en_e = docs.DOCS[cmd]
+    return (esc(fa_d), fa_e.split("\n")[0]) if lang == "fa" else (esc(en_d), en_e.split("\n")[0])
+
+
+def ask_view(lang: str, uid: int, cmd: str, origin: str, private: bool) -> Reply:
+    """A command that needs typed input. Private chat: the next message of the player is taken as the arguments. Group: show what to type."""
+    desc, full = _doc(lang, cmd)
+    note_key = f"ask.note.{cmd}"
+    note = t(lang, "ask.note", text=t(lang, note_key)) if note_key in STR[lang] else ""
+    label = esc(t(lang, f"sm.{cmd}"))
+    if private:
+        text = t(lang, "ask.private", label=label, desc=desc, fmt=esc(t(lang, f"ask.fmt.{cmd}")), note=note, mins=fmt.num(sections.GUIDED_TTL // 60, lang))
+    else:
+        text = t(lang, "ask.group", label=label, desc=desc, full=esc(full), note=note)
+    rows = []
+    if cmd in sections.ASK_ALSO:
+        rows.append([(t(lang, f"sm.view_{cmd}"), f"sm:go:{sections.ASK_ALSO[cmd]}:{origin}:{uid}")])
+    rows.append([(t(lang, "sm.cancel"), f"sm:cancel:{origin}:{uid}")])
+    return Reply(text=text, kb=kb(rows))
+
+
+def sure_view(lang: str, uid: int, cmd: str, origin: str) -> Reply:
+    desc, _full = _doc(lang, cmd)
+    rows = [[(t(lang, "sm.yes"), f"sm:do:{cmd}:{origin}:{uid}"), (t(lang, "sm.no"), f"sm:cancel:{origin}:{uid}")]]
+    return Reply(text=t(lang, "sm.sure", label=esc(t(lang, f"sm.{cmd}")), desc=desc), kb=kb(rows))
+
+
+def with_back(r: Reply, label: str, data: str) -> Reply:
+    """The screen of an existing command, opened from a menu: same text and buttons plus one way back (the message is edited in place)."""
+    if r is None or not isinstance(r, Reply) or r.photo:
+        return r
+    rows = [list(row) for row in (r.kb.inline_keyboard if r.kb else [])]
+    rows.append([InlineKeyboardButton(text=label, callback_data=data)])
+    r.kb = InlineKeyboardMarkup(inline_keyboard=rows)
+    r.edit = True
+    return r
+
+
 def help_menu(lang: str, uid: int) -> Reply:
-    rows = [[(t(lang, "help.btn_guide"), f"hp:guide:{uid}")], [(t(lang, "help.btn_cmds"), f"hp:cmds:{uid}")], [(t(lang, "help.btn_about"), f"hp:about:{uid}")]]
+    """The global help hub: stock help, and how the game works."""
+    rows = [[(t(lang, "help.btn_stock"), f"hp:stock:{uid}")], [(t(lang, "help.btn_about"), f"hp:about:{uid}")], [(t(lang, "menu.back"), f"mn:menu:{uid}")]]
     return Reply(text=t(lang, "help.menu", brand=t(lang, "brand")), kb=kb(rows))
+
+
+def stock_help_menu(lang: str, uid: int) -> Reply:
+    """Stock help: the starter guide and the command reference."""
+    rows = [[(t(lang, "help.btn_guide"), f"hp:guide:{uid}")], [(t(lang, "help.btn_cmds"), f"hp:cmds:{uid}")], [(t(lang, "help.btn_back"), f"hp:menu:{uid}")]]
+    return Reply(text=t(lang, "help.stock"), kb=kb(rows))
 
 
 def cmd_name(lang: str, cmd: str) -> str:
@@ -528,7 +625,7 @@ def help_commands_menu(lang: str, uid: int, is_admin: bool) -> Reply:
     btns = [(f"{docs.CATEGORY_EMOJI[cid]} {t(lang, 'cat.' + cid)}", f"hp:cat:{i}:{uid}") for i, cid, _ in visible_categories(is_admin)]
     rows = [btns[k:k + 2] for k in range(0, len(btns), 2)]
     rows.append([(t(lang, "help.tips_btn"), f"hp:tips:{uid}")])
-    rows.append([(t(lang, "help.btn_back"), f"hp:menu:{uid}")])
+    rows.append([(t(lang, "help.btn_back_stock"), f"hp:stock:{uid}")])
     return Reply(text=t(lang, "help.cmds_menu"), kb=kb(rows), edit=True)
 
 
@@ -542,7 +639,7 @@ def help_category(lang: str, uid: int, idx: int, is_admin: bool) -> Reply:
         desc, ex = (fa_d, fa_e) if lang == "fa" else (en_d, en_e)
         lines.append(t(lang, "help.cat_row", name=esc(cmd_name(lang, c)), desc=esc(desc), examples="\n".join(f"   <code>{esc(x)}</code>" for x in ex.split("\n"))))
         lines.append("")
-    rows = [[(t(lang, "help.btn_cmds"), f"hp:cmds:{uid}"), (t(lang, "help.btn_back"), f"hp:menu:{uid}")]]
+    rows = [[(t(lang, "help.btn_cmds"), f"hp:cmds:{uid}"), (t(lang, "help.btn_back_stock"), f"hp:stock:{uid}")]]
     return Reply(text="\n".join(lines).rstrip(), kb=kb(rows), edit=True)
 
 
@@ -560,7 +657,7 @@ def help_section(db, lang: str, uid: int, section: str, arg: str = "", is_admin:
         r = guide_view(db, lang, uid)
         r.edit = True
         return r
-    r = help_menu(lang, uid)
+    r = stock_help_menu(lang, uid) if section == "stock" else help_menu(lang, uid)
     r.edit = True
     return r
 
@@ -579,7 +676,7 @@ def guide_view(db, lang: str, uid: int) -> Reply:
         lines.append(t(lang, "guide.next", text=t(lang, "g." + nxt["q"].id, reward=fmt.coins(nxt["row"]["reward"], lang))))
     else:
         lines.append(t(lang, "guide.done"))
-    rows = [[(t(lang, "help.btn_back"), f"hp:menu:{uid}"), ("🎯", f"qs:{uid}")]]
+    rows = [[(t(lang, "help.btn_back_stock"), f"hp:stock:{uid}"), ("🎯", f"qs:{uid}")]]
     return Reply(text="\n".join(lines), kb=kb(rows))
 
 

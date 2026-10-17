@@ -35,6 +35,8 @@ The whole game is one SQLite file (`hypemarket.db`) — **back it up** (copy it 
 
 ## 2. What's inside
 
+> **Since v0.14 every stock command starts with `سهام` (English: `stocks`)**, e.g. `سهام خرید 10 SPEED`, `سهام سطح`, `سهام بازار`. The names in the table below are the commands' own names; see section 11 for the exact forms.
+
 | Area | What it does |
 |---|---|
 | Exchange | `بورس` — six **house-priced** companies (CHAT, RBNK, MEME, LEVI, STRK, TRST) that nobody can pump or dump · weekly earnings night (`گزارش مالی`) · see section 10 |
@@ -141,7 +143,7 @@ Only aggregated numbers are collected; the one per-player record is a "seen toda
   trade cooldown, daily activity caps, referral rewards only after 3 real trades, and the exchange companies are priced by the house so nobody can move them with alts. For a big launch, add
   account-age rules or a captcha-like gate in `ensure_user`.
 * **Scale:** SQLite + one process comfortably handles thousands of players. If you outgrow it, the database layer is isolated in `db.py`.
-* **Tested vs. not tested:** the game rules, Persian parsing, buttons, payments, group flows and background jobs are covered by about 270 automated tests,
+* **Tested vs. not tested:** the game rules, Persian parsing, buttons, payments, group flows and background jobs are covered by about 355 automated tests,
   including a randomized simulation (traders, whales, quests, rug pulls, exchange trades and earnings nights, rebirths all at once) that checks every coin is accounted for, and a set of simulated *farmers* that attack the exchange (section 10). These run against a *simulated* Telegram. I could not run
   against real Telegram servers, so do a 15-minute manual test with two accounts and a test group before announcing it.
 
@@ -186,3 +188,47 @@ weakens `EX_YCAP`, `EX_EARN_BETA`, `LISTED_HOLDER_SHARE_BPS` or the noise in a w
 **House economics.** The house is the counterparty: when a price rises it *mints* the difference for the holders, when it falls it *burns* it. Because prices are a martingale this nets to about zero over time,
 and the levies are burned, so the exchange removes more coins than it creates on average. `/stats` shows the exchange: holders, market value, today's trades and volume, levies (and the holders' share),
 coins the house minted/burned for price moves today, and the house result since launch. Watch that last number for a few weeks; if it drifts far from zero, raise `LISTED_SPREAD_BPS`.
+
+## 11. Sections, the `سهام` namespace, `منو` and the help hub (v0.14)
+
+**Why.** The game is growing beyond the stock market. So the stock market is now *one section* of the game with its own commands; global words (like `سطح`) stay free for future systems.
+`hypemarket/sections.py` is the single table that says which command belongs where; a future section is one more entry there.
+
+| Class | Commands | Typed as |
+|---|---|---|
+| **Stock section** | buy, sell, price, chart, market, exchange, earnings, portfolio, alerts, launch / meme / project, own stock, edit, dividend %, cash out, dividends, income, companies, groups' index and ranks, leaderboards, share cards, level, reputation, skills, upgrade, legacy, rebirth, quests, achievements, season, news, events, whales, trust, distrust, report | `سهام <command> <arguments>` (English `stocks <command> ...`) |
+| **Global** | `شروع`, `راهنما`, `منو`, `پروفایل`, `زبان`, `دعوت`, `روزانه`, `حقوق`, `فروشگاه`, `تنظیمات`, `تنظیم زبان`, `محدودیت پیام`, `حالت سکوت` | unchanged |
+| **Bot admins** | `/stats /backup /ban /unban /delist /give /fire` | unchanged (same authorization checks) |
+
+* `سهام` alone opens the stock menu. `سهام راهنما` opens stock help. `سهام من` (your stock), `سهام ویرایش ...` (edit) are the in-section spellings of those two.
+* The prefix only counts as the **first word** of a message. In groups, `سهام ...` has to look like a real command (valid ticker, valid arguments), exactly like plain commands always had to: chat such as «سهام خرید کنم یا نه؟» is ignored.
+* Unknown words after `سهام` run nothing (private chat: a one-line hint). Global and admin commands can't be reached through the prefix.
+* Arguments, tickers, reply-to-message behavior, validation, permissions and side effects are exactly the old ones: the prefix only changes how the command is *found* (`textparse.py`), then the ordinary handler runs.
+* Persian normalization (Arabic letters, Persian digits, half-spaces) works inside the namespace; `سهام مهارت‌ها`, `سهام مهارت ها` and `stocks skills` are the same command.
+
+**Old spellings.** *Still working* (specific enough that no future global command can want them): `بازار`, `بورس`, `گزارش مالی`, `پورتفوی`, `خرید / فروش / قیمت / نمودار` **only when they contain a ticker** (`خرید 10 SPEED`),
+`عرضه SPEED ...`, `عرضه میم`, `عرضه پروژه`, `ویرایش سهام`, `تنظیم سود`, `mystock`. *Retired* (answer with one line pointing to the new form, execute **nothing**): everything else, for example `سطح`, `مهارت‌ها`, `ارتقا`, `میراث`, `تولد دوباره`, `ماموریت`,
+`دستاوردها`, `فصل`, `اخبار`, `رویداد`, `نهنگ`, `سود`, `درآمد`, `خروج`, `هشدار`, `اعتبار`, `رتبه`, `برترین‌ها`, `گروه`, `شاخص`, `کارت`, `اعتماد`, `گزارش`, all company words, and a bare `خرید` / `فروش` / `قیمت` / `نمودار` / `عرضه`.
+Why: these are generic words ("level", "income", "buy") that a future life-game command will want. There is **no universal redirect**: each retired word only ever answers with its own pointer. To retire or keep another word, edit `LEGACY_KEEP` in `sections.py` (the first candidates when the life game arrives: `بازار`, `پورتفوی`, `عرضه`).
+
+**Menus.** `منو` → *سهام* · *راهنما* · پروفایل · جایزه روزانه · دعوت دوستان. `راهنما` → *سهام* (starter guide, all commands) · *درباره بازی* (how the game works) · back to the menu.
+Every command example shown by the bot is the canonical form, and `tests/test_namespace.py` checks that each one parses.
+
+**The stock menu is made of buttons.** `سهام` (or `منو` → سهام) opens a menu where **every stock command is one tap away**: four shortcut rows (market, exchange, portfolio, profile, my stock, level, skills, quests) and eight
+category buttons: 💱 trading · 🚀 your stock (launch, meme, project, edit, dividend %, cash out) · 💰 income · 🏢 company · 👥 groups and ranks · ⭐ progress · 📰 live market · 🛡 safety. A category lists its commands as buttons (two per row, 🔙 at the bottom).
+The layout is one table in `sections.py` (`STOCK_QUICK`, `STOCK_CATEGORIES`); a test fails if a stock command has no button or two. A button does one of three things:
+
+* **Screens** (market, level, skills, quests, ...): runs the *ordinary* command handler with no arguments and edits the message in place, plus a 🔙 button back to where you pressed it. Same logic and permission checks as typing the command. `ارتقا` opens the skills screen (its upgrade buttons live there).
+* **Commands that need typing** (buy, sell, price, chart, alert, launch / meme / project, edit, dividend %, create / join company, trust, distrust, report): the button explains the format with an example. In a **private chat** the player's *next* message is taken as the arguments
+  (`10 SPEED` after 🛒 buy runs `سهام خرید 10 SPEED`); the prompt waits 5 minutes (`GUIDED_TTL`), is dropped by ❌ cancel, by any other button or by any real command, and belongs to that one player. In a **group** nothing is armed: the button just shows the exact command to type,
+  so group chatter is never swallowed. The prompt is kept in memory only (no database change; a bot restart simply forgets it).
+* **Commands that move coins or leave something** (`ترک شرکت`, `تقسیم سود شرکت`): the button asks "are you sure?" with ✅ / ❌ first.
+
+Callbacks: `mn:` (main menu), `sm:` (stock menu: `sm:cat`, `sm:go`, `sm:ask`, `sm:sure`, `sm:do`, `sm:cancel`), `hp:` (help). All of them end with the player's id and only react to the player who opened them; a hand-made `sm:` button can reach nothing outside the menu's whitelist
+(`sections.MENU_SCREENS` / `ASK_CMDS` / `SURE_CMDS`), so it can't run admin commands or anything unlisted. Tests: `tests/test_stock_menu.py`.
+
+**No data was touched.** No database migration (schema stays 5); stock levels, skills, rebirths, legacy points, seasons, quests, balances and prices are not read or written by the routing layer.
+
+**Bug fix: launching again after a rebirth.** A rebirth delists your stocks, but a delisted stock kept its ticker forever, so `عرضه SPEED` answered "ticker taken". Now the owner can launch the ticker of their *own* delisted stock again
+(the old record is kept under an archive name like `SPEED~12`); other players still can't take it, and active tickers and the exchange's tickers stay protected.
+

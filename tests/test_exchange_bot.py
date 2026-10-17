@@ -121,7 +121,7 @@ def test_earnings_night_is_posted_to_the_groups_with_a_chart(h):
     assert len(h.session.sent(SendPhoto)) == photos + 1                                              # once per week
     out = h.texts(h.say(3, "!گزارش مالی", chat=G))
     assert "CHAT" in out and "RBNK" in out and "TRST" in out
-    assert "گزارش مالی" in h.texts(h.say(3, "!اخبار", chat=G))                                         # the report is also in the news
+    assert "گزارش مالی" in h.texts(h.say(3, "!سهام اخبار", chat=G))                                         # the report is also in the news
 
 
 def test_boards_show_the_live_exchange_block(h):

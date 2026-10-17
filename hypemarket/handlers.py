@@ -7,13 +7,13 @@ import re
 import urllib.parse
 import time
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from aiogram import Bot, F, Router
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramRetryAfter
 from aiogram.types import BufferedInputFile, CallbackQuery, ChatMemberUpdated, InputMediaPhoto, LabeledPrice, Message, PreCheckoutQuery, User
 
-from . import achievements, analytics, backups, charts, salary, config as C, core, events, fmt, progress, quests, shop, social, textparse, trading, trust, views
+from . import achievements, analytics, backups, charts, salary, config as C, core, events, fmt, progress, quests, sections, shop, social, textparse, trading, trust, views
 from .core import GameError
 from .db import Database
 from .texts import ALIASES, SOFT_ARGS, SOFT_EXACT, EXAMPLES, level_title, t
@@ -43,6 +43,7 @@ class App:
     touched: set = field(default_factory=set)
     touched_day: int = 0
     alert_ts: dict = field(default_factory=dict)
+    pending: dict = field(default_factory=dict)       # uid -> (stock command, expiry): the player's next message answers a guided prompt
 
     async def alert_admins(self, text: str, key: str = "generic", every: int = 600) -> None:
         """DM every admin (throttled per key so a crash loop can't spam you)."""
@@ -193,7 +194,8 @@ BOT_WORDS = {"editstock", "setdividend", "createcompany", "joincompany", "msglim
 def unambiguous(p: textparse.Parsed) -> bool:
     """Commands that can't be mistaken for normal chat (two-word Persian commands like «ویرایش سهام», or bot-only words).
     These always get an answer, with a helpful message instead of silence when the input is wrong."""
-    return p.cmd in SOFT_ARGS and (p.words >= 2 or p.cmd in BOT_WORDS)
+    inner = p.words - 1 if p.section else p.words      # «سهام عرضه میم» is as unmistakable as «عرضه میم»; «سهام خرید کنم یا نه؟» is just chat
+    return p.cmd in SOFT_ARGS and (inner >= 2 or (p.section is None and p.cmd in BOT_WORDS))
 
 
 def soft_ok(app: App, p: textparse.Parsed) -> bool:
@@ -365,6 +367,88 @@ async def h_start(c: Ctx):
 @cmd("help")
 async def h_help(c: Ctx):
     return views.help_menu(c.lang, c.uid)
+
+
+@cmd("menu")
+async def h_menu(c: Ctx):
+    return views.main_menu(c.lang, c.uid)
+
+
+@cmd("stocks")
+async def h_stocks(c: Ctx):
+    return views.stock_menu(c.lang, c.uid)
+
+
+@cmd("stockhelp")
+async def h_stockhelp(c: Ctx):
+    return views.stock_help_menu(c.lang, c.uid)
+
+
+@cmd("stocks_unknown")
+async def h_stocks_unknown(c: Ctx):
+    return Reply(text=t(c.lang, "stocks_unknown"))
+
+
+async def h_retired(c: Ctx):
+    """An OLD unprefixed stock word (e.g. «سطح»): nothing is executed, the player is pointed to the canonical form."""
+    new = sections.canonical(c.cmd, c.lang)
+    extra = " ".join(c.args)[:60]
+    return Reply(text=t(c.lang, "retired", new=html.escape((new + " " + extra).strip())))
+
+
+async def _open_screen(c: Ctx, target: str, allowed: tuple, back: tuple):
+    """A menu button: run the ORDINARY command handler (same logic, same checks) and show its screen in place, plus a way back."""
+    if target not in allowed or target not in HANDLERS:
+        return None
+    reply = await HANDLERS[target](replace(c, cmd=target, args=[]))
+    return views.with_back(reply, back[0], back[1])
+
+
+@cbk("mn")
+async def cb_main_menu(c: Ctx):
+    rest = c.args[:-1]                                  # the last part is always the player's id
+    if rest and rest[0] == "go" and len(rest) >= 2:
+        return await _open_screen(c, rest[1], views.MAIN_GO, (t(c.lang, "menu.back"), f"mn:menu:{c.uid}"))
+    r = views.main_menu(c.lang, c.uid)
+    r.edit = True
+    return r
+
+
+def _guided(app: App, uid: int, cmd: str) -> None:
+    """Remember that the player's next plain message answers the prompt of `cmd` (private chats only, a few minutes)."""
+    now_ = core.now()
+    for k in [k for k, v in app.pending.items() if v[1] <= now_]:
+        del app.pending[k]
+    app.pending[uid] = (cmd, now_ + sections.GUIDED_TTL)
+
+
+@cbk("sm")
+async def cb_stock_menu(c: Ctx):
+    """sm:menu | sm:cat:<category> | sm:go:<screen>:<origin> | sm:ask:<cmd>:<origin> | sm:sure:<cmd>:<origin> | sm:do:<cmd>:<origin> | sm:cancel:<origin> (where the prompt was opened: "m" or a category),
+    always followed by the player's id. <origin> is where the button was pressed ("m" = the stock menu, else a category) so 🔙 returns there."""
+    rest = c.args[:-1]
+    sub = rest[0] if rest else "menu"
+    arg = rest[1] if len(rest) > 1 else ""
+    origin = rest[2] if len(rest) > 2 and rest[2] in views.ORIGINS else "m"
+    r = None
+    if sub == "go":
+        return await _open_screen(c, arg, views.STOCK_GO, views.back_button(c.lang, origin, c.uid))
+    if sub == "do" and arg in sections.SURE_CMDS:
+        return await _open_screen(c, arg, tuple(sections.SURE_CMDS), views.back_button(c.lang, origin, c.uid))
+    if sub == "ask" and arg in sections.ASK_CMDS:
+        if not c.is_group:
+            _guided(c.app, c.uid, arg)
+        r = views.ask_view(c.lang, c.uid, arg, origin, private=not c.is_group)
+    elif sub == "sure" and arg in sections.SURE_CMDS:
+        r = views.sure_view(c.lang, c.uid, arg, origin)
+    elif sub == "cat" or (sub == "cancel" and arg in views.ORIGINS and arg != "m"):
+        r = views.stock_category(c.lang, c.uid, arg)
+    elif sub in ("menu", "cancel"):
+        r = views.stock_menu(c.lang, c.uid)
+    else:
+        return Reply(toast=t(c.lang, "e.bad_usage"))                 # an unknown or hand-made button does nothing
+    r.edit = True
+    return r
 
 
 @cbk("hp")
@@ -1362,7 +1446,12 @@ async def handle_message(m: Message, app: App, text: str) -> None:
     if group:
         app.note_activity(tg.id, chat.id)
     p = textparse.parse(text, app.botname)
-    if not p or p.cmd not in HANDLERS:
+    pend = app.pending.get(tg.id) if chat.type == "private" else None
+    if pend:                                      # a guided prompt («🛒 خرید») is waiting for this player's answer
+        app.pending.pop(tg.id, None)
+        if core.now() <= pend[1] and (p is None or p.cmd == "stocks_unknown"):
+            p = textparse.parse(f"stocks {pend[0]} {text}", app.botname)       # the plain message is the command's arguments
+    if not p or (p.cmd not in HANDLERS and not p.retired):
         return
     soft = group and not p.prefixed and not unambiguous(p)
     if group and not p.prefixed and not unambiguous(p) and not soft_ok(app, p):
@@ -1383,7 +1472,7 @@ async def handle_message(m: Message, app: App, text: str) -> None:
     c = Ctx(app=app, bot=app.bot, tg=tg, chat=chat, lang=lang, cmd=p.cmd, args=p.args, soft=soft, msg=m, created=created)
     if p.cmd == "start" and p.args and p.args[0] == "shop":
         c.cmd = "shop"
-    await run(c, HANDLERS[c.cmd], is_cb=False)
+    await run(c, h_retired if p.retired else HANDLERS[c.cmd], is_cb=False)
 
 
 @router.message(F.text)
@@ -1396,7 +1485,7 @@ async def on_photo(m: Message, app: App) -> None:
     await handle_message(m, app, m.caption)
 
 
-BOUND = {"pf", "cl", "up", "sk", "lg", "rb", "rug", "hp", "qs", "wh", "scp", "scr", "sal"}
+BOUND = {"pf", "cl", "up", "sk", "lg", "rb", "rug", "hp", "qs", "wh", "scp", "scr", "sal", "mn", "sm"}
 
 
 @router.callback_query()
@@ -1414,6 +1503,8 @@ async def on_callback(cb: CallbackQuery, app: App) -> None:
     if (banned and banned["banned"]) or app.throttled(tg.id, 0.4):
         await _call(cb.answer)
         return
+    if not (parts[0] == "sm" and parts[1:2] == ["ask"]):
+        app.pending.pop(tg.id, None)                                          # pressing anything else cancels a guided prompt
     lang, _created = _prepare(app, tg, chat)
     c = Ctx(app=app, bot=app.bot, tg=tg, chat=chat, lang=lang, cmd=parts[0], args=parts[1:], cb=cb, msg=cb.message)
     if parts[0] in BOUND and parts[-1] != str(tg.id):
