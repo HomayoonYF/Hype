@@ -178,8 +178,14 @@ def launch(db: Database, uid: int, ticker: str, name: str, kind: str = "personal
         need_user(db, uid)
         check_level(db, uid)          # unlocks must use the player's real level, not a stale saved one
         u = need_user(db, uid)
-        if db.q1("SELECT 1 FROM stocks WHERE ticker=?", (ticker,)):
-            raise GameError("ticker_taken", ticker=ticker)
+        old = db.q1("SELECT id, owner_id, status, kind FROM stocks WHERE ticker=?", (ticker,))
+        if old:
+            if old["status"] == "delisted" and old["owner_id"] == uid and old["kind"] in C.OWNER_KINDS:
+                # your own retired stock (a rebirth delists everything you own): the ticker is yours to launch again. The old
+                # row keeps its history under an archive name, so the ticker is free for the new stock.
+                db.x("UPDATE stocks SET ticker=? WHERE id=?", (f"{ticker}~{old['id']}", old["id"]))
+            else:
+                raise GameError("ticker_taken", ticker=ticker)
         if u["max_level"] < at.min_level:
             raise GameError("need_level", level=at.min_level, have=u["max_level"], nw=E.level_threshold(at.min_level))
         if at.legacy_perk and perk(db, uid, at.legacy_perk) < 1:

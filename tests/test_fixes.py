@@ -46,7 +46,7 @@ def test_every_way_of_editing_a_stock_works(h, chat, text, field, expect):
 def test_bad_edit_input_always_explains_itself(h, chat, text):
     out = h.texts(h.say(1, text, chat=chat))
     assert out, f"no reply in {chat} for {text!r}"
-    assert "نمونه" in out and "ویرایش سهام" in out
+    assert "نمونه" in out and "سهام ویرایش" in out
 
 
 @pytest.mark.parametrize("chat", [None, G], ids=["private", "group"])
@@ -117,7 +117,7 @@ def test_project_needs_level_two_and_says_so(h):
 def test_meme_launch_errors_are_visible_in_groups(h):
     out = h.texts(h.say(1, "عرضه میم SPEED دوج", chat=G))
     assert "قبلاً گرفته" in out
-    out = h.texts(h.say(1, "عرضه میم", chat=G))
+    out = h.texts(h.say(1, "سهام عرضه میم", chat=G))
     assert "نمونه" in out
     assert "عرضه شد" in h.texts(h.say(1, "عرضه میم DOGE دوج", chat=G))
 

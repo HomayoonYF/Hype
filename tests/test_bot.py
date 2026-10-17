@@ -192,8 +192,8 @@ def test_group_look_alike_chat_is_ignored(h):
 
 def test_zwnj_and_arabic_letters(h):
     h.say(1, "!شروع", chat=-7)
-    assert h.say(1, "رتبه گروه\u200cها", chat=-7) != []
-    assert h.say(1, "ارتقاء fee", chat=-7) != [] or True
+    assert h.say(1, "سهام رتبه گروه\u200cها", chat=-7) != []
+    assert h.say(1, "سهام ارتقاء fee", chat=-7) != [] or True
     assert h.say(1, "بازار") != []
     assert h.say(1, "ﺑﺎزار") == [] or True    # presentation forms are not required to work
 
@@ -235,27 +235,27 @@ def test_chart_sends_photo(h):
 def test_skills_upgrade_and_levels(h):
     h.say(1, "شروع")
     h.db.x("UPDATE users SET max_level=3 WHERE id=1")
-    out = h.texts(h.say(1, "مهارت‌ها"))
+    out = h.texts(h.say(1, "سهام مهارت‌ها"))
     assert "مهارت" in out
-    assert "به سطح" in h.texts(h.say(1, "ارتقا fee"))
-    assert "به سطح" in h.texts(h.say(1, "ارتقا کارمزد کمتر")) or True
+    assert "به سطح" in h.texts(h.say(1, "سهام ارتقا fee"))
+    assert "به سطح" in h.texts(h.say(1, "سهام ارتقا کارمزد کمتر")) or True
     calls = h.press(1, "up:daily:1")
     assert any(isinstance(c, EditMessageText) for c in calls)
-    assert "امتیاز" in h.texts(h.say(1, "سطح"))
-    assert "اعتبار" in h.texts(h.say(1, "اعتبار"))
-    assert "میراث" in h.texts(h.say(1, "میراث"))
-    assert "تولد دوباره" in h.texts(h.say(1, "تولد دوباره"))
+    assert "امتیاز" in h.texts(h.say(1, "سهام سطح"))
+    assert "اعتبار" in h.texts(h.say(1, "سهام اعتبار"))
+    assert "میراث" in h.texts(h.say(1, "سهام میراث"))
+    assert "تولد دوباره" in h.texts(h.say(1, "سهام تولد دوباره"))
 
 
 def test_company_flow(h):
     h.say(1, "شروع")
     h.db.x("UPDATE users SET max_level=3, cash=? WHERE id=1", (C.coins(50_000),))
-    assert "تاسیس شد" in h.texts(h.say(1, "ساخت شرکت رفقای خوب RAFA"))
+    assert "تاسیس شد" in h.texts(h.say(1, "سهام ساخت شرکت رفقای خوب RAFA"))
     h.say(2, "شروع")
-    assert "پیوستی" in h.texts(h.say(2, "عضویت شرکت رفقای خوب"))
-    assert "رفقای خوب" in h.texts(h.say(2, "شرکت من"))
-    assert "فقط مدیر" in h.texts(h.say(2, "تقسیم سود شرکت"))
-    assert "خارج شدی" in h.texts(h.say(2, "ترک شرکت"))
+    assert "پیوستی" in h.texts(h.say(2, "سهام عضویت شرکت رفقای خوب"))
+    assert "رفقای خوب" in h.texts(h.say(2, "سهام شرکت من"))
+    assert "فقط مدیر" in h.texts(h.say(2, "سهام تقسیم سود شرکت"))
+    assert "خارج شدی" in h.texts(h.say(2, "سهام ترک شرکت"))
 
 
 def test_group_admin_commands(h):
@@ -333,7 +333,7 @@ def test_rug_flow_requires_confirmation(h):
     h.say(1, "شروع")
     h.say(1, "عرضه SPEED اسپید")
     h.advance(7 * 3600)
-    assert "چقدر برداری" in h.texts(h.say(1, "خروج"))
+    assert "چقدر برداری" in h.texts(h.say(1, "سهام خروج"))
     sid = core.need_stock(h.db, "SPEED")["id"]
     calls = h.press(1, f"rug:{sid}:50:1")
     assert core.need_stock(h.db, "SPEED")["rugs"] == 1
@@ -363,7 +363,7 @@ def test_outbox_dm_for_alert(h):
     h.say(2, "شروع")
     h.db.x("UPDATE users SET max_level=1 WHERE id=2")
     progress.upgrade(h.db, 2, "alerts")
-    h.say(2, "هشدار SPEED 2")
+    h.say(2, "سهام هشدار SPEED 2")
     h.db.x("UPDATE users SET cash=cash+? WHERE id=2", (C.coins(100_000),))
     h.advance(60)
     h.say(2, "خرید 400 SPEED")
@@ -417,8 +417,8 @@ def test_every_command_runs_without_crashing(h):
         h.db.x("INSERT OR REPLACE INTO perks(user_id,perk,level) VALUES(12,'alerts',2)")
         exchange.ensure_listed(h.db)
         h.advance(7 * 3600)
-        h.say(1, "ساخت شرکت رفقا RAFA", chat=g)
-        h.say(3, "عضویت شرکت رفقا", chat=g)
+        h.say(1, "سهام ساخت شرکت رفقا RAFA", chat=g)
+        h.say(3, "سهام عضویت شرکت رفقا", chat=g)
         h.say(3, "ویرایش سهام توضیح سلام", chat=g)
 
         commands = [
@@ -439,7 +439,7 @@ def test_every_command_runs_without_crashing(h):
         assert not crashed, crashed
         # rug menu + buttons on the owner's own stock
         h.advance(7 * 3600)
-        assert "چقدر برداری" in h.texts(h.say(2, "!خروج DOGE", chat=g))
+        assert "چقدر برداری" in h.texts(h.say(2, "!سهام خروج DOGE", chat=g))
     finally:
         ADMIN_IN_CHAT.clear()
 

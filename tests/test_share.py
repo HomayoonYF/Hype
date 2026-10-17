@@ -98,27 +98,27 @@ def url_of(call):
 
 
 def test_share_menu_and_each_card(h):
-    h.say(1, "کارت")
+    h.say(1, "سهام کارت")
     menu = h.session.sent(SendMessage)[-1]
     data = [b.callback_data for row in menu.reply_markup.inline_keyboard for b in row]
     assert data[:2] == ["scp:1", "scr:1"] and data[2].startswith("scs:")
     n = len(h.session.sent(SendPhoto))
-    h.say(1, "کارت پورتفوی")
+    h.say(1, "سهام کارت پورتفوی")
     photo = h.session.sent(SendPhoto)[-1]
     assert len(h.session.sent(SendPhoto)) == n + 1
     assert "start=ref_1" in photo.caption and "پورتفوی" in photo.caption
     link = url_of(photo)[0]
     assert link.startswith("https://t.me/share/url?") and urllib.parse.quote("https://t.me/TestBot?start=ref_1", safe="") in link
-    h.say(1, "کارت رتبه")
+    h.say(1, "سهام کارت رتبه")
     assert "رتبه" in h.session.sent(SendPhoto)[-1].caption
-    h.say(1, "share SPEED")
+    h.say(1, "سهام share SPEED")
     cap = h.session.sent(SendPhoto)[-1].caption
     assert "start=s_SPEED_r1" in cap and "$" in cap
-    assert "ناشناخته" not in h.texts(h.say(1, "کارت پروفایل"))
+    assert "ناشناخته" not in h.texts(h.say(1, "سهام کارت پروفایل"))
 
 
 def test_unknown_stock_gives_an_error_not_silence(h):
-    assert "پیدا نشد" in h.texts(h.say(1, "!کارت NOPE"))
+    assert "پیدا نشد" in h.texts(h.say(1, "!سهام کارت NOPE"))
 
 
 def test_buttons_on_portfolio_profile_and_stock_card(h):
@@ -145,7 +145,7 @@ def test_share_buttons_make_photos_and_carry_the_pressers_own_invite_link(h):
 
 def test_group_share_includes_the_group_rank(h):
     h.say(1, "!شروع", chat=-300)
-    h.say(1, "!کارت رتبه", chat=-300)
+    h.say(1, "!سهام کارت رتبه", chat=-300)
     assert h.session.sent(SendPhoto)
 
 

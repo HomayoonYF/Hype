@@ -20,12 +20,12 @@ from . import bots, exchange, progress
 log = logging.getLogger("hypemarket")
 
 MENU = [
+    ("menu", "منوی بازی", "Game menu"),
+    ("stocks", "بخش سهام", "Stocks"),
     ("daily", "جایزه روزانه", "Daily bonus"),
     ("market", "بازار", "Market"),
     ("portfolio", "پورتفوی", "Portfolio"),
     ("profile", "پروفایل", "Profile"),
-    ("top", "برترین‌ها", "Top players"),
-    ("skills", "مهارت‌ها", "Skills"),
     ("invite", "دعوت دوستان", "Invite friends"),
     ("help", "راهنما", "Help"),
 ]

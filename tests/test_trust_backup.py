@@ -351,20 +351,20 @@ def test_trust_and_report_commands_in_chat(h):
         h.say(uid, "شروع")
         h.db.x("UPDATE users SET trades=5 WHERE id=?", (uid,))
     h.say(1, "عرضه SPEED اسپید")
-    out = h.texts(h.say(2, "اعتماد SPEED"))
+    out = h.texts(h.say(2, "سهام اعتماد SPEED"))
     assert "اعتماد کردی" in out
-    assert "رأیت" in h.texts(h.say(2, "اعتماد SPEED"))                        # same vote again removes it
-    assert "نامطمئن علامت زدی" in h.texts(h.say(2, "بی اعتماد SPEED"))
-    out = h.texts(h.say(3, "بی‌اعتماد", reply_to=1))                          # by replying to the person's message
+    assert "رأیت" in h.texts(h.say(2, "سهام اعتماد SPEED"))                        # same vote again removes it
+    assert "نامطمئن علامت زدی" in h.texts(h.say(2, "سهام بی اعتماد SPEED"))
+    out = h.texts(h.say(3, "سهام بی‌اعتماد", reply_to=1))                          # by replying to the person's message
     assert "نامطمئن علامت زدی" in out
-    assert "تابلوی اعتماد" in h.texts(h.say(3, "اعتماد"))
-    assert "گزارش" in h.texts(h.say(3, "گزارش SPEED"))                         # no reason: asks with buttons
+    assert "تابلوی اعتماد" in h.texts(h.say(3, "سهام اعتماد"))
+    assert "گزارش" in h.texts(h.say(3, "سهام گزارش SPEED"))                         # no reason: asks with buttons
     menu = h.session.sent(SendMessage)[-1]
     assert buttons(menu) == [f"rp2:1:{r}" for r in ("rug", "fake", "spam", "other")]
     out = h.texts(h.press(3, "rp2:1:rug"))
     assert "ثبت شد" in out
-    assert "ثبت شد" in h.texts(h.say(2, "گزارش SPEED خروج پولمو برداشت"))
-    assert "حداقل ۳ معامله" in h.texts(h.say(9, "!گزارش SPEED"))              # a brand-new account can't report
+    assert "ثبت شد" in h.texts(h.say(2, "سهام گزارش SPEED خروج پولمو برداشت"))
+    assert "حداقل ۳ معامله" in h.texts(h.say(9, "!سهام گزارش SPEED"))              # a brand-new account can't report
 
 
 def test_card_buttons_vote_and_flagged_buy_warning(h):
@@ -437,7 +437,7 @@ def test_every_achievement_has_text_and_a_reachable_event(db):
 def test_achievement_screen_and_inline_message(h):
     out = h.texts(h.say(1, "عرضه SPEED اسپید"))
     assert "دستاورد جدید" in out and "موسس" in out
-    out = h.texts(h.say(1, "دستاوردها"))
+    out = h.texts(h.say(1, "سهام دستاوردها"))
     assert "(۱/۲۶)" in out or "(۲/۲۶)" in out
     assert "🔒" in out and "پروفایل" not in out
     assert "🏆 دستاوردها" in h.texts(h.say(1, "پروفایل"))

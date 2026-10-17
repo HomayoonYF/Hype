@@ -322,14 +322,18 @@ def buttons(call):
     return [b.callback_data for row in call.reply_markup.inline_keyboard for b in row]
 
 
-def test_help_is_a_three_section_menu(h):
-    calls = h.say(10, "راهنما")
+def test_help_is_a_hub_with_stock_help_and_about_the_game(h):
+    h.say(10, "راهنما")
     msg = h.session.sent(SendMessage)[-1]
     assert "یکی از بخش‌ها" in msg.text
-    assert buttons(msg) == ["hp:guide:10", "hp:cmds:10", "hp:about:10"]
+    assert buttons(msg) == ["hp:stock:10", "hp:about:10", "mn:menu:10"]                       # the global hub: stocks, about, back to the menu
+    calls = h.press(10, "hp:stock:10")
+    stock = [c for c in calls if c.__class__.__name__ == "EditMessageText"][-1]
+    assert "راهنمای سهام" in stock.text
+    assert buttons(stock) == ["hp:guide:10", "hp:cmds:10", "hp:menu:10"]                      # «about the game» is no longer inside stock help
     out = h.texts(h.press(10, "hp:cmds:10"))
     assert "همه‌ی دستورها" in out
-    assert "خرید 10 SPEED" in h.texts(h.press(10, "hp:cat:1:10")) and "ماموریت" in h.texts(h.press(10, "hp:cat:6:10")) and "نهنگ" in h.texts(h.press(10, "hp:cat:7:10"))
+    assert "سهام خرید 10 SPEED" in h.texts(h.press(10, "hp:cat:1:10")) and "ماموریت" in h.texts(h.press(10, "hp:cat:6:10")) and "نهنگ" in h.texts(h.press(10, "hp:cat:7:10"))
     out = h.texts(h.press(10, "hp:about:10"))
     assert "🤖" in out and "ذخیره" in out and "نهنگ" in out
     out = h.texts(h.press(10, "hp:menu:10"))
@@ -360,7 +364,7 @@ def test_quest_completion_shows_inline_and_as_dm(h):
     assert "ماموریت کامل شد" in h.texts(calls)                                      # buyer: first purchase
     dms = [c for c in calls if isinstance(c, SendMessage) and c.chat_id == 1]
     assert any("اولین سرمایه‌گذار" in c.text for c in dms)                             # owner: first investor, delivered by DM
-    out = h.texts(h.say(1, "ماموریت‌ها"))
+    out = h.texts(h.say(1, "سهام ماموریت‌ها"))
     assert "ماموریت‌ها" in out and "روزانه" in out and "هفتگی" in out and "▰" in out
 
 
@@ -376,7 +380,7 @@ def test_level_fix_end_to_end(h):
     h.advance(5)
     out = h.texts(h.say(1, "عرضه میم DOGE دوج"))
     assert "عرضه شد" in out, out                                                    # no stale-level refusal
-    assert "سطح" in h.texts(h.say(1, "سطح"))
+    assert "سطح" in h.texts(h.say(1, "سهام سطح"))
 
 
 def test_whale_command_lists_news_and_toggles_dms(h):
@@ -387,7 +391,7 @@ def test_whale_command_lists_news_and_toggles_dms(h):
     h.advance(60)
     calls = h.say(2, "خرید 3000 SPEED")
     assert any(isinstance(c, SendMessage) and c.chat_id == 1 and "🐋" in c.text for c in calls)    # owner is told by DM
-    out = h.texts(h.say(2, "نهنگ"))
+    out = h.texts(h.say(2, "سهام نهنگ"))
     assert "🐋" in out and "روشن" in out
     out = h.texts(h.press(1, "wh:1"))
     assert "خاموش" in out and h.db.q1("SELECT whale_dm FROM users WHERE id=1")["whale_dm"] == 0
