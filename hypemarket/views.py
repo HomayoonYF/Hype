@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from . import config as C
-from . import cards, docs, salary, sections, achievements, analytics, charts, core, engine as E, events, exchange, fmt, progress, quests, social, trading, trust
+from . import cards, docs, salary, sections, achievements, analytics, charts, core, engine as E, events, exchange, fmt, progress, quests, social, trading, trust, world
 from .core import display_name, price
 from .fmt import esc
 from .texts import ALIASES, STR, level_title, t
@@ -510,7 +510,7 @@ def quest_done_lines(lang: str, items: list) -> str:
 
 
 # --- the global menu, the stock section menu, the help hub ----------------------------------------------------------
-MAIN_GO = ("profile", "daily", "invite")          # global screens the main menu opens (each one is an ordinary command)
+MAIN_GO = ("profile", "daily", "invite", "map")          # global screens the main menu opens (each one is an ordinary command)
 STOCK_GO = tuple(sorted(sections.MENU_SCREENS))   # screens a stock-menu button may open (ordinary commands, run with no arguments)
 ORIGINS = frozenset({"m"} | {cid for cid, _ in sections.STOCK_CATEGORIES})     # where a button was pressed: "m" = the stock menu, else a category
 
@@ -518,8 +518,14 @@ ORIGINS = frozenset({"m"} | {cid for cid, _ in sections.STOCK_CATEGORIES})     #
 def main_menu(lang: str, uid: int) -> Reply:
     rows = [[(t(lang, "menu.stocks"), f"sm:menu:{uid}"), (t(lang, "menu.help"), f"hp:menu:{uid}")],
             [(t(lang, "menu.profile"), f"mn:go:profile:{uid}"), (t(lang, "menu.daily"), f"mn:go:daily:{uid}")],
-            [(t(lang, "menu.invite"), f"mn:go:invite:{uid}")]]
+            [(t(lang, "menu.invite"), f"mn:go:invite:{uid}"), (t(lang, "menu.map"), f"mn:go:map:{uid}")]]
     return Reply(text=t(lang, "menu.title", brand=t(lang, "brand")), kb=kb(rows))
+
+
+def map_caption(lang: str, w, layout: dict) -> str:
+    st = world.stats(layout)
+    name = w["name_fa"] if lang == "fa" else w["name_en"]
+    return t(lang, "map.caption", name=fmt.esc(name), vacant=fmt.num(st["vacant"], lang), parcels=fmt.num(st["parcels"], lang))
 
 
 def back_button(lang: str, origin: str, uid: int) -> tuple:

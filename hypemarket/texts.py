@@ -12,6 +12,7 @@ ALIASES: dict[str, list[str]] = {
     "profile": ["پروفایل", "حساب", "profile"],
     "language": ["زبان", "language", "lang"],
     "menu": ["منو", "menu"],
+    "map": ["مپ", "نقشه", "map"],
     "stocks": ["سهام", "stocks", "stock"],
     "stockhelp": ["سهام راهنما", "stocks help"],
     "buy": ["خرید", "بخر", "buy"],
@@ -65,6 +66,7 @@ ALIASES: dict[str, list[str]] = {
     "distrust": ["بی اعتماد", "بی‌اعتماد", "بیاعتماد", "عدم اعتماد", "distrust"],
     "achievements": ["دستاوردها", "دستاورد", "achievements", "badges"],
     "backup": ["backup"],
+    "admin": ["admin"],
     "ban": ["ban"],
     "unban": ["unban"],
     "delist": ["delist"],
@@ -83,7 +85,7 @@ SOFT_EXACT = {
     "help", "profile", "market", "portfolio", "mystock", "dividends", "income", "daily", "mycompany", "leavecompany",
     "group", "index", "grouprank", "leaderboard", "top", "invite", "level", "reputation", "skills", "legacy", "rebirth",
     "news", "events", "season", "shop", "settings", "quiet", "language", "payout", "alert", "quests", "whales", "trust", "achievements", "share",
-    "exchange", "earnings", "menu", "stocks", "stockhelp",
+    "exchange", "earnings", "menu", "stocks", "stockhelp", "map",
 }
 # ...or with arguments (validated further in handlers.soft_ok).
 SOFT_ARGS = {"buy", "sell", "price", "chart", "launch", "project", "meme", "alert", "upgrade", "cashout",
@@ -360,7 +362,16 @@ FA: dict[str, str] = {
     "help.cat_row": "<b>{name}</b> — {desc}\n{examples}",
     "help.cat_adminnote": "🔒 ویژه‌ی ادمین‌های ربات",
     "cat.start": "شروع", "cat.trade": "معامله", "cat.own": "سهام خودت", "cat.income": "درآمد", "cat.company": "شرکت", "cat.social": "گروه و رتبه", "cat.progress": "پیشرفت",
-    "cat.live": "بازار زنده", "cat.safety": "اعتماد و گزارش", "cat.groupadmin": "ادمین گروه", "cat.botadmin": "ادمین ربات",
+    "cat.live": "بازار زنده", "cat.safety": "اعتماد و گزارش", "cat.groupadmin": "ادمین گروه", "cat.botadmin": "ادمین ربات", "cat.city": "شهر",
+    "map.caption": "🗺 <b>{name}</b> — شهر گروه شما\n\nاین نقشه‌ی شروع دنیای این گروهه؛ هر گروه فقط یک شهر داره و این نقشه همیشه همینه.\n🏘 مسکونی · 🏬 تجاری · 🏭 صنعتی · 🏛 عمومی · 🌳 پارک\n⬜ زمین خالی: {vacant} قطعه از {parcels} قطعه برای آینده‌ی شهر\n\nℹ️ خرید زمین و ساخت‌وساز هنوز فعال نیست.",
+    "map.private": "🗺 نقشه مال گروهه! هر گروه تلگرامی شهر خودش رو داره. ربات رو به گروهت اضافه کن و همون‌جا بنویس «مپ».",
+    "map.corrupt": "⚠️ نقشه‌ی ذخیره‌شده‌ی این گروه خراب شده و قابل نمایش نیست. به ادمین ربات خبر بده؛ شهر دست‌نخورده می‌مونه.",
+    "map.failed": "⚠️ ساخت شهر این بار جواب نداد. چند لحظه بعد دوباره «مپ» رو بزن.",
+    "map.title": "🗺 {name}", "map.subtitle": "شهر گروه · نقشه‌ی شروع · ساخت‌وساز هنوز فعال نیست",
+    "map.zone.residential": "مسکونی", "map.zone.commercial": "تجاری", "map.zone.industrial": "صنعتی", "map.zone.civic": "عمومی", "map.zone.park": "پارک",
+    "map.legend.vacant": "زمین خالی", "map.legend.landmark": "مکان عمومی", "map.legend.main": "خیابان اصلی", "map.legend.street": "کوچه و خیابان",
+    "map.legend.building": "ساختمان", "map.legend.park": "پارک و فضای سبز",
+    "map.lm.city_hall": "شهرداری", "map.lm.hospital": "بیمارستان", "map.lm.school": "مدرسه", "map.lm.station": "ایستگاه",
 
     "a.first_trade": "اولین معامله — اولین خرید یا فروشت رو انجام بده",
     "a.trades_100": "معامله‌گر پرکار — ۱۰۰ معامله",
@@ -434,7 +445,8 @@ FA: dict[str, str] = {
     "an.moderation": "🛡 <b>نظارت</b>: {open} سهام با گزارش باز ({flagged} علامت‌دار) • {actions} اقدام ادمین در ۷ روز",
     "an.groups": "👥 <b>گروه‌ها</b>: {active} فعال • {chatting} تا حالا امروز چت داشتن{top}",
     "an.daily": "🗓 گزارش روزانه",
-    "backup.ready": "💾 پشتیبان‌گیری فعاله: هر {min} دقیقه یه نسخه‌ی کامل و بررسی‌شده‌ی دیتابیس برات می‌فرستم (بی‌صدا). نسخه‌ی اول چند ثانیه‌ی دیگه میاد.",
+    "backup.ready": "💾 پشتیبان‌گیری فعاله: هر {every} یه نسخه‌ی کامل و بررسی‌شده‌ی دیتابیس برات می‌فرستم (بی‌صدا). {next}\n⚙️ تنظیمات ربات (مثل کانال اجباری): /admin",
+    "backup.first": "نسخه‌ی اول چند ثانیه‌ی دیگه میاد.", "backup.next": "نسخه‌ی بعدی: {when}.",
     "backup.manual": "✅ پشتیبان برای {n} ادمین فرستاده شد ({size} KB، {users} بازیکن، {stocks} سهام).",
     "backup.failed": "🚨 پشتیبان‌گیری ناموفق بود؛ لاگ ربات رو ببین.",
     "mod.ok": "✅ انجام شد.",
@@ -728,7 +740,16 @@ EN: dict[str, str] = {
     "help.cat_row": "<b>{name}</b> — {desc}\n{examples}",
     "help.cat_adminnote": "🔒 Bot admins only",
     "cat.start": "Start", "cat.trade": "Trading", "cat.own": "Your stock", "cat.income": "Income", "cat.company": "Company", "cat.social": "Groups and ranks", "cat.progress": "Progress",
-    "cat.live": "Live market", "cat.safety": "Trust and reports", "cat.groupadmin": "Group admin", "cat.botadmin": "Bot admin",
+    "cat.live": "Live market", "cat.safety": "Trust and reports", "cat.groupadmin": "Group admin", "cat.botadmin": "Bot admin", "cat.city": "City",
+    "map.caption": "🗺 <b>{name}</b> — your group's city\n\nThis is the starting map of this group's world; every group has exactly one city and this map stays the same.\n🏘 Residential · 🏬 Commercial · 🏭 Industrial · 🏛 Civic · 🌳 Parks\n⬜ Undeveloped land: {vacant} of {parcels} parcels, waiting for the city's future\n\nℹ️ Buying land and building are not available yet.",
+    "map.private": "🗺 Maps belong to groups! Every Telegram group has its own city. Add the bot to your group and send «map» there.",
+    "map.corrupt": "⚠️ This group's saved map is damaged and can't be shown. Tell the bot admin; the city itself is left untouched.",
+    "map.failed": "⚠️ Building the city didn't work this time. Send «map» again in a moment.",
+    "map.title": "🗺 {name}", "map.subtitle": "Group city · starting map · building is not available yet",
+    "map.zone.residential": "Residential", "map.zone.commercial": "Commercial", "map.zone.industrial": "Industrial", "map.zone.civic": "Civic", "map.zone.park": "Park",
+    "map.legend.vacant": "Empty lot", "map.legend.landmark": "Public place", "map.legend.main": "Main road", "map.legend.street": "Street",
+    "map.legend.building": "Building", "map.legend.park": "Park",
+    "map.lm.city_hall": "City Hall", "map.lm.hospital": "Hospital", "map.lm.school": "School", "map.lm.station": "Station",
 
     "a.first_trade": "First trade — make your first buy or sale",
     "a.trades_100": "Busy trader — 100 trades",
@@ -802,7 +823,8 @@ EN: dict[str, str] = {
     "an.moderation": "🛡 <b>Moderation</b>: {open} stocks with open reports ({flagged} flagged) • {actions} admin actions in 7 days",
     "an.groups": "👥 <b>Groups</b>: {active} active • {chatting} chatted today so far{top}",
     "an.daily": "🗓 Daily report",
-    "backup.ready": "💾 Backups are on: every {min} minutes I send you a complete, verified copy of the database (silently). The first one arrives in a few seconds.",
+    "backup.ready": "💾 Backups are on: every {every} I send you a complete, verified copy of the database (silently). {next}\n⚙️ Bot settings (such as the required channel): /admin",
+    "backup.first": "The first one arrives in a few seconds.", "backup.next": "The next one: {when}.",
     "backup.manual": "✅ Backup sent to {n} admin(s) ({size} KB, {users} players, {stocks} stocks).",
     "backup.failed": "🚨 The backup failed; check the bot's log.",
     "mod.ok": "✅ Done.",
@@ -862,10 +884,14 @@ from .texts_exchange import EN_EX, FA_EX  # noqa: E402  (the exchange's strings 
 
 from .texts_nav import EN_NAV, FA_NAV  # noqa: E402  (the navigation layer's strings: menus, help hub, retired-word pointers)
 
+from .texts_admin import EN_ADMIN, FA_ADMIN  # noqa: E402  (the admin panel and the channel gate)
+
 FA.update(FA_EX)
 EN.update(EN_EX)
 FA.update(FA_NAV)
 EN.update(EN_NAV)
+FA.update(FA_ADMIN)
+EN.update(EN_ADMIN)
 
 STR = {"fa": FA, "en": EN}
 

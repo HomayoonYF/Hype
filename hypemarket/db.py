@@ -87,6 +87,10 @@ CREATE TABLE IF NOT EXISTS quests(
   user_id INTEGER NOT NULL, qid TEXT NOT NULL, period INTEGER NOT NULL, progress INTEGER NOT NULL DEFAULT 0, target INTEGER NOT NULL,
   reward INTEGER NOT NULL, points INTEGER NOT NULL DEFAULT 0, done INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(user_id, qid, period)
 );
+CREATE TABLE IF NOT EXISTS worlds(
+  id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id INTEGER NOT NULL UNIQUE, seed INTEGER NOT NULL, gen_version INTEGER NOT NULL,
+  name_fa TEXT NOT NULL, name_en TEXT NOT NULL, cols INTEGER NOT NULL, rows INTEGER NOT NULL, layout TEXT NOT NULL, created_at INTEGER NOT NULL
+);
 """
 
 
@@ -107,7 +111,7 @@ def _migrate_5(conn) -> None:
     conn.execute("DROP TABLE IF EXISTS shorts")
 
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 # version -> SQL (or a function taking the connection) upgrading a database FROM version-1.
 # New tables need no entry: SCHEMA creates them with IF NOT EXISTS.
 MIGRATIONS: dict = {
@@ -119,6 +123,7 @@ MIGRATIONS: dict = {
     3: "SELECT 1;",   # v3 only added new tables (reports, trust, achievements, seen, modlog), which SCHEMA creates
     4: "SELECT 1;",   # v4 only added the salary table, which SCHEMA creates
     5: _migrate_5,    # v5: short selling removed; the exchange tables are created by SCHEMA
+    6: "SELECT 1;",                          # v0.15: the `worlds` table (one city per group) comes from SCHEMA; nothing else changes
 }
 
 

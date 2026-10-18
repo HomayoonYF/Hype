@@ -1,9 +1,11 @@
-"""Hourly database backups, verified and sent to every admin as a Telegram document.
+"""Database backups (once every 24 hours by default), verified and sent to every admin as a Telegram document.
 
 * a consistent copy is taken with SQLite's online backup API (safe while the bot runs);
 * the copy is checked (integrity_check + row counts) BEFORE it is sent, and the admins are alerted if it is bad;
 * it is gzip-compressed; files over Telegram's bot upload limit are split into numbered parts;
-* a local copy is kept too (BACKUP_DIR, newest BACKUP_KEEP files).
+* a local copy is kept too (BACKUP_DIR, newest BACKUP_KEEP files);
+* the schedule survives restarts: the time of the last delivered backup is stored in the database, so restarting the bot neither
+  skips a due backup nor sends an extra one.
 Restore with:  python restore.py <backup file>
 """
 from __future__ import annotations
@@ -19,8 +21,9 @@ from glob import glob
 
 from aiogram.types import BufferedInputFile
 
-from . import core
+from . import core, fmt
 from .db import SCHEMA_VERSION, Database
+from .texts import t
 
 log = logging.getLogger("hypemarket.backup")
 PART_LIMIT = 45 * 1024 * 1024        # Telegram bots may upload up to 50 MB per file
@@ -42,7 +45,7 @@ def verify(path: str) -> dict:
         con.close()
 
 
-def make_backup(db: Database, directory: str = "", keep: int = 48) -> dict:
+def make_backup(db: Database, directory: str = "", keep: int = 30) -> dict:
     """Take, verify and compress a backup. Returns {data, name, size, raw_size, sha, meta, path}."""
     fd, tmp = tempfile.mkstemp(suffix=".db")
     os.close(fd)
@@ -105,3 +108,61 @@ async def send_backup(app, reason: str = "scheduled") -> dict:
     if result["failed"] and not result["sent"]:
         log.error("backup could not be delivered to ANY admin (each admin must open the bot and press /start once)")
     return result
+
+
+# --- the schedule ----------------------------------------------------------------------------------------------------------------
+LAST_KEY, TRY_KEY = "backup:last", "backup:try"       # kv: when the last backup was delivered / last attempted
+CHECK_EVERY = 600                                      # the job looks at the clock this often (seconds)
+RETRY_AFTER = 3600                                     # after a failed attempt, wait this long before trying again
+
+
+def interval(settings) -> int:
+    return settings.backup_every_min * 60
+
+
+def last_done(db: Database) -> int:
+    return core.kv_int(db, LAST_KEY, 0)
+
+
+def next_due(db: Database, every: int) -> int:
+    """When the next scheduled backup is due (an epoch time; a time in the past means "as soon as the job runs")."""
+    return last_done(db) + every
+
+
+def due(db: Database, every: int, now: int | None = None) -> bool:
+    now = core.now() if now is None else now
+    last, tried = last_done(db), core.kv_int(db, TRY_KEY, 0)
+    if last > now:                                     # the clock was wrong once: don't let a future timestamp stop backups forever
+        last = 0
+    if now - last < every:
+        return False
+    if tried > now:
+        tried = 0
+    return now - tried >= min(every, RETRY_AFTER)
+
+
+async def scheduled(app) -> dict | None:
+    """Called by the job every few minutes: sends a backup only when one is due. Returns the result, or None when not due."""
+    now = core.now()
+    if not due(app.db, interval(app.settings), now):
+        return None
+    core.kv_set(app.db, TRY_KEY, now)
+    res = await send_backup(app, "scheduled")
+    if res["ok"] and (res["sent"] > 0 or not app.settings.admins):
+        core.kv_set(app.db, LAST_KEY, now)             # delivered (or saved locally because nobody is configured to receive it)
+        res["done"] = True
+    return res
+
+
+def when(ts: int) -> str:
+    return time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(ts))
+
+
+def ready_text(db: Database, settings) -> str:
+    """The message the admins get when the bot starts: how often backups come and when the next one is due (both languages)."""
+    every = interval(settings)
+    out = []
+    for lang in ("en", "fa"):
+        nxt = t(lang, "backup.first") if due(db, every) else t(lang, "backup.next", when=when(next_due(db, every)))
+        out.append(t(lang, "backup.ready", every=fmt.dur(every, lang), next=nxt))
+    return "\n\n".join(out)

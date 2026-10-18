@@ -304,7 +304,7 @@ def test_main_menu_has_stocks_and_help_and_every_button_works(h):
     msg = h.session.sent(SendMessage)[-1]
     assert "منوی" in msg.text
     cb = buttons(msg)
-    assert cb[:2] == ["sm:menu:1", "hp:menu:1"] and set(cb) == {"sm:menu:1", "hp:menu:1", "mn:go:profile:1", "mn:go:daily:1", "mn:go:invite:1"}
+    assert cb[:2] == ["sm:menu:1", "hp:menu:1"] and set(cb) == {"sm:menu:1", "hp:menu:1", "mn:go:profile:1", "mn:go:daily:1", "mn:go:invite:1", "mn:go:map:1"}
     assert all(len(b.encode()) <= 64 for b in cb)
     stock = edits(h.press(1, "sm:menu:1"))[-1]
     assert "بخش سهام" in stock.text and "mn:menu:1" in buttons(stock)
@@ -477,7 +477,7 @@ def test_no_duplicate_handlers_or_callback_prefixes():
 
 
 def test_the_database_schema_did_not_change():
-    assert dbmod.SCHEMA_VERSION == 5 and sorted(dbmod.MIGRATIONS) == [2, 3, 4, 5]
+    assert dbmod.SCHEMA_VERSION == 6 and sorted(dbmod.MIGRATIONS) == [2, 3, 4, 5, 6]
 
 
 def test_every_new_text_key_exists_in_both_languages():

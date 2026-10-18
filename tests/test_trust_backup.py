@@ -95,7 +95,7 @@ def test_verify_rejects_a_damaged_file(tmp_path):
         backups.verify(str(p))
 
 
-def test_hourly_backup_reaches_every_admin_silently(h, tmp_path):
+def test_a_backup_reaches_every_admin_silently(h, tmp_path):
     h.app.settings = h.app.settings.__class__(**{**h.app.settings.__dict__, "admins": frozenset({1, 2}), "backup_dir": str(tmp_path / "bk")})
     h.say(5, "شروع")
     res = h.run(backups.send_backup(h.app))

@@ -10,7 +10,9 @@ from __future__ import annotations
 DOCS: dict = {
     "start": ("ثبت‌نام و پیام خوش‌آمد", "شروع", "Register and see the welcome message", "start"),
     "help": ("راهنمای کلی بازی: بخش سهام و «درباره‌ی بازی»", "راهنما", "The game's help hub: the stocks section and «About the game»", "help"),
-    "menu": ("منوی اصلی بازی با دکمه: سهام، راهنما، پروفایل، جایزه روزانه و دعوت", "منو", "The game's main menu with buttons: stocks, help, profile, daily bonus and invite", "menu"),
+    "menu": ("منوی اصلی بازی با دکمه: سهام، راهنما، پروفایل، جایزه روزانه، دعوت و نقشه شهر", "منو", "The game's main menu with buttons: stocks, help, profile, daily bonus, invite and the city map", "menu"),
+    "map": ("نقشه‌ی شهر گروه: هر گروه یک شهر دائمی داره با محله‌های مسکونی، تجاری، صنعتی، عمومی و پارک و زمین‌های خالی. خرید زمین و ساخت‌وساز هنوز فعال نیست", "مپ",
+            "The group's city map: every group has one permanent city with residential, commercial, industrial, civic and park districts plus empty lots. Buying land and building are not available yet", "map"),
     "stocks": ("بخش سهام: منوی بازار، بورس، پورتفوی و پیشرفت سهامی. همه‌ی دستورهای سهام با کلمه‌ی «سهام» شروع می‌شن", "سهام", "The stocks section: a menu for the market, the exchange, your portfolio and stock progress. Every stock command starts with «stocks»", "stocks"),
     "stockhelp": ("راهنمای سهام: راهنمای شروع و فهرست همه‌ی دستورهای سهام", "سهام راهنما", "Stock help: the starter guide and the list of all stock commands", "stocks help"),
     "profile": ("پروفایل تو: سطح، ارزش خالص، اعتبار، شرکت و سهام‌ها", "پروفایل", "Your profile: level, net worth, reputation, company, stocks", "profile"),
@@ -67,6 +69,7 @@ DOCS: dict = {
     "setlang": ("زبان این چت (توی گروه: ادمین گروه)", "تنظیم زبان fa\nتنظیم زبان en", "This chat's language (in groups: group admins)", "setlang fa\nsetlang en"),
     "msglimit": ("سقف پیام‌های امتیازی هر نفر در روز، برای درآمد چت (ادمین گروه)", "محدودیت پیام 100", "Daily cap of scored messages per person for chat income (group admins)", "msglimit 100"),
     "quiet": ("تابلوی بازار ثابت که ربات توی گروه ویرایش می‌کنه به‌جای پیام‌های جدید (ادمین گروه)", "حالت سکوت", "A single market board that the bot keeps editing instead of posting new messages (group admins)", "quiet"),
+    "admin": ("پنل ادمین ربات: کانال اجباری (بازیکن‌ها باید عضو بشن) و پشتیبان‌گیری، فقط توی چت خصوصی (ادمین ربات)", "/admin", "The bot admin's panel: the required channel (players must join it) and backups, in a private chat only (bot admins)", "/admin"),
     "stats": ("داشبورد تحلیلی (ادمین ربات)", "/stats", "Analytics dashboard (bot admins)", "/stats"),
     "backup": ("ارسال فوری پشتیبان دیتابیس به همه‌ی ادمین‌ها (ادمین ربات)", "/backup", "Send a database backup to all admins right now (bot admins)", "/backup"),
     "ban": ("بن کاربر و حذف سهام‌هاش (ادمین ربات)", "/ban 123456789", "Ban a player and delist their stocks (bot admins)", "/ban 123456789"),
@@ -87,7 +90,8 @@ CATEGORIES = [
     ("progress", ["level", "reputation", "skills", "upgrade", "legacy", "rebirth", "quests", "achievements", "season"]),
     ("live", ["news", "events", "whales"]),
     ("safety", ["trust", "distrust", "report"]),
+    ("city", ["map"]),
     ("groupadmin", ["settings", "setlang", "msglimit", "quiet"]),
-    ("botadmin", ["stats", "backup", "ban", "unban", "delist", "give", "fire"]),
+    ("botadmin", ["admin", "stats", "backup", "ban", "unban", "delist", "give", "fire"]),
 ]
-CATEGORY_EMOJI = {"start": "🏁", "trade": "📈", "own": "🚀", "income": "💰", "company": "🏢", "social": "👥", "progress": "⭐", "live": "📰", "safety": "🛡", "groupadmin": "⚙️", "botadmin": "🔧"}
+CATEGORY_EMOJI = {"start": "🏁", "trade": "📈", "own": "🚀", "income": "💰", "company": "🏢", "social": "👥", "progress": "⭐", "live": "📰", "safety": "🛡", "city": "🗺", "groupadmin": "⚙️", "botadmin": "🔧"}

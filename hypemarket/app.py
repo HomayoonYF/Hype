@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
@@ -15,7 +16,7 @@ from .db import Database
 from .handlers import App, router
 from .texts import t
 from .jobs import start_jobs
-from . import bots, exchange, progress
+from . import backups, bots, exchange, progress
 
 log = logging.getLogger("hypemarket")
 
@@ -50,11 +51,13 @@ async def main() -> None:
     dp.include_router(router)
     await bot.set_my_commands([BotCommand(command=c, description=en) for c, fa, en in MENU])
     await bot.set_my_commands([BotCommand(command=c, description=fa) for c, fa, en in MENU], language_code="fa")
+    if os.environ.get("BACKUP_EVERY_MIN"):
+        log.warning("BACKUP_EVERY_MIN in .env is no longer used: backups follow BACKUP_EVERY_HOURS (default 24).")
     if not settings.admins:
         log.error("ADMIN_IDS is empty: backups cannot be sent to anyone, and moderation/analytics alerts have no recipient. Set ADMIN_IDS in .env!")
     for admin in settings.admins:     # admins must have pressed /start in a private chat with the bot at least once
         try:
-            await bot.send_message(admin, t("en", "backup.ready", min=settings.backup_every_min) + "\n" + t("fa", "backup.ready", min=settings.backup_every_min))
+            await bot.send_message(admin, backups.ready_text(db, settings))
         except Exception as e:
             log.warning("could not message admin %s (%s): open the bot in a private chat and press /start so backups can reach you", admin, e)
     tasks = start_jobs(app)

@@ -103,8 +103,9 @@ async def salary_tick(app: App) -> None:
 
 
 async def backup_tick(app: App) -> None:
-    """Hourly: verified, compressed copy of the whole database sent to every admin."""
-    await backups.send_backup(app)
+    """Every few minutes the clock is checked; when a backup is due (every 24 h by default) a verified, compressed copy of the whole
+    database goes to every admin. The schedule is stored in the database, so a restart neither skips nor repeats a backup."""
+    await backups.scheduled(app)
 
 
 async def daily_report(app: App) -> None:
@@ -190,7 +191,7 @@ def start_jobs(app: App) -> list:
     ]
     tasks.append(asyncio.create_task(_loop("exchange", 60, exchange_tick, app), name="exchange"))
     tasks.append(asyncio.create_task(_loop("salary", 300, salary_tick, app), name="salary"))
-    tasks.append(asyncio.create_task(_loop("backup", app.settings.backup_every_min * 60, backup_tick, app), name="backup"))
+    tasks.append(asyncio.create_task(_loop("backup", min(backups.CHECK_EVERY, backups.interval(app.settings)), backup_tick, app), name="backup"))
     if app.settings.bots:
         tasks.append(asyncio.create_task(_loop("bots", 30, bot_tick, app), name="bots"))
     return tasks

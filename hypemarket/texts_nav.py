@@ -9,6 +9,7 @@ FA_NAV = {
     "menu.profile": "👤 پروفایل",
     "menu.daily": "🎁 جایزه روزانه",
     "menu.invite": "👥 دعوت دوستان",
+    "menu.map": "🗺 نقشه شهر",
     "menu.back": "🔙 منو",
     # --- the stock section
     # --- help hub
@@ -66,6 +67,7 @@ EN_NAV = {
     "menu.profile": "👤 Profile",
     "menu.daily": "🎁 Daily bonus",
     "menu.invite": "👥 Invite friends",
+    "menu.map": "🗺 City map",
     "menu.back": "🔙 Menu",
     "help.btn_stock": "📈 Stocks",
     "help.btn_back_stock": "🔙 Stock help",

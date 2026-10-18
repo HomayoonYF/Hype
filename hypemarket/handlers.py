@@ -13,7 +13,7 @@ from aiogram import Bot, F, Router
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramRetryAfter
 from aiogram.types import BufferedInputFile, CallbackQuery, ChatMemberUpdated, InputMediaPhoto, LabeledPrice, Message, PreCheckoutQuery, User
 
-from . import achievements, analytics, backups, charts, salary, config as C, core, events, fmt, progress, quests, sections, shop, social, textparse, trading, trust, views
+from . import achievements, adminpanel, analytics, backups, charts, salary, config as C, core, events, fmt, gate, progress, quests, sections, shop, social, textparse, trading, trust, views, world, worldmap
 from .core import GameError
 from .db import Database
 from .texts import ALIASES, SOFT_ARGS, SOFT_EXACT, EXAMPLES, level_title, t
@@ -44,6 +44,9 @@ class App:
     touched_day: int = 0
     alert_ts: dict = field(default_factory=dict)
     pending: dict = field(default_factory=dict)       # uid -> (stock command, expiry): the player's next message answers a guided prompt
+    gate_ok: dict = field(default_factory=dict)       # uid -> until when «is a member of the required channel» is trusted
+    gate_no: dict = field(default_factory=dict)       # uid -> until when «not a member of the required channel» is trusted (a few seconds)
+    gate_told: dict = field(default_factory=dict)     # (chat, uid) -> until when a group is not told again to join
 
     async def alert_admins(self, text: str, key: str = "generic", every: int = 600) -> None:
         """DM every admin (throttled per key so a crash loop can't spam you)."""
@@ -937,6 +940,27 @@ async def h_grouprank(c: Ctx):
     return views.grouprank_view(c.db, c.lang)
 
 
+@cmd("map")
+async def h_map(c: Ctx):
+    """The group's city (World Engine v1): generated once per chat, then always the same saved layout."""
+    if not c.is_group:
+        return Reply(text=t(c.lang, "map.private"))
+    try:
+        w, created = await world.aensure_world(c.db, c.chat.id)
+        layout = await world.aload_layout(w)
+    except world.WorldError as e:
+        log.error("map of chat %s unavailable: %s", c.chat.id, e.code)
+        return Reply(text=t(c.lang, "map.failed" if e.code == "generation_failed" else "map.corrupt"))
+    if created:
+        log.info("world %s created for chat %s (seed %s)", w["id"], c.chat.id, w["seed"])
+    try:
+        png = await worldmap.render_cached(w["id"], layout, c.lang)
+    except Exception:                                                 # drawing failed: the saved city stays exactly as it is
+        log.exception("map picture of world %s failed", w["id"])
+        return Reply(text=t(c.lang, "map.failed"))
+    return Reply(photo=png, text=views.map_caption(c.lang, w, layout))
+
+
 @cmd("invite")
 async def h_invite(c: Ctx):
     return Reply(text=t(c.lang, "invite", link=bot_link(c, f"start=ref_{c.uid}"), glink=bot_link(c, "startgroup=true"),
@@ -1127,6 +1151,45 @@ async def h_backup(c: Ctx):
         return Reply(text=t(c.lang, "backup.failed"))
     m = res["meta"]
     return Reply(text=t(c.lang, "backup.manual", n=fmt.num(res["sent"], c.lang), size=fmt.num(res["size"] // 1024, c.lang), users=fmt.num(m["users"], c.lang), stocks=fmt.num(m["stocks"], c.lang)))
+
+
+@cmd("admin")
+async def h_admin(c: Ctx):
+    """The bot admin's panel. Players who are not in ADMIN_IDS get the same silence as for any other admin command."""
+    if not adminpanel.allowed(c.app, c.uid):
+        raise Ignore
+    if c.is_group:
+        return Reply(text=t(c.lang, "ad.private_only"))
+    return adminpanel.main(c.app, c.lang, c.uid)
+
+
+@cbk("ad")
+async def cb_admin(c: Ctx):
+    """ad:<screen or action>:<player id>. Every press re-checks ADMIN_IDS: a copied or forged button does nothing for anyone else."""
+    if not adminpanel.allowed(c.app, c.uid) or c.is_group:
+        return Reply(toast=t(c.lang, "ad.denied"))
+    return await adminpanel.press(c.app, c.lang, c.uid, c.args[:-1])
+
+
+def join_prompt(app: App, lang: str, uid: int, name: str, s: dict) -> Reply:
+    rows = []
+    if s.get("link"):
+        rows.append([(t(lang, "gate.join"), s["link"], "url")])
+    rows.append([(t(lang, "gate.joined"), f"gate:check:{uid}")])
+    return Reply(text=t(lang, "gate.need", name=fmt.esc(name), channel=fmt.esc(gate.label(s))), kb=kb(rows))
+
+
+@cbk("gate")
+async def cb_gate(c: Ctx):
+    """«✅ I joined»: ask Telegram again (never the cache) and let the player in if they really are a member."""
+    s = gate.active(c.db)
+    if s and await gate.membership(c.app, c.uid, fresh=True) == "no":
+        return Reply(toast=t(c.lang, "gate.still", channel=gate.label(s)), alert=True)
+    done = Reply(text=t(c.lang, "gate.ok"), edit=True)
+    if not c.is_group:
+        menu = views.main_menu(c.lang, c.uid)
+        done = Reply(text=t(c.lang, "gate.ok") + "\n\n" + menu.text, kb=menu.kb, edit=True)
+    return done
 
 
 @cmd("ban")
@@ -1450,6 +1513,12 @@ async def handle_message(m: Message, app: App, text: str) -> None:
     if pend:                                      # a guided prompt («🛒 خرید») is waiting for this player's answer
         app.pending.pop(tg.id, None)
         if core.now() <= pend[1] and (p is None or p.cmd == "stocks_unknown"):
+            if pend[0] == adminpanel.PROMPT:      # the admin's answer to «✏️ Set channel»
+                if adminpanel.allowed(app, tg.id):
+                    lang, created = _prepare(app, tg, chat)
+                    c = Ctx(app=app, bot=app.bot, tg=tg, chat=chat, lang=lang, cmd="admin", args=[text], msg=m, created=created)
+                    await run(c, lambda cx: adminpanel.channel_text(app, cx.lang, cx.uid, text), is_cb=False)
+                return
             p = textparse.parse(f"stocks {pend[0]} {text}", app.botname)       # the plain message is the command's arguments
     if not p or (p.cmd not in HANDLERS and not p.retired):
         return
@@ -1468,6 +1537,16 @@ async def handle_message(m: Message, app: App, text: str) -> None:
             referrer = int(payload[4:])
         elif STOCK_PAYLOAD.match(payload) and STOCK_PAYLOAD.match(payload).group(2):       # s_SPEED_r123: a shared stock link also invites
             referrer = int(STOCK_PAYLOAD.match(payload).group(2))
+    if gate.active(app.db) and tg.id not in app.settings.admins and await gate.membership(app, tg.id) == "no":
+        # the required channel: nothing else runs for this player until they have joined. /start still registers them (so the invite
+        # that brought them counts); everything else waits and is not even recorded.
+        if p.cmd == "start":
+            _prepare(app, tg, chat, referrer)
+        if gate.may_notify(app, chat.id, tg.id, group) and (not group or app.chat_budget(chat.id)):
+            g_lang = _lang_for(app, chat, tg.id)
+            r = join_prompt(app, g_lang, tg.id, tg.full_name or tg.username or "", gate.active(app.db))
+            await _call(m.reply, r.text, reply_markup=r.kb)
+        return
     lang, created = _prepare(app, tg, chat, referrer)
     c = Ctx(app=app, bot=app.bot, tg=tg, chat=chat, lang=lang, cmd=p.cmd, args=p.args, soft=soft, msg=m, created=created)
     if p.cmd == "start" and p.args and p.args[0] == "shop":
@@ -1485,7 +1564,7 @@ async def on_photo(m: Message, app: App) -> None:
     await handle_message(m, app, m.caption)
 
 
-BOUND = {"pf", "cl", "up", "sk", "lg", "rb", "rug", "hp", "qs", "wh", "scp", "scr", "sal", "mn", "sm"}
+BOUND = {"pf", "cl", "up", "sk", "lg", "rb", "rug", "hp", "qs", "wh", "scp", "scr", "sal", "mn", "sm", "ad", "gate"}
 
 
 @router.callback_query()
@@ -1503,6 +1582,11 @@ async def on_callback(cb: CallbackQuery, app: App) -> None:
     if (banned and banned["banned"]) or app.throttled(tg.id, 0.4):
         await _call(cb.answer)
         return
+    if parts[0] != "gate" and tg.id not in app.settings.admins:
+        gs = gate.active(app.db)
+        if gs and await gate.membership(app, tg.id) == "no":                  # the required channel: no button works until they have joined
+            await _call(cb.answer, t(_lang_for(app, chat, tg.id), "gate.cb", channel=gate.label(gs)), show_alert=True)
+            return
     if not (parts[0] == "sm" and parts[1:2] == ["ask"]):
         app.pending.pop(tg.id, None)                                          # pressing anything else cancels a guided prompt
     lang, _created = _prepare(app, tg, chat)

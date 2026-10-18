@@ -222,9 +222,9 @@ class Settings:
     log_level: str
     proxy: str = ""            # e.g. socks5://127.0.0.1:1080 or http://host:port (needed where Telegram is blocked)
     backup_dir: str = "backups"  # empty string disables automatic backups
-    backup_keep: int = 48
+    backup_keep: int = 30
     bots: bool = True          # automated market traders
-    backup_every_min: int = 60   # how often the database is sent to the admins
+    backup_every_min: int = 1440  # how often the database is sent to the admins (default: every 24 hours)
     report_hour: int = 5         # UTC hour of the daily analytics report to the admins
     salary: bool = True          # the daily salary DM
     salary_hour: int = 5         # UTC hour from which the salary DMs go out (05:00 UTC = 08:30 Tehran)
@@ -245,6 +245,15 @@ def _flag(name: str, default: str) -> bool:
     return os.environ.get(name, default).strip().lower() in ("1", "true", "yes", "on")
 
 
+def _backup_minutes() -> int:
+    """BACKUP_EVERY_HOURS (default 24, decimals allowed, never below 5 minutes). The old BACKUP_EVERY_MIN is no longer read."""
+    try:
+        hours = float(os.environ.get("BACKUP_EVERY_HOURS", "24") or 24)
+    except ValueError:
+        hours = 24.0
+    return max(5, int(round(hours * 60)))
+
+
 def load_settings() -> Settings:
     _load_dotenv(Path(".env"))
     admins = frozenset(int(x) for x in os.environ.get("ADMIN_IDS", "").replace(" ", "").split(",") if x.strip().lstrip("-").isdigit())
@@ -259,8 +268,8 @@ def load_settings() -> Settings:
         log_level=os.environ.get("LOG_LEVEL", "INFO").upper(),
         proxy=os.environ.get("PROXY_URL", "").strip(),
         backup_dir=os.environ.get("BACKUP_DIR", "backups").strip(),
-        backup_keep=max(1, int(os.environ.get("BACKUP_KEEP", "48") or 48)),
-        backup_every_min=max(5, int(os.environ.get("BACKUP_EVERY_MIN", "60") or 60)),
+        backup_keep=max(1, int(os.environ.get("BACKUP_KEEP", "30") or 30)),
+        backup_every_min=_backup_minutes(),
         report_hour=int(os.environ.get("REPORT_HOUR_UTC", "5") or 5) % 24,
         salary=_flag("SALARY_DM", "1"),
         salary_hour=int(os.environ.get("SALARY_HOUR_UTC", "5") or 5) % 24,

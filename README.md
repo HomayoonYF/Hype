@@ -47,7 +47,7 @@ The whole game is one SQLite file (`hypemarket.db`) — **back it up** (copy it 
 | Social | every group gets an index stock · group ranking · leaderboards · companies (shared treasury, daily-bonus synergy) · invites with rewards · bonus for adding the bot to a group |
 | Progression | net-worth levels (no cap) · skill tree · reputation · rebirth with Legacy points & permanent perks · 30-day seasons with prizes |
 | Live market | automated 🤖 market traders keep prices moving · 🐋 whale headlines (and DMs to holders) · detailed candlestick charts with volume, moving average, whale markers and a full stats caption |
-| Safety | **hourly verified backups sent to every admin** · scam reports (`گزارش`) and trust marks (`اعتماد` / `بی اعتماد`) with a public 🚩 warning and admin Delist / Ban / Dismiss buttons · `/ban` `/unban` `/delist` · players see a 🤝 trust label on every stock |
+| Safety | **verified backups sent to every admin every 24 hours** · scam reports (`گزارش`) and trust marks (`اعتماد` / `بی اعتماد`) with a public 🚩 warning and admin Delist / Ban / Dismiss buttons · `/ban` `/unban` `/delist` · players see a 🤝 trust label on every stock |
 | Sharing | `کارت` makes a picture card (portfolio, rank or a stock) with your invite link and a Telegram "send to friends" button; a friend who opens a shared stock card lands on that stock and counts as your invite |
 | Daily salary | every morning a private message with your wealth summary and a **claim salary** button (`حقوق` turns it on/off) |
 | Progress | 26 achievements (`دستاوردها`) with rewards · admin analytics dashboard (`/stats`) and a daily report |
@@ -75,17 +75,19 @@ When a version changes the database layout, the bot **upgrades your existing dat
 this version added three columns and the quests table). Still, copy `hypemarket.db` before updating, and never commit it:
 the included `.gitignore` already excludes `.env` (your token), `*.db` and `backups/`. If your token was ever pushed to a public repo,
 revoke it in @BotFather (`/revoke`) and put the new one in `.env`.
-Schema changes are applied automatically on start and keep all data; older databases are upgraded step by step (v0.13 = schema 5: short selling is removed, every open margin is refunded to its owner's cash, the 3 skill points of the old skill are returned, and each affected player gets one private message).
+Schema changes are applied automatically on start and keep all data; older databases are upgraded step by step (v0.13 = schema 5: short selling is removed, every open margin is refunded to its owner's cash, the 3 skill points of the old skill are returned, and each affected player gets one private message; v0.15 = schema 6: only adds the empty `worlds` table, nothing else is read or written).
 `راهنما` ← `همه‌ی دستورها` is generated from `hypemarket/docs.py`: add a command there (the tests fail if one is missing or an example doesn't parse).
 
 ## 4. Backups (read this once)
 
-* Every `BACKUP_EVERY_MIN` minutes (default 60) the bot takes a consistent copy of the whole database, **checks it** (integrity check + counts),
+* **Once every 24 hours** (`BACKUP_EVERY_HOURS`, default 24) the bot takes a consistent copy of the whole database, **checks it** (integrity check + counts),
   compresses it and sends it **silently** to every account in `ADMIN_IDS`, with a caption (time, players, stocks, checksum). It also keeps the
-  newest `BACKUP_KEEP` (default 48) copies in `BACKUP_DIR` (`backups/`). The first backup arrives a few seconds after the bot starts.
+  newest `BACKUP_KEEP` (default 30) copies in `BACKUP_DIR` (`backups/`). The old `BACKUP_EVERY_MIN` setting is no longer read, so an old `.env` that still says 60 cannot bring the hourly backups back.
+* **The schedule survives restarts.** The time of the last delivered backup is stored in the database: restarting the bot never skips a due backup and never sends an extra one. A brand-new
+  install sends its first backup a few seconds after start; a bot that was off for days sends one right after it comes back. If delivery fails (an admin never pressed `/start`), it is retried an hour later, not every few minutes.
 * **Every admin must open the bot in a private chat and press `/start` once**, otherwise Telegram will not let the bot message them
   (the bot logs a warning at startup if it can't reach someone). If a backup fails or can't be made, the admins get an alert message.
-* `/backup` (admins only) sends one immediately.
+* `/backup` (admins only) sends one immediately; so does the panel's **💾 Backups → 📤 Send one now**. Neither moves the 24-hour schedule.
 * **Restore:** stop the bot, then `python restore.py hypemarket-YYYYMMDD-HHMMSS-UTC.db.gz` (it checks the file, keeps your current database as
   `hypemarket.db.before-restore-<time>`, installs the backup) and start the bot again. Files over 45 MB are sent in numbered parts:
   `python restore.py file.part1 file.part2 ...`.
@@ -121,7 +123,7 @@ Only aggregated numbers are collected; the one per-player record is a "seen toda
 
 ## 8. Operating it
 
-* Owner commands (your id in `ADMIN_IDS`): `/stats` (users, groups, coins minted/burned), `/give <id> <coins>`, `/fire [pump|crash|boom|special|holiday|mania]`.
+* Owner commands (your id in `ADMIN_IDS`): `/admin` (the settings panel, section 13), `/stats` (users, groups, coins minted/burned), `/give <id> <coins>`, `/fire [pump|crash|boom|special|holiday|mania]`.
 * Group admins: `تنظیمات` (language, news mode, message cap), `حالت سکوت` (pinned board), `محدودیت پیام N`.
 * Watch `minted` vs `burned` in `/stats`. If minted grows far faster than burned, lower `DAILY_BASE`, `ACT_UNITS`, or raise `TRADE_FEE_BPS`.
 * `.env` switches: `ALLOW_RUG=0` removes rug pulls, `SHOP_ENABLED=0` closes the shop, `RANDOM_EVENTS=0` stops random events,
@@ -143,7 +145,7 @@ Only aggregated numbers are collected; the one per-player record is a "seen toda
   trade cooldown, daily activity caps, referral rewards only after 3 real trades, and the exchange companies are priced by the house so nobody can move them with alts. For a big launch, add
   account-age rules or a captcha-like gate in `ensure_user`.
 * **Scale:** SQLite + one process comfortably handles thousands of players. If you outgrow it, the database layer is isolated in `db.py`.
-* **Tested vs. not tested:** the game rules, Persian parsing, buttons, payments, group flows and background jobs are covered by about 355 automated tests,
+* **Tested vs. not tested:** the game rules, Persian parsing, buttons, payments, group flows and background jobs are covered by about 450 automated tests,
   including a randomized simulation (traders, whales, quests, rug pulls, exchange trades and earnings nights, rebirths all at once) that checks every coin is accounted for, and a set of simulated *farmers* that attack the exchange (section 10). These run against a *simulated* Telegram. I could not run
   against real Telegram servers, so do a 15-minute manual test with two accounts and a test group before announcing it.
 
@@ -197,7 +199,7 @@ coins the house minted/burned for price moves today, and the house result since 
 | Class | Commands | Typed as |
 |---|---|---|
 | **Stock section** | buy, sell, price, chart, market, exchange, earnings, portfolio, alerts, launch / meme / project, own stock, edit, dividend %, cash out, dividends, income, companies, groups' index and ranks, leaderboards, share cards, level, reputation, skills, upgrade, legacy, rebirth, quests, achievements, season, news, events, whales, trust, distrust, report | `سهام <command> <arguments>` (English `stocks <command> ...`) |
-| **Global** | `شروع`, `راهنما`, `منو`, `پروفایل`, `زبان`, `دعوت`, `روزانه`, `حقوق`, `فروشگاه`, `تنظیمات`, `تنظیم زبان`, `محدودیت پیام`, `حالت سکوت` | unchanged |
+| **Global** | `شروع`, `راهنما`, `منو`, `پروفایل`, `زبان`, `دعوت`, `روزانه`, `حقوق`, `فروشگاه`, `تنظیمات`, `تنظیم زبان`, `محدودیت پیام`, `حالت سکوت`, `مپ` (v0.15, see section 12) | unchanged |
 | **Bot admins** | `/stats /backup /ban /unban /delist /give /fire` | unchanged (same authorization checks) |
 
 * `سهام` alone opens the stock menu. `سهام راهنما` opens stock help. `سهام من` (your stock), `سهام ویرایش ...` (edit) are the in-section spellings of those two.
@@ -232,3 +234,33 @@ Callbacks: `mn:` (main menu), `sm:` (stock menu: `sm:cat`, `sm:go`, `sm:ask`, `s
 **Bug fix: launching again after a rebirth.** A rebirth delists your stocks, but a delisted stock kept its ticker forever, so `عرضه SPEED` answered "ticker taken". Now the owner can launch the ticker of their *own* delisted stock again
 (the old record is kept under an archive name like `SPEED~12`); other players still can't take it, and active tickers and the exchange's tickers stay protected.
 
+## 12. World Engine v1 — one city per group and the `مپ` command (v0.15)
+
+**Why.** The next part of the game is a modern-day life simulator played *inside each group*. This version lays only the foundation: every Telegram group (or supergroup) owns exactly one
+persistent, procedurally generated city, and players can look at it. Nothing in it can be bought, built or driven yet — that is deliberately left for later versions, and the map's caption says so.
+
+| What | How |
+|---|---|
+| **`مپ`** (also `نقشه`, `map`) | A global command (not part of `سهام`). In a group it sends the group's city as a PNG with a caption: city name, "your group's city", that this is the starting map, the district legend and how many lots are empty. In a private chat it explains that maps belong to groups; no world is created. The word must stand alone: `مپ کجاست؟` or `مپ 12` is ordinary chat and is ignored, like every other plain-word command in groups. |
+| **`منو` → 🗺 نقشه شهر** | A button on the main menu. It runs the *same* `map` handler as the typed command (same world, same checks, same picture) and, like the other `mn:` buttons, only reacts to the player who opened the menu. In a private chat it shows the explanation with a way back. |
+| **One world per group** | `worlds` table, `UNIQUE(chat_id)`: the key is the Telegram chat id, never the title or the player who typed first. The first `مپ` generates the city **outside** any database transaction (about 0.3 s, in a worker thread, so the bot keeps answering everybody else), then saves it with `INSERT OR IGNORE` and re-reads the row: two players racing each other get the same saved world and the city is built once per group, never once per request. Nothing is generated at start-up or by a background job; a group that never asks never gets a city. |
+| **The whole layout is saved** | Not just the seed: `hypemarket/world.py` stores seed, generator version, name (Persian + English), size and the complete JSON layout (roads as polylines with junctions, neighbourhood outlines, blocks, lots, landmarks, river, terrain lines — each with a stable id such as `r12`, `p87`, `d3`). A future generator can change freely without silently redrawing cities people already know. A damaged row is reported (`⚠️ نقشه‌ی ذخیره‌شده … خراب شده`) and **never** regenerated or overwritten. |
+| **The city** | **Not a grid.** `hypemarket/worldgeom.py` builds neighbourhoods as curved Voronoi-style cells, each with its own street pattern and density (open suburbs, dense centres), connects them with winding main roads (shortest paths with a turn penalty, so they bend gently instead of zig-zagging) and a river with a few bridges, builds one exact planar road network from all of it, then bends the whole thing with a smooth bounded warp and cuts lots from the blocks it leaves. Every layout is **validated** before it is saved (connected roads, no street ending in the middle of nowhere, lots clear of roads and water, no overlapping lots, every lot within reach of a road, four public places — city hall, hospital, school, station —, at least a quarter of the lots empty for the future, JSON round-trip). About 90–170 lots per city. Generation uses its own `random.Random(...)`: the market's randomness is untouched and the same seed always gives the same city. At most 6 attempts, then a friendly error. |
+| **The picture** | `hypemarket/worldmap.py` draws the saved layout with Pillow in memory (about 1250×1090 px, 200–400 KB) in a deliberately quiet style: near-black background `#080B09`, land `#101812`, streets `#243B2A`, main roads `#45654A`, muted grey-green labels; no gradients, no glow, no icons, buildings as flat footprints, empty lots as dashed outlines, a dark river, faint terrain lines only in the countryside. Labels are few (city, five district names, four public places) and never sit on a main road or in the water. The title and legend follow the group's language (Persian is shaped and right-to-left, like the share cards). Drawing runs in a worker thread and each (city, language) picture is cached in memory (bounded); the cache is never the source of truth. If the bundled font is missing Pillow's default font is used. |
+
+Zero stock impact: no stock command, price, balance, level, rebirth, legacy, season, quest or background job is touched; `مپ` moves no money. Tests: `tests/test_world.py` (generator validity across seeds, determinism, global random state, "not a grid" and "no dead ends" measurements, overlap/connectivity checks, the validator against broken layouts, palette discipline of the PNG, language and font fallback, cache, the event loop staying responsive, persistence across restart, group isolation, racing threads and racing requests, migration from schema 5, the command and the menu button, Telegram, renderer and generator failures, corrupt rows).
+
+## 13. The admin panel and the required channel (v0.15)
+
+**`/admin`** opens a settings panel with buttons. It is for the accounts in `ADMIN_IDS` (your `.env`) **only**: for anybody else `/admin` is silently ignored (like `/stats`), every button re-checks `ADMIN_IDS` when it is pressed (a copied or forged button does nothing, and only the player the keyboard was made for can press it), and it only opens in a private chat with the bot.
+
+| Screen | What you can do |
+|---|---|
+| **📢 Required channel** | **✏️ Set channel** — send `@yourchannel`, `t.me/yourchannel` or (private channel) its numeric id such as `-1001234567890`. The bot looks the channel up, checks that **it is an administrator there** (Telegram only lets an administrator list a channel's members) and turns the lock on. **🔛/⏸** switch the lock, **🔍 Check access** re-tests it, **🗑 Remove** forgets the channel (asks first). The setting lives in the database, so no restart and no `.env` edit. |
+| **💾 Backups** | When the next 24-hour backup is due, when the last one went out, **📤 Send one now**. |
+
+**What players see.** While the lock is on, a player (anybody who is not in `ADMIN_IDS`) who has not joined the channel gets **no answer from the bot except a message in their language with a 📢 join button and a ✅ "I joined" button**, in private chats, in groups (one notice per player per 90 seconds, so a group is never spammed) and on every button. "I joined" asks Telegram again and, when it is true, opens the menu. `/start` still registers a new player (so the invite link that brought them keeps counting); a blocked player's other messages are not even recorded.
+
+**Safe by design.** Membership answers are cached briefly (10 minutes for "member", 10 seconds for "not a member"), so an active player costs about one Telegram call per ten minutes. Admins are never blocked. If Telegram cannot answer (the bot was removed from the channel, an outage…) the players are **let through** instead of locking the whole game, and the admins get one alert an hour saying so; a player Telegram says is not a member is always blocked. Ordinary chat in a group is not a command and never triggers the gate, and chat-activity income is not gated; payments are always processed. Changing or removing the channel forgets every remembered answer.
+
+**Setup in 3 steps:** 1. add the bot to your channel as an **administrator**; 2. open the bot in a private chat, send `/admin` → 📢 Required channel → ✏️ Set channel; 3. send the channel name. Tests: `tests/test_admin_gate.py` (the 24-hour schedule across restarts, retries, clock errors; every way a regular player could try to reach the panel; the guided prompt, errors and expiry; each membership status; caching; groups; failures of Telegram; HTML safety of channel titles).

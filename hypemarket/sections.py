@@ -29,12 +29,12 @@ STOCK_CMDS = frozenset({
 
 # Global commands: not stock-only, never behind a section word.
 GLOBAL_CMDS = frozenset({
-    "start", "help", "menu", "profile", "language", "invite", "daily", "salary", "shop",
+    "start", "help", "menu", "profile", "language", "invite", "daily", "salary", "shop", "map",
     "settings", "setlang", "msglimit", "quiet",
 })
 
 # Slash commands of the bot's admins (never renamed).
-ADMIN_CMDS = frozenset({"stats", "backup", "ban", "unban", "delist", "give", "fire"})
+ADMIN_CMDS = frozenset({"admin", "stats", "backup", "ban", "unban", "delist", "give", "fire"})
 
 # Commands that only exist to open a section / its help (they are not "inside" a section, they ARE its doors).
 SECTION_DOORS = frozenset({"stocks", "stockhelp", "stocks_unknown"})
