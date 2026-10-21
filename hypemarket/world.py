@@ -901,10 +901,14 @@ def get_world(db: Database, chat_id: int):
 def save_world(db: Database, chat_id: int, layout: dict) -> tuple:
     """Store a finished layout for the chat unless one is already there. Returns (row, created): when two requests race, one wins
     (UNIQUE(chat_id) + INSERT OR IGNORE) and both get the same saved world back."""
+    from . import worldplaces                                          # imported here: worldplaces itself builds on this module
     with db.tx():
         cur = db.x("INSERT OR IGNORE INTO worlds(chat_id,seed,gen_version,name_fa,name_en,cols,rows,layout,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
                    (chat_id, layout["seed"], layout["generator"], layout["name"]["fa"], layout["name"]["en"], layout["w"], layout["h"], dumps(layout), core.now()))
-        return get_world(db, chat_id), cur.rowcount == 1
+        row = get_world(db, chat_id)
+        if cur.rowcount == 1:                                           # a new city gets its permanent casino in the same transaction
+            worldplaces.ensure_casino(db, row, layout)
+        return row, cur.rowcount == 1
 
 
 def ensure_world(db: Database, chat_id: int) -> tuple:

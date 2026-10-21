@@ -363,11 +363,11 @@ FA: dict[str, str] = {
     "help.cat_adminnote": "🔒 ویژه‌ی ادمین‌های ربات",
     "cat.start": "شروع", "cat.trade": "معامله", "cat.own": "سهام خودت", "cat.income": "درآمد", "cat.company": "شرکت", "cat.social": "گروه و رتبه", "cat.progress": "پیشرفت",
     "cat.live": "بازار زنده", "cat.safety": "اعتماد و گزارش", "cat.groupadmin": "ادمین گروه", "cat.botadmin": "ادمین ربات", "cat.city": "شهر",
-    "map.caption": "🗺 <b>{name}</b> — شهر گروه شما\n\nاین نقشه‌ی شروع دنیای این گروهه؛ هر گروه فقط یک شهر داره و این نقشه همیشه همینه.\n🏘 مسکونی · 🏬 تجاری · 🏭 صنعتی · 🏛 عمومی · 🌳 پارک\n⬜ زمین خالی: {vacant} قطعه از {parcels} قطعه برای آینده‌ی شهر\n\nℹ️ خرید زمین و ساخت‌وساز هنوز فعال نیست.",
+    "map.caption": "🗺 <b>{name}</b> — شهر گروه شما\n\nاین نقشه ی شروع دنیای این گروهه؛ هر گروه فقط یک شهر داره و این نقشه همیشه همینه.\n🏘 مسکونی · 🏬 تجاری · 🏭 صنعتی · 🏛 عمومی · 🌳 پارک\n⬜ زمین خالی: {vacant} قطعه از {parcels} قطعه برای آینده‌ی شهر\n\nℹ️ خرید زمین و ساخت‌وساز هنوز فعال نیست.",
     "map.private": "🗺 نقشه مال گروهه! هر گروه تلگرامی شهر خودش رو داره. ربات رو به گروهت اضافه کن و همون‌جا بنویس «مپ».",
-    "map.corrupt": "⚠️ نقشه‌ی ذخیره‌شده‌ی این گروه خراب شده و قابل نمایش نیست. به ادمین ربات خبر بده؛ شهر دست‌نخورده می‌مونه.",
+    "map.corrupt": "⚠️ نقشه ی ذخیره‌شده‌ی این گروه خراب شده و قابل نمایش نیست. به ادمین ربات خبر بده؛ شهر دست‌نخورده می‌مونه.",
     "map.failed": "⚠️ ساخت شهر این بار جواب نداد. چند لحظه بعد دوباره «مپ» رو بزن.",
-    "map.title": "🗺 {name}", "map.subtitle": "شهر گروه · نقشه‌ی شروع · ساخت‌وساز هنوز فعال نیست",
+    "map.title": "🗺 {name}", "map.subtitle": "شهر گروه · نقشه ی شروع · ساخت‌وساز هنوز فعال نیست",
     "map.zone.residential": "مسکونی", "map.zone.commercial": "تجاری", "map.zone.industrial": "صنعتی", "map.zone.civic": "عمومی", "map.zone.park": "پارک",
     "map.legend.vacant": "زمین خالی", "map.legend.landmark": "مکان عمومی", "map.legend.main": "خیابان اصلی", "map.legend.street": "کوچه و خیابان",
     "map.legend.building": "ساختمان", "map.legend.park": "پارک و فضای سبز",
@@ -886,12 +886,19 @@ from .texts_nav import EN_NAV, FA_NAV  # noqa: E402  (the navigation layer's str
 
 from .texts_admin import EN_ADMIN, FA_ADMIN  # noqa: E402  (the admin panel and the channel gate)
 
+from .texts_world import EN_WORLD, FA_WORLD  # noqa: E402  (inspecting parcels, public places and districts)
+from .texts_map import EN_MAP, FA_MAP  # noqa: E402  (the interactive map, walking, the casino)
+
 FA.update(FA_EX)
 EN.update(EN_EX)
 FA.update(FA_NAV)
 EN.update(EN_NAV)
 FA.update(FA_ADMIN)
 EN.update(EN_ADMIN)
+FA.update(FA_WORLD)
+EN.update(EN_WORLD)
+FA.update(FA_MAP)
+EN.update(EN_MAP)
 
 STR = {"fa": FA, "en": EN}
 

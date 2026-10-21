@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import asyncio
 import io
+import logging
 import math
 import random
+import re
 from collections import OrderedDict
 
 from PIL import Image, ImageDraw
@@ -19,7 +21,9 @@ from . import cards
 from . import worldgeom as G
 from .texts import t
 
-RENDER_VERSION = 1                      # bump when the look changes: the in-memory picture cache is keyed by it
+log = logging.getLogger("hypemarket")
+
+RENDER_VERSION = 2                      # bump when the look changes: the in-memory picture cache is keyed by it (2: the casino landmark)
 MAX_PNG = 2_500_000
 SCALE = 0.92                             # output pixels per world unit
 SS = 2                                  # supersampling factor
@@ -46,8 +50,20 @@ LANDMARK_LINE = (126, 168, 133)
 LABEL = (104, 126, 108)                 # muted gray-green
 LABEL_DIM = (74, 94, 79)
 LABEL_BRIGHT = (150, 174, 155)
+HILITE = (170, 232, 184)                # #AAE8B8: the selected place of an inspection picture (pale mint, still green-dominant)
+HILITE_FILL = (118, 196, 136, 84)       # its translucent fill
 ROAD_PX = {"main": 6.2, "street": 3.0}  # drawn width of a road in output pixels
 CASING = 2.6
+
+
+MAP_WORD = "نقشه ی"                      # the Persian «map» as the map's own labels spell it: a plain space between «نقشه» and «ی»
+_MAP_WORD_VARIANTS = re.compile("نقشه[\u200c\u200d\u200e\u200f]?ی")
+
+
+def fix_label(text: str) -> str:
+    """Every label the renderer draws goes through here: the word «map» written fully joined, or with a zero-width joiner / non-joiner between
+    its last two letters, becomes exactly «نقشه ی» (a plain space). Idempotent, and it only touches that one word."""
+    return _MAP_WORD_VARIANTS.sub(MAP_WORD, text) if isinstance(text, str) else text
 
 
 def _text_w(d, s, font, spacing=0.0):
@@ -56,7 +72,7 @@ def _text_w(d, s, font, spacing=0.0):
 
 def _draw_text(d, xy, text, size, fill, anchor="la", bold=False, spacing=0.0, shape=True):
     """Draw (and measure) text; returns its bounding box (x0, y0, x1, y1). Persian goes through the shaper like every share card."""
-    s = cards.shape(text) if shape else text
+    s = cards.shape(fix_label(text)) if shape else text
     f = cards.font(int(size * SS), bold)
     w = _text_w(d, s, f, spacing * SS)
     x, y = xy
@@ -128,8 +144,9 @@ def _stipple(d, pts, pid, color):
             placed += 1
 
 
-def render(layout: dict, lang: str = "fa") -> bytes:
-    """PNG bytes for a validated layout. Reads the layout only."""
+def render(layout: dict, lang: str = "fa", highlight: dict | None = None) -> bytes:
+    """PNG bytes for a validated layout. Reads the layout only. `highlight` (see worldinspect.highlight) marks one place on the SAME map;
+    without it the picture is exactly the plain map."""
     W, H = layout["w"], layout["h"]
     mw, mh = int(W * SCALE), int(H * SCALE)
     width, height = mw, HEADER + mh + FOOTER
@@ -204,8 +221,14 @@ def render(layout: dict, lang: str = "fa") -> bytes:
             continue
         cx, cy = P(m["at"])
         r = 3.2 * SS
-        d.ellipse((cx - r, cy - r, cx + r, cy + r), fill=LANDMARK_LINE)
-        label = t(lang, f"map.lm.{m['kind']}")
+        if m["kind"] == "casino":                                        # the casino: a small diamond with a dark core instead of the plain dot
+            q = 5.2 * SS
+            d.polygon([(cx, cy - q), (cx + q, cy), (cx, cy + q), (cx - q, cy)], fill=LANDMARK_LINE)
+            q2 = 2.0 * SS
+            d.polygon([(cx, cy - q2), (cx + q2, cy), (cx, cy + q2), (cx - q2, cy)], fill=LANDMARK_FILL)
+        else:
+            d.ellipse((cx - r, cy - r, cx + r, cy + r), fill=LANDMARK_LINE)
+        label = fix_label(t(lang, f"map.lm.{m['kind']}"))
         size = 12.5
         f = cards.font(int(size * SS), True)
         wlab = d.textlength(cards.shape(label), font=f)
@@ -236,7 +259,7 @@ def render(layout: dict, lang: str = "fa") -> bytes:
         if kind not in best:
             continue
         dist = best[kind][1]
-        text = t(lang, f"map.zone.{kind}")
+        text = fix_label(t(lang, f"map.zone.{kind}"))
         text = text.upper() if not rtl else text
         cx, cy = P(dist["label"])
         sp = 2.4 if not rtl else 0.0
@@ -255,6 +278,8 @@ def render(layout: dict, lang: str = "fa") -> bytes:
     d.rectangle((0, bottom + 1, width * SS, height * SS), fill=BG)
     d.rectangle((0, 0, pad_side * SS, height * SS), fill=BG)
     d.rectangle(((width - pad_side) * SS, 0, width * SS, height * SS), fill=BG)
+    if highlight:
+        _highlight(img, d, P, highlight, (pad_side + 6, HEADER, width - pad_side - 6, HEADER + mh), boxes)
     # 8. title and legend
     name = layout["name"].get(lang) or layout["name"]["en"]
     pad = 34
@@ -280,17 +305,90 @@ def render(layout: dict, lang: str = "fa") -> bytes:
     return data
 
 
+def _highlight(img, d, P, hl: dict, frame: tuple, boxes: list) -> None:
+    """Mark one place for an inspection picture: a translucent mint fill and outline on the real geometry, a ring that is easy to spot on
+    a phone around small places, and the ID in a small tag. Flat colours only (no glow, no gradient); nothing else on the map changes.
+    The tag looks for a spot that covers no label (`boxes` are the labels already drawn) and stays inside the map frame."""
+    ov = Image.new("RGBA", img.size, (0, 0, 0, 0))
+    od = ImageDraw.Draw(ov)
+    outlines = []
+    for poly in hl["polys"]:
+        pts = [P(p) for p in poly]
+        od.polygon(pts, fill=HILITE_FILL)
+        outlines.append(pts)
+    img.paste(ov.convert("RGB"), mask=ov.getchannel("A"))
+    for pts in outlines:
+        d.line(pts + [pts[0]], fill=HILITE, width=int(2.6 * SS), joint="curve")
+    cx, cy = P(hl["center"])
+    reach = 0.0
+    if hl.get("ring"):
+        xs = [p[0] for pts in outlines for p in pts]
+        ys = [p[1] for pts in outlines for p in pts]
+        reach = max(26 * SS, math.hypot(max(xs) - min(xs), max(ys) - min(ys)) / 2 + 12 * SS)
+        d.ellipse((cx - reach, cy - reach, cx + reach, cy + reach), outline=HILITE, width=int(3.0 * SS))
+    size = 15
+    f = cards.font(int(size * SS), True)
+    w = d.textlength(hl["tag"], font=f)
+    padx, pady = 6 * SS, 3 * SS
+    bw, bh = w + 2 * padx, size * SS + 2 * pady
+    fx0, fy0, fx1, fy1 = (v * SS for v in frame)
+    gap = 4 * SS
+    spots = []
+    if reach:
+        for deg in (45, 0, 135, 180, 90, 270, 315, 225):               # around the ring, upper right first
+            c, s_ = math.cos(math.radians(deg)), math.sin(math.radians(deg))
+            ax, ay = cx + (reach + gap) * c, cy - (reach + gap) * s_
+            spots.append((ax if c > 0.3 else ax - bw if c < -0.3 else ax - bw / 2, ay - bh if s_ > 0.3 else ay if s_ < -0.3 else ay - bh / 2))
+    else:                                                              # a district: on its label point, nudged off the zone name
+        spots = [(cx - bw / 2, cy + dy * SS - bh / 2) for dy in (-26, 26, -52, 52, 0)]
+    poly = outlines[0] if outlines and not reach else None
+    pick = None
+    for strict in (True, False):
+        for sx, sy in spots:
+            box = (sx, sy, sx + bw, sy + bh)
+            if not (fx0 <= sx and sx + bw <= fx1 and fy0 <= sy and sy + bh <= fy1):
+                continue
+            if poly is not None and not G.point_in_poly((sx + bw / 2, sy + bh / 2), poly):
+                continue
+            if strict and _hit(box, boxes, 2 * SS):
+                continue
+            pick = (sx, sy)
+            break
+        if pick:
+            break
+    if pick is None:
+        pick = (min(max(spots[0][0], fx0), fx1 - bw), min(max(spots[0][1], fy0), fy1 - bh))
+    x0, y0 = pick
+    d.rounded_rectangle((x0, y0, x0 + bw, y0 + bh), radius=3 * SS, fill=BG, outline=HILITE, width=SS)
+    d.text((x0 + padx, y0 + pady), hl["tag"], font=f, fill=HILITE)
+
+
 # --- picture cache: a city never changes, so its picture is drawn once per (world, language, look) ------------------------
 CACHE_MAX = 24
+HCACHE_MAX = 16                          # inspection pictures (one per place looked at) live in their own small cache
 _cache: "OrderedDict[tuple, bytes]" = OrderedDict()
+_hcache: "OrderedDict[tuple, bytes]" = OrderedDict()
 
 
 def cache_clear() -> None:
     _cache.clear()
+    _hcache.clear()
 
 
-async def render_cached(world_id: int, layout: dict, lang: str) -> bytes:
-    """The map picture off the event loop (drawing takes about half a second), with a small in-memory cache."""
+async def render_cached(world_id: int, layout: dict, lang: str, highlight: dict | None = None, ref: str | None = None) -> bytes:
+    """The map picture off the event loop (drawing takes about half a second), with a small in-memory cache. With `highlight` (and the
+    `ref` that names the place) it draws the inspection version of the same saved map."""
+    if highlight is not None:
+        hkey = (world_id, lang, RENDER_VERSION, ref)
+        hit = _hcache.get(hkey)
+        if hit is not None:
+            _hcache.move_to_end(hkey)
+            return hit
+        data = await asyncio.to_thread(render, layout, lang, highlight)
+        _hcache[hkey] = data
+        while len(_hcache) > HCACHE_MAX:
+            _hcache.popitem(last=False)
+        return data
     key = (world_id, lang, RENDER_VERSION)
     hit = _cache.get(key)
     if hit is not None:
@@ -303,11 +401,135 @@ async def render_cached(world_id: int, layout: dict, lang: str) -> bytes:
     return data
 
 
+# --- people and walks on top of a finished picture ----------------------------------------------------------------------------
+# The saved map picture is drawn (and cached) once; each viewer's own marker, the players near them and their walk are painted on a copy of
+# it. Anti-aliased by drawing each shape on a small mask at 4x and shrinking it. Muted mint only: nothing here is brighter than the labels.
+ME = (146, 224, 170)                    # the viewer's own marker: a solid mint disc
+PEER = (128, 182, 142)                  # other players: small mint rings
+ROUTE_DONE = (46, 76, 54)
+ROUTE_LEFT = HILITE
+MARK_SS = 4
+
+
+def _px(p) -> tuple:
+    return (p[0] * SCALE, HEADER + p[1] * SCALE)
+
+
+def _paint(img, box, color, fn) -> None:
+    x0, y0, x1, y1 = (int(math.floor(box[0])), int(math.floor(box[1])), int(math.ceil(box[2])), int(math.ceil(box[3])))
+    x0, y0, x1, y1 = max(0, x0), max(0, y0), min(img.width, x1), min(img.height, y1)
+    if x1 <= x0 or y1 <= y0:
+        return
+    ss = MARK_SS
+    mask = Image.new("L", ((x1 - x0) * ss, (y1 - y0) * ss), 0)
+    fn(ImageDraw.Draw(mask), lambda q: ((q[0] - x0) * ss, (q[1] - y0) * ss), ss)
+    img.paste(color, (x0, y0, x1, y1), mask.resize((x1 - x0, y1 - y0), Image.BOX))
+
+
+def _bounds(pts, pad):
+    xs, ys = [q[0] for q in pts], [q[1] for q in pts]
+    return (min(xs) - pad, min(ys) - pad, max(xs) + pad, max(ys) + pad)
+
+
+def _dashes(md, pts, ss, width, dash=7.0, gap=5.0):
+    pos, on = 0.0, True
+    for a, b in zip(pts, pts[1:]):
+        L = math.hypot(b[0] - a[0], b[1] - a[1])
+        if L < 1e-9:
+            continue
+        ux, uy = (b[0] - a[0]) / L, (b[1] - a[1]) / L
+        at = 0.0
+        while at < L:
+            span = (dash if on else gap) * ss - pos
+            e = min(L, at + span)
+            if on:
+                md.line((a[0] + ux * at, a[1] + uy * at, a[0] + ux * e, a[1] + uy * e), fill=255, width=max(1, int(width * ss)))
+            pos += e - at
+            at = e
+            if pos >= (dash if on else gap) * ss - 1e-9:
+                on, pos = not on, 0.0
+
+
+def _mark_label(img, d, text, at, boxes, color=LABEL_BRIGHT, size=12):
+    """A short name next to a marker: the first of four spots that stays inside the picture and covers no other label; none if all are taken."""
+    if not text:
+        return
+    s = cards.shape(fix_label(str(text))[:14])
+    f = cards.font(size, True)
+    w = d.textlength(s, font=f)
+    h = size + 2
+    x, y = at
+    for ox, oy in ((9, -h / 2), (-9 - w, -h / 2), (-w / 2, -9 - h), (-w / 2, 8)):
+        box = (x + ox, y + oy, x + ox + w, y + oy + h)
+        if box[0] < 4 or box[2] > img.width - 4 or box[1] < 4 or box[3] > img.height - 4 or _hit(box, boxes, 2):
+            continue
+        d.text((box[0], box[1]), s, font=f, fill=color, stroke_width=2, stroke_fill=BG)
+        boxes.append(box)
+        return
+
+
+def overlay(png: bytes, lang: str, marks: dict) -> bytes:
+    """`png` (a finished city picture) with: marks["walked"] / marks["route"] (the part of a walk already done / still ahead, lists of world
+    points), marks["dest"] ({"pt", "tag"}), marks["others"] (list of {"pt", "label"}) and marks["me"] ({"pt", "label"}). Pure: nothing is stored."""
+    img = Image.open(io.BytesIO(png)).convert("RGB")
+    d = ImageDraw.Draw(img)
+    walked, left = marks.get("walked"), marks.get("route")
+    if walked and len(walked) >= 2:
+        pts = [_px(p) for p in walked]
+        _paint(img, _bounds(pts, 4), ROUTE_DONE, lambda md, T, ss: md.line([T(q) for q in pts], fill=255, width=int(2.0 * ss), joint="curve"))
+    if left and len(left) >= 2:
+        pts = [_px(p) for p in left]
+        _paint(img, _bounds(pts, 4), ROUTE_LEFT, lambda md, T, ss: _dashes(md, [T(q) for q in pts], ss, 2.2))
+    boxes: list = []
+    dest = marks.get("dest")
+    if dest:
+        cx, cy = _px(dest["pt"])
+        _paint(img, (cx - 14, cy - 14, cx + 14, cy + 14), HILITE, lambda md, T, ss: md.ellipse([*(v - 9.5 * ss for v in T((cx, cy))), *(v + 9.5 * ss for v in T((cx, cy)))], outline=255, width=int(2.0 * ss)))
+        if dest.get("tag"):
+            _mark_label(img, d, dest["tag"], (cx, cy), boxes, HILITE, 13)
+    for o in marks.get("others", ()):
+        cx, cy = _px(o["pt"])
+
+        def ring(md, T, ss, cx=cx, cy=cy):
+            tx, ty = T((cx, cy))
+            md.ellipse((tx - 5.2 * ss, ty - 5.2 * ss, tx + 5.2 * ss, ty + 5.2 * ss), fill=255)
+        _paint(img, (cx - 8, cy - 8, cx + 8, cy + 8), BG, ring)                      # a dark disc so the ring reads on any road
+        _paint(img, (cx - 8, cy - 8, cx + 8, cy + 8), PEER, lambda md, T, ss, cx=cx, cy=cy: md.ellipse([*(v - 4.4 * ss for v in T((cx, cy))), *(v + 4.4 * ss for v in T((cx, cy)))], outline=255, width=int(1.7 * ss)))
+    me = marks.get("me")
+    if me:
+        cx, cy = _px(me["pt"])
+        _paint(img, (cx - 13, cy - 13, cx + 13, cy + 13), BG, lambda md, T, ss: md.ellipse([*(v - 8.4 * ss for v in T((cx, cy))), *(v + 8.4 * ss for v in T((cx, cy)))], fill=255))
+        _paint(img, (cx - 13, cy - 13, cx + 13, cy + 13), ME, lambda md, T, ss: md.ellipse([*(v - 7.4 * ss for v in T((cx, cy))), *(v + 7.4 * ss for v in T((cx, cy)))], outline=255, width=int(1.6 * ss)))
+        _paint(img, (cx - 13, cy - 13, cx + 13, cy + 13), ME, lambda md, T, ss: md.ellipse([*(v - 4.4 * ss for v in T((cx, cy))), *(v + 4.4 * ss for v in T((cx, cy)))], fill=255))
+    for o in marks.get("others", ()):
+        _mark_label(img, d, o.get("label"), _px(o["pt"]), boxes, LABEL, 11)
+    if me:
+        _mark_label(img, d, me.get("label"), _px(me["pt"]), boxes, ME, 12)
+    buf = io.BytesIO()
+    img.save(buf, "PNG", compress_level=6)
+    data = buf.getvalue()
+    if len(data) > MAX_PNG:
+        raise ValueError("the map picture is too large")
+    return data
+
+
+async def render_marked(world_id: int, layout: dict, lang: str, marks: dict | None, highlight: dict | None = None, ref: str | None = None) -> bytes:
+    """The (cached) city picture with a viewer's markers painted on a copy. If the markers cannot be drawn the plain picture is returned."""
+    base = await render_cached(world_id, layout, lang, highlight, ref)
+    if not marks:
+        return base
+    try:
+        return await asyncio.to_thread(overlay, base, lang, marks)
+    except Exception:
+        log.exception("markers on the picture of world %s failed", world_id)
+        return base
+
+
 def _legend(d, lang: str, width: int, y: int):
     rtl = lang == "fa"
     items = ["main", "street", "building", "vacant", "park", "landmark"]
     f = cards.font(int(12 * SS))
-    labels = [t(lang, f"map.legend.{k}") for k in items]
+    labels = [fix_label(t(lang, f"map.legend.{k}")) for k in items]
     sw = 26
     widths = [sw + 8 + d.textlength(cards.shape(s), font=f) / SS + 22 for s in labels]
     total = sum(widths) - 22

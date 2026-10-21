@@ -1,6 +1,7 @@
 """Telegram layer: routes messages and button presses to the game logic."""
 from __future__ import annotations
 
+import asyncio
 import html
 import logging
 import re
@@ -13,7 +14,7 @@ from aiogram import Bot, F, Router
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramRetryAfter
 from aiogram.types import BufferedInputFile, CallbackQuery, ChatMemberUpdated, InputMediaPhoto, LabeledPrice, Message, PreCheckoutQuery, User
 
-from . import achievements, adminpanel, analytics, backups, charts, salary, config as C, core, events, fmt, gate, progress, quests, sections, shop, social, textparse, trading, trust, views, world, worldmap
+from . import achievements, adminpanel, analytics, backups, charts, mapui, salary, config as C, core, events, fmt, gate, progress, quests, sections, shop, social, textparse, trading, trust, views, world, worldinspect, worldmap, worldplaces
 from .core import GameError
 from .db import Database
 from .texts import ALIASES, SOFT_ARGS, SOFT_EXACT, EXAMPLES, level_title, t
@@ -206,6 +207,8 @@ def soft_ok(app: App, p: textparse.Parsed) -> bool:
     a, db = p.args, app.db
     if unambiguous(p):
         return True
+    if p.cmd == "map":                                       # «مپ» alone, or «مپ P14»: any other words after it are just chat
+        return not a or worldinspect.parse_ref(a) is not None
     if p.cmd in SOFT_EXACT and p.cmd != "alert":
         return not a
     if p.cmd == "alert":
@@ -281,6 +284,16 @@ def _photo(r: Reply):
     return BufferedInputFile(r.photo, "chart.png") if isinstance(r.photo, (bytes, bytearray)) else r.photo
 
 
+async def _told(r: Reply, message_id) -> None:
+    """Tell the reply's `after` hook which message now shows it (the map remembers its message this way). A failing hook never breaks sending."""
+    if r.after is None or message_id is None:
+        return
+    try:
+        r.after(message_id)
+    except Exception:
+        log.exception("after-send hook failed")
+
+
 async def send(c: Ctx, r: Reply) -> None:
     if c.cb is not None:
         cb = c.cb
@@ -289,14 +302,19 @@ async def send(c: Ctx, r: Reply) -> None:
         if not m:
             return
         if r.photo and r.edit and m.photo:
-            await _call(m.edit_media, media=InputMediaPhoto(media=_photo(r), caption=fit_caption(r.text)), reply_markup=r.kb)
+            if await _call(m.edit_media, media=InputMediaPhoto(media=_photo(r), caption=fit_caption(r.text)), reply_markup=r.kb) is not None:
+                await _told(r, m.message_id)
         elif r.photo:
-            await _call(m.answer_photo, _photo(r), caption=fit_caption(r.text), reply_markup=r.kb)
+            sent = await _call(m.answer_photo, _photo(r), caption=fit_caption(r.text), reply_markup=r.kb)
+            if sent is not None:
+                await _told(r, getattr(sent, "message_id", None))
         elif r.text and r.edit:
             if m.photo:
-                await _call(m.edit_caption, caption=fit_caption(r.text), reply_markup=r.kb)
+                done = await _call(m.edit_caption, caption=fit_caption(r.text), reply_markup=r.kb)
             else:
-                await _call(m.edit_text, r.text, reply_markup=r.kb)
+                done = await _call(m.edit_text, r.text, reply_markup=r.kb)
+            if done is not None:
+                await _told(r, m.message_id)
         elif r.text:
             if not c.is_group or c.app.chat_budget(c.chat.id):
                 await _call(m.answer, r.text, reply_markup=r.kb)
@@ -305,7 +323,9 @@ async def send(c: Ctx, r: Reply) -> None:
         return
     m = c.msg
     if r.photo:
-        await _call(m.reply_photo, _photo(r), caption=fit_caption(r.text), reply_markup=r.kb)
+        sent = await _call(m.reply_photo, _photo(r), caption=fit_caption(r.text), reply_markup=r.kb)
+        if sent is not None:
+            await _told(r, getattr(sent, "message_id", None))
     elif r.text:
         await _call(m.reply, r.text, reply_markup=r.kb)
 
@@ -942,23 +962,40 @@ async def h_grouprank(c: Ctx):
 
 @cmd("map")
 async def h_map(c: Ctx):
-    """The group's city (World Engine v1): generated once per chat, then always the same saved layout."""
+    """The group's city (World Engine v1), now interactive (v0.17). One city per chat, generated once and then always the same saved layout;
+    every `مپ` opens a map session (owner-locked buttons, your marker, the people near you, walking, the casino: see mapui).
+    `مپ <ID>` (World Interaction v1) opens the same screen on one parcel, public place or district of THAT group's saved city. Looking
+    never changes the city; the only things written are the player's own position row (once), a session row and, on «go», a trip."""
     if not c.is_group:
         return Reply(text=t(c.lang, "map.private"))
+    ref = None
+    if c.args:
+        ref = worldinspect.parse_ref(c.args)
+        if ref is None:                                                  # not ID-shaped: ordinary chat stays unanswered, a slash command gets a hint
+            if c.soft:
+                raise Ignore
+            return Reply(text=t(c.lang, "wi.bad"))
     try:
         w, created = await world.aensure_world(c.db, c.chat.id)
-        layout = await world.aload_layout(w)
+        city = await worldplaces.aload_city(c.db, w)
     except world.WorldError as e:
         log.error("map of chat %s unavailable: %s", c.chat.id, e.code)
         return Reply(text=t(c.lang, "map.failed" if e.code == "generation_failed" else "map.corrupt"))
     if created:
         log.info("world %s created for chat %s (seed %s)", w["id"], c.chat.id, w["seed"])
+    if ref is not None and worldinspect.resolve(city.layout, ref) is None:
+        return Reply(text=worldinspect.unknown_text(c.lang, city.layout, ref))
     try:
-        png = await worldmap.render_cached(w["id"], layout, c.lang)
-    except Exception:                                                 # drawing failed: the saved city stays exactly as it is
-        log.exception("map picture of world %s failed", w["id"])
+        return await mapui.open_map(c, w, city, ref)
+    except Exception:                                                     # drawing failed: the saved city stays exactly as it is
+        log.exception("map of world %s failed", w["id"])
         return Reply(text=t(c.lang, "map.failed"))
-    return Reply(photo=png, text=views.map_caption(c.lang, w, layout))
+
+
+@cbk("mp")
+async def cb_map(c: Ctx):
+    """Every button under a map message. Ownership is verified in on_callback before anything else and again inside mapui.handle."""
+    return await mapui.handle(c)
 
 
 @cmd("invite")
@@ -1586,6 +1623,13 @@ async def on_callback(cb: CallbackQuery, app: App) -> None:
         gs = gate.active(app.db)
         if gs and await gate.membership(app, tg.id) == "no":                  # the required channel: no button works until they have joined
             await _call(cb.answer, t(_lang_for(app, chat, tg.id), "gate.cb", channel=gate.label(gs)), show_alert=True)
+            return
+    if parts[0] == "mp":
+        # a map button: the session's owner, chat and message are checked FIRST, before the presser is registered or touched in any way.
+        # Anyone else gets a short alert; nothing is edited, started, drawn or changed.
+        why = mapui.pre_check(app.db, parts, tg.id, chat.id, cb.message.message_id)
+        if why:
+            await _call(cb.answer, mapui.plain(t(_lang_for(app, chat, tg.id), mapui.DENY.get(why, "mp.stale"))), show_alert=True)
             return
     if not (parts[0] == "sm" and parts[1:2] == ["ask"]):
         app.pending.pop(tg.id, None)                                          # pressing anything else cancels a guided prompt

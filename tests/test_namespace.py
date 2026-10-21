@@ -477,7 +477,7 @@ def test_no_duplicate_handlers_or_callback_prefixes():
 
 
 def test_the_database_schema_did_not_change():
-    assert dbmod.SCHEMA_VERSION == 6 and sorted(dbmod.MIGRATIONS) == [2, 3, 4, 5, 6]
+    assert dbmod.SCHEMA_VERSION == 7 and sorted(dbmod.MIGRATIONS) == [2, 3, 4, 5, 6, 7]        # v0.17 added version 7 (five new tables for the map); 2-6 are as they were
 
 
 def test_every_new_text_key_exists_in_both_languages():

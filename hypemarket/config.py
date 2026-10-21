@@ -275,3 +275,34 @@ def load_settings() -> Settings:
         salary_hour=int(os.environ.get("SALARY_HOUR_UTC", "5") or 5) % 24,
         bots=_flag("MARKET_BOTS", "1"),
     )
+
+
+# --- the city map: walking, nearby players, button sessions (v0.17) -----------------------------------------------------------
+# Read when used (not at import) so a value in .env counts and tests can change them. Every one is clamped to a sane range.
+def _env_num(name: str, default: float, lo: float, hi: float) -> float:
+    try:
+        v = float(os.environ.get(name, "") or default)
+    except ValueError:
+        v = default
+    return min(hi, max(lo, v))
+
+
+def walk_speed() -> float:
+    """Map units a player walks per second (WALK_SPEED, default 10: the 1360-unit-wide city is crossed in about two minutes)."""
+    return _env_num("WALK_SPEED", 10.0, 1.0, 100.0)
+
+
+def nearby_radius() -> float:
+    """Road distance (map units) within which another player shows on your map (MAP_NEARBY_RADIUS, default 300)."""
+    return _env_num("MAP_NEARBY_RADIUS", 300.0, 20.0, 2000.0)
+
+
+def map_session_ttl() -> int:
+    """How long the buttons under a map message keep working, in seconds (MAP_SESSION_HOURS, default 24)."""
+    return int(_env_num("MAP_SESSION_HOURS", 24.0, 0.05, 24.0 * 30) * 3600)
+
+
+MAP_MAX_OTHERS = 8                   # most nearby players drawn / listed at once
+MAP_SESSIONS_PER_PLAYER = 6          # a player's newest map messages in one city that keep working
+MAP_PAGE = 6                         # entries per page of the place / parcel browsers
+MAP_MAX_LOTS = 60                    # the parcel browser lists the nearest this many empty parcels

@@ -20,6 +20,7 @@ from hypemarket import cards, core, db as dbmod, docs, handlers, sections, socia
 from hypemarket.db import SCHEMA_VERSION, Database
 from hypemarket.texts import ALIASES, EN, FA
 
+import mapkit
 import test_bot as tb
 
 CH1, CH2 = -100606, -100777
@@ -510,7 +511,7 @@ def test_group_map_sends_the_city_once_and_reuses_it(h):
     before = {k: h.db.q1(f"SELECT COUNT(*) c FROM {k}")["c"] for k in ("stocks", "holdings", "history")}
     cash = core.get_user(h.db, 1)["cash"]
     again = photos(h.say(2, "نقشه", chat=CH1))
-    assert len(again) == 1 and again[0].photo.data == ph[0].photo.data                                  # same saved city, same picture
+    assert len(again) == 1 and mapkit.same_city(again[0].photo.data, ph[0].photo.data)                  # same saved city, same picture (each player's own markers aside)
     assert h.db.q1("SELECT COUNT(*) c FROM worlds")["c"] == 1 and dict(world.get_world(h.db, CH1)) == dict(w)
     assert core.get_user(h.db, 1)["cash"] == cash                                                       # no money moves
     assert {k: h.db.q1(f"SELECT COUNT(*) c FROM {k}")["c"] for k in before} == before
@@ -561,7 +562,7 @@ def test_the_menu_button_opens_the_same_city(h):
     assert len(ph) == 1 and ph[0].chat_id == CH1
     w = world.get_world(h.db, CH1)
     assert w and w["name_fa"] in ph[0].caption
-    assert photos(h.say(2, "مپ", chat=CH1))[0].photo.data == ph[0].photo.data                           # text command: same world
+    assert mapkit.same_city(photos(h.say(2, "مپ", chat=CH1))[0].photo.data, ph[0].photo.data)           # text command: same world (a player's own markers aside)
     assert h.db.q1("SELECT COUNT(*) c FROM worlds")["c"] == 1
     other = h.press(2, "mn:go:map:1", chat=CH1)                                                         # not the owner of the menu
     assert not photos(other) and any(isinstance(c, AnswerCallbackQuery) for c in other)

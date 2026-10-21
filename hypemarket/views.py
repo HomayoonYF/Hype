@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from . import config as C
-from . import cards, docs, salary, sections, achievements, analytics, charts, core, engine as E, events, exchange, fmt, progress, quests, social, trading, trust, world
+from . import cards, docs, salary, sections, achievements, analytics, charts, core, engine as E, events, exchange, fmt, progress, quests, social, trading, trust, world, worldinspect
 from .core import display_name, price
 from .fmt import esc
 from .texts import ALIASES, STR, level_title, t
@@ -22,6 +22,7 @@ class Reply:
     toast: str | None = None
     alert: bool = False
     edit: bool = False
+    after: object | None = None          # called with the id of the message that now shows this reply (see handlers.send)
 
 
 def kb(rows: list) -> InlineKeyboardMarkup | None:
@@ -522,10 +523,15 @@ def main_menu(lang: str, uid: int) -> Reply:
     return Reply(text=t(lang, "menu.title", brand=t(lang, "brand")), kb=kb(rows))
 
 
-def map_caption(lang: str, w, layout: dict) -> str:
+def map_caption(lang: str, w, layout: dict, status: str = "") -> str:
+    """The text under the city picture. `status` (the viewer's position, walk and neighbours) goes right under the title line."""
     st = world.stats(layout)
     name = w["name_fa"] if lang == "fa" else w["name_en"]
-    return t(lang, "map.caption", name=fmt.esc(name), vacant=fmt.num(st["vacant"], lang), parcels=fmt.num(st["parcels"], lang))
+    cap = t(lang, "map.caption", name=fmt.esc(name), vacant=fmt.num(st["vacant"], lang), parcels=fmt.num(st["parcels"], lang))
+    if status:
+        head, _, rest = cap.partition("\n")
+        cap = head + "\n" + status + "\n" + rest
+    return cap + "\n\n" + t(lang, "map.hint", example=worldinspect.example_id(layout), places=worldinspect.places_line(lang, layout))
 
 
 def back_button(lang: str, origin: str, uid: int) -> tuple:

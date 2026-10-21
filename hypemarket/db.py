@@ -91,6 +91,33 @@ CREATE TABLE IF NOT EXISTS worlds(
   id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id INTEGER NOT NULL UNIQUE, seed INTEGER NOT NULL, gen_version INTEGER NOT NULL,
   name_fa TEXT NOT NULL, name_en TEXT NOT NULL, cols INTEGER NOT NULL, rows INTEGER NOT NULL, layout TEXT NOT NULL, created_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS world_places(
+  world_id INTEGER NOT NULL, place_id TEXT NOT NULL, kind TEXT NOT NULL, parcel_id TEXT NOT NULL, created_at INTEGER NOT NULL,
+  PRIMARY KEY(world_id, place_id), UNIQUE(world_id, kind), UNIQUE(world_id, parcel_id)
+);
+CREATE TABLE IF NOT EXISTS world_players(
+  world_id INTEGER NOT NULL, user_id INTEGER NOT NULL, x REAL NOT NULL, y REAL NOT NULL, at_place TEXT,
+  spawn_x REAL NOT NULL, spawn_y REAL NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+  PRIMARY KEY(world_id, user_id)
+);
+CREATE TABLE IF NOT EXISTS world_trips(
+  id INTEGER PRIMARY KEY AUTOINCREMENT, world_id INTEGER NOT NULL, user_id INTEGER NOT NULL, dest_id TEXT NOT NULL, dest_kind TEXT NOT NULL,
+  route TEXT NOT NULL, length REAL NOT NULL, speed REAL NOT NULL, started_at INTEGER NOT NULL, arrive_at INTEGER NOT NULL,
+  state TEXT NOT NULL DEFAULT 'walking' CHECK(state IN ('walking','arrived','cancelled')), CHECK(arrive_at > started_at)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_trip_active ON world_trips(world_id, user_id) WHERE state='walking';
+CREATE INDEX IF NOT EXISTS ix_trips_world ON world_trips(world_id, state);
+CREATE TABLE IF NOT EXISTS map_sessions(
+  sid TEXT PRIMARY KEY, world_id INTEGER NOT NULL, chat_id INTEGER NOT NULL, user_id INTEGER NOT NULL, message_id INTEGER,
+  view TEXT NOT NULL DEFAULT 'map', page INTEGER NOT NULL DEFAULT 0, sel TEXT, back TEXT NOT NULL DEFAULT 'map',
+  created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_msess_user ON map_sessions(world_id, user_id, created_at);
+CREATE TABLE IF NOT EXISTS casino_games(
+  sid TEXT PRIMARY KEY, world_id INTEGER NOT NULL, user_id INTEGER NOT NULL, deck TEXT NOT NULL, player TEXT NOT NULL, dealer TEXT NOT NULL,
+  state TEXT NOT NULL CHECK(state IN ('playing','done')), result TEXT NOT NULL DEFAULT '', seq INTEGER NOT NULL DEFAULT 1,
+  created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+);
 """
 
 
@@ -111,7 +138,7 @@ def _migrate_5(conn) -> None:
     conn.execute("DROP TABLE IF EXISTS shorts")
 
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 # version -> SQL (or a function taking the connection) upgrading a database FROM version-1.
 # New tables need no entry: SCHEMA creates them with IF NOT EXISTS.
 MIGRATIONS: dict = {
@@ -124,6 +151,7 @@ MIGRATIONS: dict = {
     4: "SELECT 1;",   # v4 only added the salary table, which SCHEMA creates
     5: _migrate_5,    # v5: short selling removed; the exchange tables are created by SCHEMA
     6: "SELECT 1;",                          # v0.15: the `worlds` table (one city per group) comes from SCHEMA; nothing else changes
+    7: "SELECT 1;",                          # v0.17: world_places / world_players / world_trips / map_sessions / casino_games are new tables from SCHEMA; no existing table or row changes
 }
 
 
