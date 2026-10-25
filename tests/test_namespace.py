@@ -304,14 +304,19 @@ def test_main_menu_has_stocks_and_help_and_every_button_works(h):
     msg = h.session.sent(SendMessage)[-1]
     assert "منوی" in msg.text
     cb = buttons(msg)
-    assert cb[:2] == ["sm:menu:1", "hp:menu:1"] and set(cb) == {"sm:menu:1", "hp:menu:1", "mn:go:profile:1", "mn:go:daily:1", "mn:go:invite:1", "mn:go:map:1"}
+    assert cb[:2] == ["sm:menu:1", "hp:menu:1"] and set(cb) == {"sm:menu:1", "hp:menu:1", "mn:go:profile:1", "mn:go:daily:1", "mn:go:invite:1", "mn:go:map:1", "mn:go:cash:1", "mn:go:jobs:1"}
     assert all(len(b.encode()) <= 64 for b in cb)
     stock = edits(h.press(1, "sm:menu:1"))[-1]
     assert "بخش سهام" in stock.text and "mn:menu:1" in buttons(stock)
     hub = edits(h.press(1, "hp:menu:1"))[-1]
     assert buttons(hub) == ["hp:stock:1", "hp:about:1", "mn:menu:1"]
-    for target in ("profile", "daily", "invite"):
+    for target in ("profile", "daily", "invite", "cash", "jobs"):
         calls = h.press(1, f"mn:go:{target}:1")
+        if target == "jobs":                                                                              # v0.18.1: the job board carries its picture, so the text menu is swapped for a photo
+            from aiogram.methods import DeleteMessage, SendPhoto
+            pic = [c for c in calls if isinstance(c, SendPhoto)][-1]
+            assert any(isinstance(c, DeleteMessage) for c in calls) and pic.caption and buttons(pic)[-1] == "mn:menu:1", target
+            continue
         e = edits(calls)[-1]
         assert e.text and buttons(e)[-1] == "mn:menu:1", target                                          # shown in place, with a way back
     back = edits(h.press(1, "mn:menu:1"))[-1]
@@ -477,7 +482,7 @@ def test_no_duplicate_handlers_or_callback_prefixes():
 
 
 def test_the_database_schema_did_not_change():
-    assert dbmod.SCHEMA_VERSION == 7 and sorted(dbmod.MIGRATIONS) == [2, 3, 4, 5, 6, 7]        # v0.17 added version 7 (five new tables for the map); 2-6 are as they were
+    assert dbmod.SCHEMA_VERSION == 9 and sorted(dbmod.MIGRATIONS) == [2, 3, 4, 5, 6, 7, 8, 9]     # v0.17 added version 7 (five new tables for the map), v0.18 version 8 (life cash, jobs, interactions), v0.18.1 version 9 (casino stakes: three columns); 2-7 are as they were
 
 
 def test_every_new_text_key_exists_in_both_languages():

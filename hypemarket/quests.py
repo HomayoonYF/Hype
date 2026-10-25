@@ -158,7 +158,7 @@ def _snapshot_value(db: Database, u, metric: str) -> int:
     if metric == "level":
         return int(u["max_level"])
     if metric == "streak":
-        return int(u["streak"]) if now() - u["last_daily"] < C.DAILY_RESET else 0
+        return int(u["streak"]) if u["last_daily"] and C.daily_day(u["last_daily"]) >= C.daily_day(now()) - 1 else 0
     if metric == "holdings":
         return db.q1("SELECT COUNT(*) c FROM holdings h JOIN stocks s ON s.id=h.stock_id WHERE h.user_id=? AND s.status='active'", (uid,))["c"]
     if metric == "hold24":

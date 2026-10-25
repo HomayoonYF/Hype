@@ -19,7 +19,7 @@ How it works
       so alts can't dodge it;
     - nothing here mints coins on a schedule (no yield, no holder bonus): holders can only gain from the random walk and from
       the share of OTHER traders' levies (a seller never shares in the levy of his own sale).
-* The price moves are announced AFTER they happen ("CEO" headlines) and every week there is an earnings night: a bigger,
+* The price moves are announced AFTER they happen (headlines with a statement of the company itself; never a made-up person) and every week there is an earnings night: a bigger,
   random, zero-mean jump plus a report built from the real numbers of the week.
 """
 from __future__ import annotations
@@ -314,7 +314,7 @@ def run_earnings(db: Database, rng=None) -> dict | None:
             p = state_price(st)
             _set_price(db, sid, p)
             wk_pct = (p - st["wk_price"]) / st["wk_price"] if st["wk_price"] else 0.0
-            act = (1 if cur >= prev else -1) if prev else (1 if jump >= 0 else -1)      # did the REAL activity of the week grow? (the CEO talks about this)
+            act = (1 if cur >= prev else -1) if prev else (1 if jump >= 0 else -1)      # did the REAL activity of the week grow? (the company's statement talks about this)
             row = {"key": co.key, "ticker": stock_row(db, sid)["ticker"], "price": p, "jump": round(jump * 100, 2), "wk_pct": round(wk_pct * 100, 2),
                    "metric": round(cur, 1), "prev": round(prev, 1) if prev is not None else None, "act": act, "q": rng.choice((1, 2))}
             rows.append(row)

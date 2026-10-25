@@ -58,6 +58,9 @@ def test_map_shows_the_saved_city_with_a_compact_keyboard_and_an_owner_session(h
     assert len(v.rows) <= 3 and max(len(r) for r in v.rows) <= 2 and len(set(labels)) == len(labels)
     for _x, data in v.buttons:
         parts = data.split(":")
+        if parts[0] == "jb":                                                                            # v0.18: the job-board button is bound to its owner like every jb: button
+            assert data == f"jb:m:{A}"
+            continue
         assert len(data.encode()) <= 64 and parts[:2] == ["mp", row["sid"]] and str(A) not in data     # the player's ID is never in a button
     assert w["name_fa"] in v.caption and len(v.caption) <= 1024
     assert "📍" in v.caption and "👥" in v.caption                                                      # where you are, who is near
@@ -74,6 +77,8 @@ def test_the_picture_is_the_saved_city_plus_markers(h, d):
 def test_every_main_button_works_and_edits_the_same_message(h, d):
     v = d.open(A)
     for label, data in v.buttons:
+        if data.startswith("jb:"):                                                                      # v0.18: the job board is a text screen, so it goes in a NEW message under the map
+            continue                                                                                    # (its own behaviour is tested in tests/test_life_jobs.py::test_the_jobs_button_of_the_map...)
         out = d.press(A, data, v)
         assert out.edits and not out.alerts and not out.sent, label                                    # edited in place, no new messages
         assert out.edit.message_id == v.mid if hasattr(out.edit, "message_id") and out.edit.message_id else True
@@ -168,7 +173,7 @@ def test_places_pages_follow_the_page_size(h, d, monkeypatch):
     nxt = d.go(A, pl, t("fa", "mp.b.next"))
     nxt2 = d.go(A, nxt, t("fa", "mp.b.next"))
     seen = {dd for o in (pl, nxt, nxt2) for _x, dd in o.buttons if dd.split(":")[2] == "o"}
-    assert len(seen) == 5 and t("fa", "mp.b.next") not in [x for x, _ in nxt2.buttons]
+    assert len(seen) == 6 and t("fa", "mp.b.next") not in [x for x, _ in nxt2.buttons]
 
 
 def test_english_groups_get_english_screens(h, d):
@@ -210,7 +215,7 @@ def test_nobody_but_the_owner_can_use_a_map_button(h, d):
     before = snap(h.db)
     pics = h.session.sent()
     for uid in (B, X):
-        for data in sorted(seen):
+        for data in sorted(x for x in seen if x.startswith("mp:")):                                    # (the v0.18 «jb:» job button has its own owner lock, tested with the jobs)
             out = d.press(uid, data, v)
             assert out.alerts == [t("fa", "mp.not_yours")], (uid, data)                                  # a short, localized alert...
             assert t("fa", "mp.not_yours") == "این نقشه برای بازیکن دیگری است. برای استفاده از نقشه، دستور مپ را بزن."

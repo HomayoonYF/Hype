@@ -8,7 +8,7 @@ import logging
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramRetryAfter
 from aiogram.types import BufferedInputFile
 
-from . import achievements, analytics, backups, bots, charts, config as C, exchange, salary, core, events, progress, quests, social, trading, views
+from . import achievements, analytics, backups, bots, casino, charts, config as C, exchange, salary, core, events, progress, quests, social, trading, views, work
 from .handlers import App, fit_caption, flush_outbox, send_mod_alerts
 from .texts import t
 
@@ -72,6 +72,11 @@ async def slow_tick(app: App) -> None:
     progress.refresh_all_networth(app.db)
     social.refresh_group_scores(app.db)
     progress.end_season_if_due(app.db)
+    work.notify_ready(app.db)                  # one DM per finished McDonald's shift (the shift itself never depends on this loop)
+    try:
+        casino.sweep(app.db)                   # blackjack hands left on the table (idle 30 min, or their message expired) are stood and paid
+    except Exception:
+        log.exception("casino sweep failed")
     await post_boards(app)
     await flush_outbox(app)
 

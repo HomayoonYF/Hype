@@ -23,7 +23,7 @@ from .texts import t
 
 log = logging.getLogger("hypemarket")
 
-RENDER_VERSION = 2                      # bump when the look changes: the in-memory picture cache is keyed by it (2: the casino landmark)
+RENDER_VERSION = 3                      # bump when the look changes: the in-memory picture cache is keyed by it (2: the casino landmark, 3: the McDonald's)
 MAX_PNG = 2_500_000
 SCALE = 0.92                             # output pixels per world unit
 SS = 2                                  # supersampling factor
@@ -226,6 +226,11 @@ def render(layout: dict, lang: str = "fa", highlight: dict | None = None) -> byt
             d.polygon([(cx, cy - q), (cx + q, cy), (cx, cy + q), (cx - q, cy)], fill=LANDMARK_LINE)
             q2 = 2.0 * SS
             d.polygon([(cx, cy - q2), (cx + q2, cy), (cx, cy + q2), (cx - q2, cy)], fill=LANDMARK_FILL)
+        elif m["kind"] == "mcdonalds":                                   # the McDonald's: a small square with a dark core
+            q = 4.2 * SS
+            d.rectangle((cx - q, cy - q, cx + q, cy + q), fill=LANDMARK_LINE)
+            q2 = 1.8 * SS
+            d.rectangle((cx - q2, cy - q2, cx + q2, cy + q2), fill=LANDMARK_FILL)
         else:
             d.ellipse((cx - r, cy - r, cx + r, cy + r), fill=LANDMARK_LINE)
         label = fix_label(t(lang, f"map.lm.{m['kind']}"))
@@ -409,6 +414,16 @@ PEER = (128, 182, 142)                  # other players: small mint rings
 ROUTE_DONE = (46, 76, 54)
 ROUTE_LEFT = HILITE
 MARK_SS = 4
+# v0.18.1: the job maps. A Snapp ride is drawn with two colours so it can be read at a glance: BLUE is the way to the passenger, YELLOW is the
+# passenger's ride to the destination; each has a dim shade for the part already driven.
+BLUE = (96, 165, 250)
+BLUE_DIM = (36, 62, 100)
+YELLOW = (250, 204, 21)
+YELLOW_DIM = (104, 88, 22)
+LEG_COLORS = {"blue": BLUE, "yellow": YELLOW, "blue_done": BLUE_DIM, "yellow_done": YELLOW_DIM, "mint": HILITE, "mint_done": ROUTE_DONE}
+PIN_COLORS = {"blue": BLUE, "yellow": YELLOW, "mint": HILITE, "grey": (120, 138, 124)}
+CAR_COLORS = {"white": (236, 240, 238), "silver": (182, 190, 192), "black": (44, 50, 48), "blue": (66, 112, 186), "green": (62, 140, 92), "red": (196, 64, 58), "yellow": (232, 190, 52)}
+GLASS = (24, 34, 40)
 
 
 def _px(p) -> tuple:
@@ -468,9 +483,90 @@ def _mark_label(img, d, text, at, boxes, color=LABEL_BRIGHT, size=12):
         return
 
 
+
+def _rot(pts, ang, cx, cy):
+    ca, sa = math.cos(ang), math.sin(ang)
+    return [(cx + x * ca - y * sa, cy + x * sa + y * ca) for x, y in pts]
+
+
+def _rrect(x0, y0, x1, y1, r, n=5):
+    """The outline of a rounded rectangle as a polygon (local coordinates)."""
+    out = []
+    for cx, cy, a0 in ((x1 - r, y0 + r, -90), (x1 - r, y1 - r, 0), (x0 + r, y1 - r, 90), (x0 + r, y0 + r, 180)):
+        for i in range(n + 1):
+            a = math.radians(a0 + 90 * i / n)
+            out.append((cx + r * math.cos(a), cy + r * math.sin(a)))
+    return out
+
+
+def _car(img, at, heading, body, rim):
+    """A small top-view car (a Pride-like hatchback) driving towards `heading` (radians, 0 = east, map y points down) with its rim in `rim`
+    (mint for you, a quieter shade for other players). About 24 x 13 px: long enough to read as a car and not as a dot."""
+    cx, cy = at
+    box = (cx - 22, cy - 22, cx + 22, cy + 22)
+    L, Wd = 12.0, 6.4                                     # half length / half width in pixels
+    shell = lambda grow: _rrect(-L - grow, -Wd - grow, L + grow, Wd + grow, 4.2 + grow)
+    parts = [                                             # (colour, polygon in local coordinates), painted bottom to top
+        (BG, shell(2.6)), (rim, shell(1.5)), (body, shell(0.0)),
+        (GLASS, [(-2.0, -Wd + 1.1), (3.6, -Wd + 1.3), (3.6, Wd - 1.3), (-2.0, Wd - 1.1)]),            # windscreen + roof glass
+        (tuple(min(255, int(v * 1.08)) for v in body), [(-6.8, -Wd + 1.6), (-2.6, -Wd + 1.2), (-2.6, Wd - 1.2), (-6.8, Wd - 1.6)]),   # the roof, a touch lighter
+        (GLASS, [(-9.8, -Wd + 2.0), (-7.4, -Wd + 1.7), (-7.4, Wd - 1.7), (-9.8, Wd - 2.0)]),              # rear window
+        ((255, 238, 170), [(L - 1.4, -Wd + 0.6), (L + 0.2, -Wd + 0.8), (L + 0.2, -Wd + 2.6), (L - 1.4, -Wd + 2.4)]),   # headlights
+        ((255, 238, 170), [(L - 1.4, Wd - 0.6), (L + 0.2, Wd - 0.8), (L + 0.2, Wd - 2.6), (L - 1.4, Wd - 2.4)]),
+    ]
+    for col, poly in parts:
+        world = _rot(poly, heading, cx, cy)
+        _paint(img, box, col, lambda md, T, ss, world=world: md.polygon([T(q) for q in world], fill=255))
+
+
+def _pin(img, at, color, kind):
+    """A map pin whose tip is exactly at `at` (a place on the road): round head, short tail, and a glyph in the head: a person for a pickup, a
+    flag for a destination, a bag for a workplace."""
+    cx, cy = at
+    hx, hy, r = cx, cy - 13.5, 8.6
+    box = (cx - 16, cy - 28, cx + 16, cy + 4)
+
+    def head(grow):
+        return lambda md, T, ss: (md.ellipse([*(v - (r + grow) * ss for v in T((hx, hy))), *(v + (r + grow) * ss for v in T((hx, hy)))], fill=255),
+                                  md.polygon([T((cx - 6.2 - grow, cy - 9.2)), T((cx + 6.2 + grow, cy - 9.2)), T((cx, cy + grow * 0.2))], fill=255))
+    _paint(img, box, BG, head(2.0))
+    _paint(img, box, color, head(0.0))
+
+    def glyph(md, T, ss):
+        if kind == "pickup":
+            md.ellipse([*(v - 2.3 * ss for v in T((hx, hy - 2.6))), *(v + 2.3 * ss for v in T((hx, hy - 2.6)))], fill=255)
+            md.pieslice([*T((hx - 4.6, hy - 0.2)), *T((hx + 4.6, hy + 8.4))], 180, 360, fill=255)
+        elif kind == "dest":
+            md.line([T((hx - 3.2, hy + 5)), T((hx - 3.2, hy - 5))], fill=255, width=int(1.5 * ss))
+            md.polygon([T((hx - 3.2, hy - 5)), T((hx + 4.6, hy - 2.4)), T((hx - 3.2, hy + 0.4))], fill=255)
+        else:                                                                         # a bag: workplace
+            md.rounded_rectangle([*T((hx - 4.6, hy - 2.4)), *T((hx + 4.6, hy + 4.2))], radius=int(1.2 * ss), fill=255)
+            md.arc([*T((hx - 2.4, hy - 5.2)), *T((hx + 2.4, hy - 0.6))], 180, 360, fill=255, width=int(1.2 * ss))
+    _paint(img, box, BG, glyph)
+
+
+def _pin_label(img, d, text, at, boxes, color, size=12):
+    """The ID next to a pin's round head: to its right, else to its left, else above it."""
+    s = cards.shape(fix_label(str(text))[:14])
+    f = cards.font(size, True)
+    w = d.textlength(s, font=f)
+    h = size + 2
+    sx, sy = at
+    for ox, oy in ((13, -13 - h / 2), (-13 - w, -13 - h / 2), (-w / 2, -33)):
+        box = (sx + ox, sy + oy, sx + ox + w, sy + oy + h)
+        if box[0] < 4 or box[2] > img.width - 4 or box[1] < 4 or box[3] > img.height - 4 or _hit(box, boxes, 2):
+            continue
+        d.text((box[0], box[1]), s, font=f, fill=color, stroke_width=2, stroke_fill=BG)
+        boxes.append(box)
+        return
+
+
 def overlay(png: bytes, lang: str, marks: dict) -> bytes:
     """`png` (a finished city picture) with: marks["walked"] / marks["route"] (the part of a walk already done / still ahead, lists of world
-    points), marks["dest"] ({"pt", "tag"}), marks["others"] (list of {"pt", "label"}) and marks["me"] ({"pt", "label"}). Pure: nothing is stored."""
+    points), marks["dest"] ({"pt", "tag"}), marks["others"] (list of {"pt", "label"}) and marks["me"] ({"pt", "label"}). Pure: nothing is stored.
+    v0.18.1 adds, for the job screens: marks["legs"] (coloured route pieces: {"pts", "color": blue / yellow / mint (+ "_done"), "style": dash / solid}),
+    marks["stops"] (pins: {"pt", "kind": pickup / dest / work, "color", "tag"}) and a "vehicle" ({"kind": "car", "heading", "color"}) on "me" or on an
+    entry of "others": a car-shaped marker instead of the disc / ring."""
     img = Image.open(io.BytesIO(png)).convert("RGB")
     d = ImageDraw.Draw(img)
     walked, left = marks.get("walked"), marks.get("route")
@@ -480,7 +576,21 @@ def overlay(png: bytes, lang: str, marks: dict) -> bytes:
     if left and len(left) >= 2:
         pts = [_px(p) for p in left]
         _paint(img, _bounds(pts, 4), ROUTE_LEFT, lambda md, T, ss: _dashes(md, [T(q) for q in pts], ss, 2.2))
+    for leg in marks.get("legs", ()):
+        pts = [_px(p) for p in leg.get("pts", ())]
+        col = LEG_COLORS.get(leg.get("color"), HILITE)
+        if len(pts) < 2:
+            continue
+        if leg.get("style") == "solid":
+            _paint(img, _bounds(pts, 4), col, lambda md, T, ss, pts=pts: md.line([T(q) for q in pts], fill=255, width=int(2.4 * ss), joint="curve"))
+        else:
+            _paint(img, _bounds(pts, 4), col, lambda md, T, ss, pts=pts: _dashes(md, [T(q) for q in pts], ss, 2.6))
     boxes: list = []
+    for stop in marks.get("stops", ()):
+        sx, sy = _px(stop["pt"])
+        _pin(img, (sx, sy), PIN_COLORS.get(stop.get("color"), HILITE), stop.get("kind", "dest"))
+        if stop.get("tag"):
+            boxes.append((sx - 9, sy - 26, sx + 9, sy + 2))                         # the pin itself is not covered by a label
     dest = marks.get("dest")
     if dest:
         cx, cy = _px(dest["pt"])
@@ -489,6 +599,10 @@ def overlay(png: bytes, lang: str, marks: dict) -> bytes:
             _mark_label(img, d, dest["tag"], (cx, cy), boxes, HILITE, 13)
     for o in marks.get("others", ()):
         cx, cy = _px(o["pt"])
+        if o.get("vehicle"):
+            v = o["vehicle"]
+            _car(img, (cx, cy), v.get("heading", 0.0), CAR_COLORS.get(v.get("color"), CAR_COLORS["white"]), PEER)
+            continue
 
         def ring(md, T, ss, cx=cx, cy=cy):
             tx, ty = T((cx, cy))
@@ -496,11 +610,18 @@ def overlay(png: bytes, lang: str, marks: dict) -> bytes:
         _paint(img, (cx - 8, cy - 8, cx + 8, cy + 8), BG, ring)                      # a dark disc so the ring reads on any road
         _paint(img, (cx - 8, cy - 8, cx + 8, cy + 8), PEER, lambda md, T, ss, cx=cx, cy=cy: md.ellipse([*(v - 4.4 * ss for v in T((cx, cy))), *(v + 4.4 * ss for v in T((cx, cy)))], outline=255, width=int(1.7 * ss)))
     me = marks.get("me")
-    if me:
+    if me and me.get("vehicle"):
+        v = me["vehicle"]
+        _car(img, _px(me["pt"]), v.get("heading", 0.0), CAR_COLORS.get(v.get("color"), CAR_COLORS["white"]), ME)
+    elif me:
         cx, cy = _px(me["pt"])
         _paint(img, (cx - 13, cy - 13, cx + 13, cy + 13), BG, lambda md, T, ss: md.ellipse([*(v - 8.4 * ss for v in T((cx, cy))), *(v + 8.4 * ss for v in T((cx, cy)))], fill=255))
         _paint(img, (cx - 13, cy - 13, cx + 13, cy + 13), ME, lambda md, T, ss: md.ellipse([*(v - 7.4 * ss for v in T((cx, cy))), *(v + 7.4 * ss for v in T((cx, cy)))], outline=255, width=int(1.6 * ss)))
         _paint(img, (cx - 13, cy - 13, cx + 13, cy + 13), ME, lambda md, T, ss: md.ellipse([*(v - 4.4 * ss for v in T((cx, cy))), *(v + 4.4 * ss for v in T((cx, cy)))], fill=255))
+    for stop in marks.get("stops", ()):
+        if stop.get("tag"):
+            sx, sy = _px(stop["pt"])
+            _pin_label(img, d, stop["tag"], (sx, sy), boxes, PIN_COLORS.get(stop.get("color"), HILITE), 12)
     for o in marks.get("others", ()):
         _mark_label(img, d, o.get("label"), _px(o["pt"]), boxes, LABEL, 11)
     if me:

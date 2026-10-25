@@ -23,6 +23,11 @@ class Reply:
     alert: bool = False
     edit: bool = False
     after: object | None = None          # called with the id of the message that now shows this reply (see handlers.send)
+    pic: object | None = None            # v0.18.1: an async function that draws this reply's picture (job screens); run by handlers.send, never by the caller
+    fresh: bool = False                  # v0.18.1: when it replaces a message of the other kind (photo <-> text), delete that message and send a new one
+
+    def __post_init__(self):
+        self.text, self.toast = fmt.digits(self.text), fmt.digits(self.toast)      # number style (config.digits_mode); also applied again when sending
 
 
 def kb(rows: list) -> InlineKeyboardMarkup | None:
@@ -32,9 +37,9 @@ def kb(rows: list) -> InlineKeyboardMarkup | None:
         btns = []
         for b in row:
             if len(b) == 3:
-                btns.append(InlineKeyboardButton(text=b[0], url=b[1]))
+                btns.append(InlineKeyboardButton(text=fmt.digits(b[0]), url=b[1]))
             else:
-                btns.append(InlineKeyboardButton(text=b[0], callback_data=b[1]))
+                btns.append(InlineKeyboardButton(text=fmt.digits(b[0]), callback_data=b[1]))
         if btns:
             out.append(btns)
     return InlineKeyboardMarkup(inline_keyboard=out) if out else None
@@ -112,10 +117,11 @@ def _pcts(db, L: str, s) -> tuple[str, str]:
 
 
 def _quote_line(L: str, key: str, row: dict) -> tuple[str, str]:
-    """(CEO quote, CEO name). On earnings night the CEO talks about the REAL numbers of the week (row["act"]: +1 activity grew,
-    -1 it shrank); the price jump itself is random and has nothing to do with it. Headlines about a price move use its direction."""
+    """(statement, voice). The voice is the company itself («بیانیه‌ی چت‌باکس»), never a person's name. On earnings night the statement is about the REAL
+    numbers of the week (row["act"]: +1 activity grew, -1 it shrank); the price jump itself is random and has nothing to do with it. Headlines
+    about a price move use its direction."""
     word = "up" if row.get("act", row.get("jump", row.get("pct", 0))) >= 0 else "down"
-    return t(L, f"ex.{key}.{word}{row.get('q', 1)}"), t(L, f"ex.{key}.ceo")
+    return t(L, f"ex.{key}.{word}{row.get('q', 1)}"), t(L, f"ex.{key}.voice")
 
 
 def listed_card(db, lang: str, s, uid: int | None = None) -> Reply:
@@ -134,8 +140,8 @@ def listed_card(db, lang: str, s, uid: int | None = None) -> Reply:
     rep = exchange.last_report(db)
     row = next((r for r in rep["rows"] if co and r["key"] == co.key), None) if rep else None
     if row:
-        quote, ceo = _quote_line(L, co.key, row)
-        lines.append(t(L, "ex.card.last", jump=fmt.pct(row["jump"], L), ceo=esc(ceo), quote=esc(quote)))
+        quote, voice = _quote_line(L, co.key, row)
+        lines.append(t(L, "ex.card.last", jump=fmt.pct(row["jump"], L), voice=esc(voice), quote=esc(quote)))
     if uid:
         h = db.q1("SELECT shares FROM holdings WHERE user_id=? AND stock_id=?", (uid, s["id"]))
         if h:
@@ -176,14 +182,14 @@ def earnings_text(lang: str, rep: dict, compact: bool = True) -> str:
         co = exchange.BY_KEY.get(r["key"])
         if not co:
             continue
-        quote, ceo = _quote_line(L, co.key, r)
+        quote, voice = _quote_line(L, co.key, r)
         lines.append(t(L, "ex.earn.row", emoji=co.emoji, tk=fmt.tk(r["ticker"]), wk=fmt.pct(r["wk_pct"], L), jump=fmt.pct(r["jump"], L)))
         if not compact:
             delta = ""
             if r["prev"]:
                 delta = t(L, "ex.earn.delta", delta=fmt.pct((r["metric"] - r["prev"]) * 100.0 / r["prev"], L))
             lines.append(t(L, "ex.earn.metric", metric=t(L, f"ex.{co.key}.metric"), cur=fmt.num(round(r["metric"]), L), delta=delta))
-        lines.append(t(L, "ex.earn.quote", quote=esc(quote), ceo=esc(ceo)))
+        lines.append(t(L, "ex.earn.quote", quote=esc(quote), voice=esc(voice)))
     if not compact:
         lines += ["", t(L, "ex.earn.foot")]
     return "\n".join(lines)
@@ -204,11 +210,11 @@ def exchange_news_line(lang: str, row) -> str:
         return ""
     L = lang
     if row["kind"] == "ex_earn":
-        quote, ceo = _quote_line(L, co.key, {"act": p.get("act", p.get("jump", 0)), "q": p.get("q", 1)})
-        return t(L, "ex.news_earn", tk=fmt.tk(p.get("ticker", co.ticker)), wk=fmt.pct(p.get("pct", 0), L), ceo=esc(ceo), quote=esc(quote))
+        quote, voice = _quote_line(L, co.key, {"act": p.get("act", p.get("jump", 0)), "q": p.get("q", 1)})
+        return t(L, "ex.news_earn", tk=fmt.tk(p.get("ticker", co.ticker)), wk=fmt.pct(p.get("pct", 0), L), voice=esc(voice), quote=esc(quote))
     up = row["kind"] == "ex_up"
-    quote, ceo = _quote_line(L, co.key, {"jump": 1 if up else -1, "q": p.get("q", 1)})
-    return t(L, "ex.news_up" if up else "ex.news_down", emoji=co.emoji, tk=fmt.tk(p.get("ticker", co.ticker)), pct=fmt.pct(p.get("pct", 0), L, arrows=False), ceo=esc(ceo), quote=esc(quote))
+    quote, voice = _quote_line(L, co.key, {"jump": 1 if up else -1, "q": p.get("q", 1)})
+    return t(L, "ex.news_up" if up else "ex.news_down", emoji=co.emoji, tk=fmt.tk(p.get("ticker", co.ticker)), pct=fmt.pct(p.get("pct", 0), L, arrows=False), voice=esc(voice), quote=esc(quote))
 
 
 # --- market ---------------------------------------------------------------------------
@@ -486,6 +492,8 @@ def dm_text(lang: str, key: str, kw: dict) -> str:
             out["tk"] = fmt.tk(v)
         elif k in ("amount", "payout", "coins"):
             out[k] = fmt.coins(v, lang)
+        elif k == "cents":                                       # life cash (v0.18): whole cents, shown as $
+            out[k] = fmt.usd(v, lang)
         elif k in ("price", "target"):
             out[k] = fmt.price(v, lang)
         elif isinstance(v, int):
@@ -511,7 +519,7 @@ def quest_done_lines(lang: str, items: list) -> str:
 
 
 # --- the global menu, the stock section menu, the help hub ----------------------------------------------------------
-MAIN_GO = ("profile", "daily", "invite", "map")          # global screens the main menu opens (each one is an ordinary command)
+MAIN_GO = ("profile", "daily", "invite", "map", "cash", "jobs")          # global screens the main menu opens (each one is an ordinary command)
 STOCK_GO = tuple(sorted(sections.MENU_SCREENS))   # screens a stock-menu button may open (ordinary commands, run with no arguments)
 ORIGINS = frozenset({"m"} | {cid for cid, _ in sections.STOCK_CATEGORIES})     # where a button was pressed: "m" = the stock menu, else a category
 
@@ -519,7 +527,8 @@ ORIGINS = frozenset({"m"} | {cid for cid, _ in sections.STOCK_CATEGORIES})     #
 def main_menu(lang: str, uid: int) -> Reply:
     rows = [[(t(lang, "menu.stocks"), f"sm:menu:{uid}"), (t(lang, "menu.help"), f"hp:menu:{uid}")],
             [(t(lang, "menu.profile"), f"mn:go:profile:{uid}"), (t(lang, "menu.daily"), f"mn:go:daily:{uid}")],
-            [(t(lang, "menu.invite"), f"mn:go:invite:{uid}"), (t(lang, "menu.map"), f"mn:go:map:{uid}")]]
+            [(t(lang, "menu.invite"), f"mn:go:invite:{uid}"), (t(lang, "menu.map"), f"mn:go:map:{uid}")],
+            [(t(lang, "menu.cash"), f"mn:go:cash:{uid}"), (t(lang, "menu.jobs"), f"mn:go:jobs:{uid}")]]
     return Reply(text=t(lang, "menu.title", brand=t(lang, "brand")), kb=kb(rows))
 
 

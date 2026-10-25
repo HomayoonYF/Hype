@@ -24,13 +24,14 @@ import re
 import secrets
 import sqlite3
 
-from . import casino, config as C, core, fmt, presence, views, world, worldgeom as G, worldinspect, worldmap, worldnet as N, worldplaces
+from . import casino, cash, config as C, core, fmt, interactui, jobviz, presence, views, work, world, worldgeom as G, worldinspect, worldmap, worldnet as N, worldplaces
+from .core import GameError
 from .texts import t
 from .views import Reply, kb
 
 log = logging.getLogger("hypemarket")
 
-ICONS = {"city_hall": "🏛", "hospital": "🏥", "school": "🏫", "station": "🚉", "casino": "🎰"}
+ICONS = {"city_hall": "🏛", "hospital": "🏥", "school": "🏫", "station": "🚉", "casino": "🎰", "mcdonalds": "🍔"}
 DENY = {"gone": "mp.expired", "expired": "mp.expired", "owner": "mp.not_yours", "chat": "mp.stale", "message": "mp.stale"}
 _SID = re.compile(r"^[0-9a-f]{8}$")
 _TAGS = re.compile(r"<[^>]+>")
@@ -55,7 +56,8 @@ def new_session(db, world_id: int, chat_id: int, uid: int, now: int | None = Non
                     (world_id, uid, C.MAP_SESSIONS_PER_PLAYER - 1))
         for r in old:
             db.x("DELETE FROM map_sessions WHERE sid=?", (r["sid"],))
-        db.x("DELETE FROM casino_games WHERE sid NOT IN (SELECT sid FROM map_sessions)")
+        casino.sweep(db, now)                                  # a hand whose message is gone is stood and paid first (its chip is never lost with the message)
+        db.x("DELETE FROM casino_games WHERE state='done' AND sid NOT IN (SELECT sid FROM map_sessions)")
         for _ in range(12):
             sid = secrets.token_hex(4)
             try:
@@ -103,6 +105,12 @@ def pre_check(db, parts: list, uid: int, chat_id: int, message_id) -> str | None
 def _save(db, sid: str, view: str, page: int = 0, sel: str | None = None, back: str = "m", now: int | None = None) -> None:
     now = core.now() if now is None else now
     db.x("UPDATE map_sessions SET view=?, page=?, sel=?, back=?, expires_at=? WHERE sid=?", (view, page, sel, back, now + C.map_session_ttl(), sid))
+
+
+def _uint(s, maxlen: int = 15):
+    """A button argument as a non-negative int: plain ASCII digits only (str.isdigit() also accepts «²», «①» or Arabic-Indic digits, which int() then
+    refuses or reads as another number), at most `maxlen` of them; None otherwise."""
+    return int(s) if isinstance(s, str) and s.isascii() and s.isdigit() and len(s) <= maxlen else None
 
 
 def cd(sid: str, *parts) -> str:
@@ -165,9 +173,21 @@ class Screen:
         self.hl, self.ref, self.picture, self.toast, self.alert = hl, ref, picture, toast, alert
 
 
-def _marks(lang: str, city, st, others, tag_dest: bool) -> dict:
-    marks: dict = {"me": {"pt": st.pos, "label": t(lang, "mp.me")},
-                   "others": [{"pt": o.pos, "label": short_name(o.name)} for o in others]}
+def _marks(lang: str, city, st, others, tag_dest: bool, db=None) -> dict:
+    """The markers of a map picture. v0.18.1: someone who is driving a Snapp car is drawn as a small car (yours in your own colour, the others
+    in theirs) instead of the round marker; needs `db` to know who is driving (without it every marker is the plain one)."""
+    me: dict = {"pt": st.pos, "label": t(lang, "mp.me")}
+    if db is not None:
+        task = work.current(db, st.row["user_id"])
+        if task is not None and task["job"] == work.SNAPP and task["world_id"] == city.id and task["stage"] in ("assigned", "to_pickup", "to_dest"):
+            heading = presence.trip_heading(st.trip, st.now) if st.trip is not None else 0.0
+            me["vehicle"] = {"kind": "car", "heading": heading, "color": work.car_of(task)["c"]}
+    marks: dict = {"me": me, "others": []}
+    for o in others:
+        entry = {"pt": o.pos, "label": short_name(o.name)}
+        if o.mode == "car" and db is not None:
+            entry["vehicle"] = {"kind": "car", "heading": o.heading, "color": jobviz.car_of_user(db, o.uid)}
+        marks["others"].append(entry)
     if st.trip is not None:
         try:
             pts = presence.route_of(st.trip)
@@ -184,7 +204,7 @@ def _status(lang: str, city, st, others) -> str:
     if st.arrived is not None:
         lines.append(t(lang, "mp.arrived", dest=_dest_html(lang, city, st.arrived["dest_id"])))
     if st.trip is not None:
-        lines.append(t(lang, "mp.walk", dest=_dest_html(lang, city, st.trip["dest_id"]), pct=fmt.loc(_pct(st), lang), eta=fmt.dur(st.eta, lang)))
+        lines.append(t(lang, "mp.drive" if st.trip["mode"] == "car" else "mp.walk", dest=_dest_html(lang, city, st.trip["dest_id"]), pct=fmt.loc(_pct(st), lang), eta=fmt.dur(st.eta, lang)))
     place = st.row["at_place"]
     spot = city.spot(place) if place and st.trip is None else None
     if spot is not None:
@@ -206,7 +226,12 @@ def _status(lang: str, city, st, others) -> str:
 def _main_rows(lang: str, sid: str, st) -> list:
     rows = [[(t(lang, "mp.b.near"), cd(sid, "nb")), (t(lang, "mp.b.places"), cd(sid, "pl", 0))],
             [(t(lang, "mp.b.lots"), cd(sid, "ln", 0)), (t(lang, "mp.b.casino"), cd(sid, "o", "casino"))]]
-    rows.append([(t(lang, "mp.b.refresh"), cd(sid, "rf"))] + ([(t(lang, "mp.b.trip"), cd(sid, "tr"))] if st.trip is not None else []))
+    jobs = (t(lang, "mp.b.jobs"), f"jb:m:{st.row['user_id']}")                        # v0.18: the job board, in a new message under the map (owner-bound like every jb: button)
+    if st.trip is None:
+        rows.append([(t(lang, "mp.b.refresh"), cd(sid, "rf")), jobs])                  # still three compact rows when standing still
+    else:
+        rows.append([(t(lang, "mp.b.refresh"), cd(sid, "rf")), (t(lang, "mp.b.trip"), cd(sid, "tr"))])
+        rows.append([jobs])
     return rows
 
 
@@ -250,14 +275,26 @@ def screen_nearby(lang: str, w, city, sid: str, st, others) -> Screen:
         lines.append(t(lang, "mp.nb.place", name=t(lang, "map.lm." + s.landmark["kind"]), id=worldinspect.display_id(s.id), d=_dist(d, lang)) if s.id != here
                      else f"• {place_html(lang, s)} — {t(lang, 'mp.b.here')}")
     lines += ["", t(lang, "mp.nb.hint")]
+    people = [(t(lang, "mp.nb.pbtn", name=short_name(o.name) or "…"), cd(sid, "pp", o.uid)) for o in others]          # v0.18.1: the players around you are buttons (hello / hug)
+    rows = [people[i:i + 2] for i in range(0, len(people), 2)]
+    if others:
+        lines.insert(lines.index(t(lang, "mp.nb.places")) - 1, t(lang, "mp.nb.hint_people"))
     btns = [(ICONS.get(s.landmark["kind"], "📍") + " " + place_label(lang, s), cd(sid, "o", s.id)) for _d, _n_, s in near]
-    rows = [btns[i:i + 2] for i in range(0, len(btns), 2)]
+    rows += [btns[i:i + 2] for i in range(0, len(btns), 2)]
     rows.append([(t(lang, "mp.b.refresh"), cd(sid, "nb")), (t(lang, "mp.b.map"), cd(sid, "rf"))])
     return Screen("\n".join(lines), rows, view="nb")
 
 
+def screen_person(lang: str, sid: str, o) -> Screen:
+    """One player of the «اطراف من» list: say hello (instant) or ask for a hug (they must accept)."""
+    text = t(lang, "mp.pp.title", name=fmt.esc(short_name(o.name) or "…"), d=_dist(o.dist, lang))
+    rows = [[(t(lang, "mp.pp.b.greet"), cd(sid, "gr", o.uid)), (t(lang, "mp.pp.b.hug"), cd(sid, "hg", o.uid))],
+            [(t(lang, "mp.b.back"), cd(sid, "nb")), (t(lang, "mp.b.map"), cd(sid, "rf"))]]
+    return Screen(text, rows, view="pp", sel=str(o.uid), back="nb")
+
+
 def _num(ident: str) -> int:
-    return int(ident[1:]) if ident[1:].isdigit() else 0
+    return int(ident[1:]) if ident[1:].isascii() and ident[1:].isdigit() else 0
 
 
 def _clamp(page, pages: int) -> int:
@@ -369,27 +406,51 @@ def _tot(lang: str, hand) -> str:
     return t(lang, "bj.soft", total=fmt.num(n, lang)) if soft and n < 21 else fmt.num(n, lang)
 
 
-def screen_lobby(lang: str, sid: str, city) -> Screen:
-    text = t(lang, "mp.cas.title") + "\n\n" + t(lang, "mp.cas.lobby") + "\n\n" + t(lang, "bj.rules")
+def _chips(lang: str, sid: str, seq: int, balance: int) -> list:
+    """The chip buttons of the table: every chip the player can pay, two to a row (the press carries the game's seq and the chip's value)."""
+    chips = [(t(lang, "bj.b.chip", amount=fmt.usd(b, lang)), cd(sid, "bj", "b", seq, b)) for b in C.CASINO_BETS_CENTS if b <= balance]
+    return [chips[i:i + 3] for i in range(0, len(chips), 3)]
+
+
+def screen_lobby(lang: str, sid: str, city, balance: int) -> Screen:
+    text = t(lang, "mp.cas.title") + "\n\n" + t(lang, "mp.cas.lobby", cash=fmt.usd(balance, lang)) + "\n\n" + t(lang, "bj.rules")
     rows = [[(t(lang, "mp.b.bj"), cd(sid, "bj", "o"))], [(t(lang, "mp.b.exit"), cd(sid, "rf"))]]
     return Screen(text, rows, view="cas", sel=city.casino_id, picture=False)
 
 
-def screen_table(lang: str, sid: str, city, game) -> Screen:
-    h = casino.hand_of(game)
+def _hand_lines(lang: str, h) -> list:
+    if h.over:
+        dealer = t(lang, "bj.dealer", cards=_cards(h.dealer), total=t(lang, "bj.total", total=_tot(lang, h.dealer)))
+    else:
+        dealer = t(lang, "bj.dealer", cards=f"{h.dealer[0]} {t(lang, 'bj.hidden')}", total="")
+    return [dealer, t(lang, "bj.you", cards=_cards(h.player), total=_tot(lang, h.player))]
+
+
+def screen_table(lang: str, sid: str, city, game, balance: int) -> Screen:
+    """The table. `game` is the session's game row, or None before the first hand. A hand in progress shows Hit / Stand; between hands (and
+    before the first) the player picks the chip of the next hand: the chips they cannot pay are not offered."""
     lines = [t(lang, "bj.title"), ""]
-    if h.over:
-        lines.append(t(lang, "bj.dealer", cards=_cards(h.dealer), total=t(lang, "bj.total", total=_tot(lang, h.dealer))))
+    if game is None:
+        lines += [t(lang, "bj.cash", cash=fmt.usd(balance, lang)), "", t(lang, "bj.pick") if balance >= min(C.CASINO_BETS_CENTS) else t(lang, "bj.poor", min=fmt.usd(min(C.CASINO_BETS_CENTS), lang))]
+        rows = _chips(lang, sid, 0, balance)
     else:
-        lines.append(t(lang, "bj.dealer", cards=f"{h.dealer[0]} {t(lang, 'bj.hidden')}", total=""))
-    lines.append(t(lang, "bj.you", cards=_cards(h.player), total=_tot(lang, h.player)))
-    lines.append("")
-    if h.over:
-        lines += [t(lang, "bj.r." + h.result), t(lang, "bj.nostakes")]
-        rows = [[(t(lang, "mp.b.again"), cd(sid, "bj", "n", game["seq"]))]]
-    else:
-        lines += [t(lang, "bj.go"), "", t(lang, "bj.rules")]
-        rows = [[(t(lang, "mp.b.hit"), cd(sid, "bj", "h", game["seq"])), (t(lang, "mp.b.stand"), cd(sid, "bj", "s", game["seq"]))]]
+        h = casino.hand_of(game)
+        bet = game["bet"]
+        lines += _hand_lines(lang, h)
+        if bet:
+            lines.append(t(lang, "bj.stake", bet=fmt.usd(bet, lang)))
+        lines.append("")
+        if h.over:
+            lines.append(t(lang, "bj.r." + h.result))
+            if bet:
+                net = game["paid"] - bet
+                lines.append(t(lang, "bj.net.win" if net > 0 else "bj.net.push" if net == 0 else "bj.net.lose", amount=fmt.usd(abs(net), lang)))
+            lines += [t(lang, "bj.cash", cash=fmt.usd(balance, lang)), "",
+                      t(lang, "bj.pick") if balance >= min(C.CASINO_BETS_CENTS) else t(lang, "bj.poor", min=fmt.usd(min(C.CASINO_BETS_CENTS), lang))]
+            rows = _chips(lang, sid, game["seq"], balance)
+        else:
+            lines += [t(lang, "bj.go"), "", t(lang, "bj.rules")]
+            rows = [[(t(lang, "mp.b.hit"), cd(sid, "bj", "h", game["seq"])), (t(lang, "mp.b.stand"), cd(sid, "bj", "s", game["seq"]))]]
     rows.append([(t(lang, "mp.b.exit"), cd(sid, "rf"))])
     return Screen("\n".join(lines), rows, view="bj", sel=city.casino_id, picture=False)
 
@@ -409,7 +470,7 @@ async def _reply(c, w, city, sid: str, sess_mid, st, others, scr: Screen, *, fir
         toast = plain(t(c.lang, "mp.arrived", dest=_dest_html(c.lang, city, st.arrived["dest_id"])))
     if not scr.picture:
         return Reply(text=scr.text, kb=kb(scr.rows), edit=not first, toast=toast, alert=scr.alert, after=after)
-    marks = _marks(c.lang, city, st, others, tag_dest=scr.view not in ("obj",))
+    marks = _marks(c.lang, city, st, others, tag_dest=scr.view not in ("obj",), db=db)
     try:
         png = await worldmap.render_marked(city.id, city.layout, c.lang, marks, scr.hl, scr.ref)
     except Exception:
@@ -483,6 +544,18 @@ async def handle(c):
             return await show(screen_main(lang, w, city, sid, st, others))
         if act == "nb":
             return await show(screen_nearby(lang, w, city, sid, st, others))
+        if act in ("pp", "gr", "hg"):
+            who = _uint(rest[0]) if len(rest) == 1 else None
+            o = next((x for x in others if x.uid == who), None) if who is not None else None
+            if o is None:                                                     # not in the list any more (walked away, hand-made button): show the real list
+                return await show(screen_nearby(lang, w, city, sid, st, others), toast=plain(t(lang, "mp.pp.gone")))
+            if act == "pp":
+                return await show(screen_person(lang, sid, o))
+            if sess["view"] != "pp" or sess["sel"] != str(o.uid):
+                return _stale(c)                                              # the button of a screen that is no longer the current one
+            if act == "gr":
+                return interactui.greet_reply(c.db, lang, c.chat.id, c.uid, o.uid, plain(t(lang, "mp.pp.sent_greet")))
+            return interactui.hug_reply(c.db, lang, city, c.chat.id, c.uid, o.uid, plain(t(lang, "mp.pp.sent_hug")))
         if act == "pl":
             return await show(screen_places(lang, w, city, sid, st, rest[0] if rest else 0))
         if act == "ln":
@@ -509,6 +582,8 @@ async def handle(c):
             ref = rest[0] if rest else ""
             if sess["view"] != "obj" or sess["sel"] != ref:
                 return _stale(c)                                              # the button of a screen that is no longer the current one
+            if work.in_ride(c.db, c.uid):                                     # a Snapp ride drives the player's one trip: no walking away from it
+                return _stale(c, "mp.in_ride")
             out = presence.start_trip(c.db, city, c.uid, ref)
             if out.status == "unknown":
                 return _stale(c, "mp.unknown")
@@ -533,9 +608,11 @@ async def handle(c):
                 return _stale(c, "mp.cas.moving")
             if st.row["at_place"] != cid:
                 return _stale(c, "mp.cas.need")                               # refreshing never replaces walking there
-            return await show(screen_lobby(lang, sid, city))
+            return await show(screen_lobby(lang, sid, city, cash.balance(c.db, c.uid)))
         if act == "bj":
             return await _blackjack(c, w, city, sid, sess, st, others, rest, show)
+    except GameError:
+        raise                                                                 # a rule of the game («wait 20 s»): the dispatcher shows it as a toast
     except Exception:
         log.exception("map button %s failed", act)
         return Reply(toast=plain(t(lang, "mp.err")), alert=True)
@@ -550,28 +627,30 @@ async def _blackjack(c, w, city, sid, sess, st, others, rest, show):
     if st.trip is not None or st.row["at_place"] != cid:                      # every press needs the player to be standing at the casino door
         return _stale(c, "mp.cas.left")
     what = rest[0] if rest else ""
-    seq = rest[1] if len(rest) > 1 else ""
     now = core.now()
     game = casino.get(db, sid)
     if game is not None and (game["user_id"] != c.uid or game["world_id"] != city.id):
         return _stale(c)
-    if what == "o":                                                            # open the table: resume the hand in progress or deal the first one
-        if game is None:
-            game = casino.start(db, sid, city.id, c.uid, 0, now) or casino.get(db, sid)
-        return await show(screen_table(lang, sid, city, game) if game is not None else None)
-    if not seq.isdigit():
+
+    def table(g, **kw):
+        return show(screen_table(lang, sid, city, g, cash.balance(db, c.uid)), **kw)
+
+    if what in ("o", "n"):                                                     # open the table: the hand in progress, or the chips for the next one ("n" is the old «again» button of v0.18)
+        return await table(game)
+    seq = _uint(rest[1]) if len(rest) >= 2 else None
+    if seq is None:
         return _stale(c)
-    seq = int(seq)
     if what in ("h", "s"):
         new = casino.act(db, sid, city.id, c.uid, "hit" if what == "h" else "stand", seq, now)
         if new is None:                                                        # stale or repeated press: nothing was applied; show the real state
-            game = casino.get(db, sid)
-            return await show(screen_table(lang, sid, city, game) if game is not None else None, toast=plain(t(lang, "bj.stale")))
-        return await show(screen_table(lang, sid, city, new))
-    if what == "n":
-        new = casino.start(db, sid, city.id, c.uid, seq, now)
+            return await table(casino.get(db, sid), toast=plain(t(lang, "bj.stale")))
+        return await table(new)
+    if what == "b":
+        bet = _uint(rest[2]) if len(rest) == 3 else None
+        if bet not in C.CASINO_BETS_CENTS:                                     # a hand-made button: not a chip of this table
+            return _stale(c)
+        new = casino.start(db, sid, city.id, c.uid, seq, now, bet)             # GameError('cash_low'): the chip was not taken and no hand was dealt
         if new is None:
-            game = casino.get(db, sid)
-            return await show(screen_table(lang, sid, city, game) if game is not None else None, toast=plain(t(lang, "bj.stale")))
-        return await show(screen_table(lang, sid, city, new))
+            return await table(casino.get(db, sid), toast=plain(t(lang, "bj.stale")))
+        return await table(new)
     return _stale(c)

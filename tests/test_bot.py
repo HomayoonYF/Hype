@@ -23,11 +23,13 @@ import re as _re
 
 
 def assert_valid_telegram_html(text: str):
-    """Telegram rejects malformed HTML: only <b> <i> <code> are used, they must balance, and < > & must be escaped."""
+    """Telegram rejects malformed HTML: only <b> <i> <code> (and, since v0.18, the player-mention link <a href="tg://user?id=N">) are used, they must
+    balance, and < > & must be escaped."""
     assert len(text) <= 4096, len(text)
     for tag in ("b", "i", "code"):
         assert text.count(f"<{tag}>") == text.count(f"</{tag}>"), (tag, text)
-    bare = _re.sub(r"</?(b|i|code)>", "", text)
+    assert text.count("</a>") == len(_re.findall(r'<a href="tg://user\?id=\d{1,15}">', text)), ("a", text)
+    bare = _re.sub(r'</?(b|i|code)>|<a href="tg://user\?id=\d{1,15}">|</a>', "", text)
     assert "<" not in bare and ">" not in bare, text
     assert not _re.search(r"&(?!(amp|lt|gt|quot);)", bare), text
     assert not _re.search(r"\{[a-z_]+\}", bare), ("unformatted placeholder", text)

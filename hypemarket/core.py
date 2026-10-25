@@ -160,6 +160,8 @@ def ensure_user(db: Database, uid: int, username: str | None, name: str, lang: s
         )
         mint(db, cash)
         db.x("UPDATE users SET nw=? WHERE id=?", (cash, uid))
+        from . import cash as life_cash              # v0.18: the life-game cash account, with its one-time $100 (a separate currency from `users.cash`)
+        life_cash.ensure_account(db, uid)
         return get_user(db, uid), True
 
 

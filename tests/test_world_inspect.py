@@ -421,10 +421,10 @@ def test_plain_map_still_works_exactly_as_before(h):
     L = layout_of(h)
     w = world.get_world(h.db, CH1)
     assert ph[0].photo.data == mapkit.shown(h, CH1, 1, "fa")                                      # the saved city's picture (+ its permanent places and the viewer's markers)
-    full = mapkit.city_of(h, CH1).layout                                                           # the city as played: its permanent casino parcel is no longer empty land
+    full = mapkit.city_of(h, CH1).layout                                                           # the city as played: its permanent casino and McDonald's parcels are no longer empty land
     head, _, rest = t("fa", "map.caption", name=w["name_fa"], vacant=views.fmt.num(world.stats(full)["vacant"], "fa"),
                       parcels=views.fmt.num(world.stats(full)["parcels"], "fa")).partition("\n")
-    assert world.stats(full)["vacant"] == world.stats(L)["vacant"] - 1 and world.stats(full)["parcels"] == world.stats(L)["parcels"]
+    assert world.stats(full)["vacant"] == world.stats(L)["vacant"] - 2 and world.stats(full)["parcels"] == world.stats(L)["parcels"]
     assert ph[0].caption.startswith(head) and rest in ph[0].caption                                # the title, then (new) where you are and who is near, then the same text as before
     assert len(ph[0].caption) <= 1024 and "L1" in ph[0].caption and "مپ" in ph[0].caption          # and now says how to look closer
     for m in L["landmarks"]:

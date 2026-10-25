@@ -906,8 +906,8 @@ def save_world(db: Database, chat_id: int, layout: dict) -> tuple:
         cur = db.x("INSERT OR IGNORE INTO worlds(chat_id,seed,gen_version,name_fa,name_en,cols,rows,layout,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
                    (chat_id, layout["seed"], layout["generator"], layout["name"]["fa"], layout["name"]["en"], layout["w"], layout["h"], dumps(layout), core.now()))
         row = get_world(db, chat_id)
-        if cur.rowcount == 1:                                           # a new city gets its permanent casino in the same transaction
-            worldplaces.ensure_casino(db, row, layout)
+        if cur.rowcount == 1:                                           # a new city gets its permanent public places (casino, McDonald's) in the same transaction
+            worldplaces.ensure_places(db, row, layout)
         return row, cur.rowcount == 1
 
 

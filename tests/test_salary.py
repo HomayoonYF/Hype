@@ -124,7 +124,7 @@ def test_the_claim_button_pays_exactly_the_previewed_salary(h):
     edited = [c for c in calls if isinstance(c, EditMessageText)][0]
     assert "حقوق دریافت شد" in edited.text and "sal:claim" not in str(edited.reply_markup)
     ans = [c for c in h.press(2, "sal:claim:2") if c.__class__.__name__ == "AnswerCallbackQuery"][0]
-    assert ans.show_alert and "جایزه بعدی" in ans.text                # second press: cooldown, nothing paid twice
+    assert ans.show_alert and "جایزه‌ی بعدی" in ans.text                # second press: cooldown, nothing paid twice
     ans = [c for c in h.press(3, "sal:claim:2") if c.__class__.__name__ == "AnswerCallbackQuery"][0]
     assert "برای تو نیست" in (ans.text or "")
 
@@ -136,8 +136,8 @@ def test_the_preview_always_matches_the_real_bonus(db):
         pv = progress.daily_preview(db, 1)
         real = progress.daily(db, 1)
         assert pv["amount"] == real["amount"] and pv["streak"] == real["streak"] and pv["pct"] == real["pct"]
-        assert progress.daily_preview(db, 1) is None                # cooling down
-        adv(21 * 3600)
+        assert progress.daily_preview(db, 1) is None                # already claimed today (Tehran day)
+        adv(C.daily_next_reset(core.now()) - core.now() + 1)        # the next 00:00 Tehran time
 
 
 def test_message_shows_change_since_yesterday_pending_income_and_best_stock(h):

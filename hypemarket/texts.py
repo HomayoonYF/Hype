@@ -5,6 +5,8 @@ aliases below.  Strings use str.format placeholders; HTML tags are allowed.
 """
 from __future__ import annotations
 
+from .fmt import digits
+
 # command id -> words that trigger it (Persian, English). Several words may be separated by spaces.
 ALIASES: dict[str, list[str]] = {
     "start": ["شروع", "start"],
@@ -13,6 +15,12 @@ ALIASES: dict[str, list[str]] = {
     "language": ["زبان", "language", "lang"],
     "menu": ["منو", "menu"],
     "map": ["مپ", "نقشه", "map"],
+    "cash": ["پول", "پول نقد", "پول سهام", "کیف پول", "cash", "wallet"],
+    "fx": ["صرافی", "currency", "fx"],
+    "jobs": ["مشاغل", "شغل", "شغل ها", "jobs"],
+    "snapp": ["اسنپ", "snapp"],
+    "mcd": ["مک دونالد", "مکدونالد", "mcdonalds", "mcdonald", "mcd"],
+    "muni": ["شهرداری", "municipal", "muni"],
     "stocks": ["سهام", "stocks", "stock"],
     "stockhelp": ["سهام راهنما", "stocks help"],
     "buy": ["خرید", "بخر", "buy"],
@@ -86,12 +94,14 @@ SOFT_EXACT = {
     "group", "index", "grouprank", "leaderboard", "top", "invite", "level", "reputation", "skills", "legacy", "rebirth",
     "news", "events", "season", "shop", "settings", "quiet", "language", "payout", "alert", "quests", "whales", "trust", "achievements", "share",
     "exchange", "earnings", "menu", "stocks", "stockhelp", "map",
+    "cash", "jobs", "snapp", "mcd", "muni",
 }
 # ...or with arguments (validated further in handlers.soft_ok).
 SOFT_ARGS = {"buy", "sell", "price", "chart", "launch", "project", "meme", "alert", "upgrade", "cashout",
              "createcompany", "joincompany", "setdividend", "editstock", "msglimit", "setlang", "report", "trust", "distrust", "share"}
 
 EXAMPLES = {
+    "fx": ("صرافی سهام 250  |  صرافی نقد 5  |  صرافی سهام همه", "currency stocks 250  |  currency cash 5  |  currency stocks all"),
     "buy": ("سهام خرید 10 SPEED  |  سهام خرید همه SPEED", "stocks buy 10 SPEED  |  stocks buy max SPEED"),
     "sell": ("سهام فروش 10 SPEED  |  سهام فروش همه SPEED", "stocks sell 10 SPEED  |  stocks sell all SPEED"),
     "price": ("سهام قیمت SPEED", "stocks price SPEED"),
@@ -152,7 +162,7 @@ FA: dict[str, str] = {
     "e.need_legacy": "🔒 این رو باید اول با امتیاز میراث باز کنی.",
     "e.max_stocks": "❌ حداکثر {n} سهام فعال می‌تونی داشته باشی؛ هر سطح یه جای اضافه می‌ده.",
     "e.bad_goal": "❌ هدف مالی پروژه باید بین {lo} و {hi} باشه.",
-    "e.daily_wait": "🎁 جایزه بعدی تا {time} دیگه.",
+    "e.daily_wait": "🎁 جایزه‌ی امروزت رو گرفتی. جایزه‌ی بعدی ساعت ۰۰:۰۰ به وقت تهران باز می‌شه ({time} دیگه).",
     "e.nothing": "فعلاً چیزی برای برداشت نیست.",
     "e.not_owner": "❌ این سهام مال تو نیست.",
     "e.no_own_stock": "❌ تو هنوز سهامی عرضه نکردی. بنویس: <code>سهام عرضه SPEED اسم</code>",
@@ -534,7 +544,7 @@ EN: dict[str, str] = {
     "e.need_legacy": "🔒 Unlock this first with Legacy points.",
     "e.max_stocks": "❌ You can run at most {n} active stocks; every level adds one slot.",
     "e.bad_goal": "❌ A project goal must be between {lo} and {hi}.",
-    "e.daily_wait": "🎁 Next bonus in {time}.",
+    "e.daily_wait": "🎁 You already took today's bonus. The next one opens at 00:00 Tehran time ({time} from now).",
     "e.nothing": "Nothing to collect right now.",
     "e.not_owner": "❌ That stock isn't yours.",
     "e.no_own_stock": "❌ You haven't launched a stock yet. Try: <code>stocks launch SPEED Name</code>",
@@ -888,6 +898,7 @@ from .texts_admin import EN_ADMIN, FA_ADMIN  # noqa: E402  (the admin panel and 
 
 from .texts_world import EN_WORLD, FA_WORLD  # noqa: E402  (inspecting parcels, public places and districts)
 from .texts_map import EN_MAP, FA_MAP  # noqa: E402  (the interactive map, walking, the casino)
+from .texts_life import EN_LIFE, FA_LIFE  # noqa: E402  (life cash, the currency exchange, jobs, greetings and hugs)
 
 FA.update(FA_EX)
 EN.update(EN_EX)
@@ -899,6 +910,9 @@ FA.update(FA_WORLD)
 EN.update(EN_WORLD)
 FA.update(FA_MAP)
 EN.update(EN_MAP)
+FA.update(FA_LIFE)
+EN.update(EN_LIFE)
+FA["cat.life"], EN["cat.life"] = "پول و کار", "Money and jobs"
 
 STR = {"fa": FA, "en": EN}
 
@@ -908,8 +922,8 @@ def t(lang: str, key: str, /, **kw) -> str:
     if s is None:
         s = FA.get(key, key)
     if not kw:
-        return s
+        return digits(s)
     try:
-        return s.format(**kw)
+        return digits(s.format(**kw))
     except (KeyError, IndexError, ValueError):
-        return s
+        return digits(s)

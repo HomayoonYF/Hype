@@ -30,6 +30,7 @@ STOCK_CMDS = frozenset({
 # Global commands: not stock-only, never behind a section word.
 GLOBAL_CMDS = frozenset({
     "start", "help", "menu", "profile", "language", "invite", "daily", "salary", "shop", "map",
+    "cash", "fx", "jobs", "snapp", "mcd", "muni",
     "settings", "setlang", "msglimit", "quiet",
 })
 

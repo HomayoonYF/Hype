@@ -30,8 +30,8 @@ GROUP_ADD_MIN_MEMBERS = 5
 DAILY_BASE = coins(100)
 DAILY_STEP = coins(10)
 DAILY_STREAK_CAP = 10
-DAILY_COOLDOWN = 20 * 3600
-DAILY_RESET = 48 * 3600
+# v0.18.1: the bonus is a CALENDAR-day thing. It can be claimed once per Tehran day and a new day starts at 00:00 Tehran time (UTC+03:30), whatever
+# the hour of the last claim was; the streak goes on when the last claim was yesterday (see daily_day() below and progress.daily).
 
 # --- trading ---------------------------------------------------------------
 TRADE_FEE_BPS = 200                 # 2% on every buy and every sell
@@ -306,3 +306,103 @@ MAP_MAX_OTHERS = 8                   # most nearby players drawn / listed at onc
 MAP_SESSIONS_PER_PLAYER = 6          # a player's newest map messages in one city that keep working
 MAP_PAGE = 6                         # entries per page of the place / parcel browsers
 MAP_MAX_LOTS = 60                    # the parcel browser lists the nearest this many empty parcels
+
+
+# --- life cash, the currency exchange and the side jobs (v0.18) ------------------------------------------------------------------
+# Life cash is a SECOND currency, kept apart from the stock-game coins (`users.cash`, in 1/100-coin units). It is stored as an integer
+# number of CENTS (never a float) in `life_accounts`, and every change goes through `cash.apply`, which writes one row of `life_ledger`.
+CASH_START_CENTS = 100_00                  # every player gets $100.00 once (ledger row ('grant','start') is unique per player)
+CASH_CAP_CENTS = 10 ** 15                  # no balance may grow past $10 trillion: a hard guard against overflow
+# --- the casino (v0.18.1): blackjack played for life cash ----------------------------------------------------------------------------
+CASINO_BETS_CENTS = (1_00, 5_00, 10_00, 25_00, 100_00)      # the chips of the table: $1, $5, $10, $25, $100 (a bet is always one chip)
+CASINO_BLACKJACK_NUM, CASINO_BLACKJACK_DEN = 3, 2           # a natural blackjack pays 3 to 2 (the profit is bet * 3 / 2; every chip is a whole number of dollars)
+CASINO_IDLE_SECS = 1800                                     # a hand nobody has touched for 30 minutes is stood (played out) by the bot and paid as usual
+
+
+FX_UNITS_PER_CENT = 200                    # THE RATE (v0.18.1): 1,000 🪙 (= 100,000 units) = $5.00 (= 500 cents)  ->  200 units per cent, 2 🪙 per cent
+                                           # (v0.18 had 50 units per cent: 1,000 🪙 = $20.00). Only this number sets the rate; texts and limits are derived from it.
+FX_QUOTE_TTL = 120                         # seconds a confirmation screen stays valid
+FX_MAX_COINS = 10 ** 12                    # most coins one exchange may move (so typed junk like 99999999999999999999 is refused)
+FX_MAX_CENTS = 10 ** 12                    # ...and most cents
+
+# Side jobs. Every number that balances them is HERE and nowhere else (cents unless the name says otherwise).
+# CALIBRATION (see README §16 and tests/test_life_jobs.py::test_job_earnings_stay_modest_and_ordered): the stock game pays about 1,000 🪙 a day
+# of active play = $5 a day at the fixed exchange rate (v0.18 had $20). These values were fitted on the real generated cities (12 seeds) so that, per hour of
+# ACTIVE play, Snapp pays about $10, municipal work about $7 and McDonald's about $1.50 (passive: you only start and collect), i.e. an hour of side
+# work is worth roughly half a day of stock income, Snapp never exceeds ~1.6x municipal work, and nothing is "instant wealth".
+CAR_SPEED_DEFAULT = 20.0                   # map units per second in the rental car (walking is 10, so the car is 2x); env CAR_SPEED
+SNAPP_FEE_CENTS = 20                       # rental fee of the car, charged ONCE per completed ride, out of the payout (nothing is charged for an abandoned ride)
+SNAPP_BASE_FARE_CENTS = 22                 # fare = base + per-100-units of ROAD distance of the ride (pickup to destination); base MUST exceed the fee
+SNAPP_PER_100_CENTS = 3
+SNAPP_TIP_MAX_CENTS = 10                   # a tip is 0..this, decided by the server from the saved ride (never from anything the player sends)
+SNAPP_TIP_ODDS = (3, 5)                    # a tip happens in 3 of 5 rides on average (about 3 cents a ride: roughly 15% of the income)
+SNAPP_PICKUP_RANGE = (120.0, 480.0)        # road distance from the player to the passenger
+SNAPP_RIDE_RANGE = (240.0, 900.0)          # road distance of the ride itself
+SNAPP_COOLDOWN = 30                        # seconds between the end of one ride and the next request
+MCD_SHIFT_SECONDS = 8 * 3600               # a shift is 8 REAL hours
+MCD_WAGE_CENTS = 12_00                     # paid once, when the shift has run its 8 hours and the player collects it
+MUNI_TASKS = {                             # task kind -> reward in cents (fixed per kind, shown before the task is accepted)
+    "sweep": 10,
+    "waste": 12,
+    "green": 11,
+}
+MUNI_RANGE = (100.0, 520.0)                # road distance from the player to the task site
+MUNI_COOLDOWN = 20                         # seconds between finishing a task and being offered the next
+
+# Player interactions
+GREET_COOLDOWN = 20                        # seconds between two greetings of one player
+HUG_COOLDOWN = 60                          # seconds between two hug requests of one player
+HUG_TTL = 300                              # seconds a hug request waits for an answer
+HUG_NEED_NEAR = True                       # a hug needs both players near each other (road distance <= nearby_radius()); env HUG_NEED_NEAR=0 turns it off
+
+
+def car_speed() -> float:
+    """Map units per second of the rental car (CAR_SPEED, default 20, range 1-200)."""
+    return _env_num("CAR_SPEED", CAR_SPEED_DEFAULT, 1.0, 200.0)
+
+
+def display_utc_offset() -> int:
+    """Minutes added to UTC when a shift's start and end are shown as a clock time (DISPLAY_UTC_OFFSET_MIN, default 210 = Tehran)."""
+    return int(_env_num("DISPLAY_UTC_OFFSET_MIN", 210.0, -720.0, 840.0))
+
+
+def hug_need_near() -> bool:
+    return os.environ.get("HUG_NEED_NEAR", "1").strip().lower() not in ("0", "false", "no", "off")
+
+
+def fx_coin_step() -> int:
+    """The smallest number of WHOLE coins that is an exact number of cents (2 at the rate 1,000 🪙 = $5; 1 at the old rate). Stock money -> cash only
+    moves multiples of it, so no exchange ever needs rounding."""
+    import math
+    return math.lcm(UNIT, FX_UNITS_PER_CENT) // UNIT
+
+
+def fx_cents_for_coins(coins: int) -> int:
+    """Exact cents for `coins` whole coins (a multiple of fx_coin_step())."""
+    return coins * UNIT // FX_UNITS_PER_CENT
+
+
+def fx_coins_for_cents(cents: int) -> int:
+    """Whole-coin value of `cents` (exact when it is a multiple of the step; otherwise rounded DOWN, for display of limits only)."""
+    return cents * FX_UNITS_PER_CENT // UNIT
+
+
+def daily_utc_offset() -> int:
+    """Minutes added to UTC to find the day of the daily bonus (DAILY_UTC_OFFSET_MIN, default 210 = Tehran, UTC+03:30; Iran has no daylight saving)."""
+    return int(_env_num("DAILY_UTC_OFFSET_MIN", 210.0, -720.0, 840.0))
+
+
+def daily_day(ts: int) -> int:
+    """The number of the Tehran calendar day a timestamp falls in (a new number starts at 00:00 Tehran time)."""
+    return (int(ts) + daily_utc_offset() * 60) // 86400
+
+
+def daily_next_reset(ts: int) -> int:
+    """The timestamp (UTC seconds) of the next 00:00 Tehran time after `ts`."""
+    return (daily_day(ts) + 1) * 86400 - daily_utc_offset() * 60
+
+
+def digits_mode() -> str:
+    """'en' (default since v0.18.1): every number is shown with English digits 0-9 and the signs , . %; 'fa': the old Persian digits ۰-۹ and ٬ ٫ ٪.
+    One switch (env DIGITS=fa) brings the old look back; the Persian digits still exist in the code and the texts."""
+    return "fa" if os.environ.get("DIGITS", "en").strip().lower() in ("fa", "persian", "farsi", "old", "legacy") else "en"

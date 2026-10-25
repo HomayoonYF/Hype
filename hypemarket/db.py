@@ -103,7 +103,8 @@ CREATE TABLE IF NOT EXISTS world_players(
 CREATE TABLE IF NOT EXISTS world_trips(
   id INTEGER PRIMARY KEY AUTOINCREMENT, world_id INTEGER NOT NULL, user_id INTEGER NOT NULL, dest_id TEXT NOT NULL, dest_kind TEXT NOT NULL,
   route TEXT NOT NULL, length REAL NOT NULL, speed REAL NOT NULL, started_at INTEGER NOT NULL, arrive_at INTEGER NOT NULL,
-  state TEXT NOT NULL DEFAULT 'walking' CHECK(state IN ('walking','arrived','cancelled')), CHECK(arrive_at > started_at)
+  state TEXT NOT NULL DEFAULT 'walking' CHECK(state IN ('walking','arrived','cancelled')), mode TEXT NOT NULL DEFAULT 'walk',
+  CHECK(arrive_at > started_at)
 );
 CREATE UNIQUE INDEX IF NOT EXISTS ux_trip_active ON world_trips(world_id, user_id) WHERE state='walking';
 CREATE INDEX IF NOT EXISTS ix_trips_world ON world_trips(world_id, state);
@@ -116,9 +117,69 @@ CREATE INDEX IF NOT EXISTS ix_msess_user ON map_sessions(world_id, user_id, crea
 CREATE TABLE IF NOT EXISTS casino_games(
   sid TEXT PRIMARY KEY, world_id INTEGER NOT NULL, user_id INTEGER NOT NULL, deck TEXT NOT NULL, player TEXT NOT NULL, dealer TEXT NOT NULL,
   state TEXT NOT NULL CHECK(state IN ('playing','done')), result TEXT NOT NULL DEFAULT '', seq INTEGER NOT NULL DEFAULT 1,
-  created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+  created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+  bet INTEGER NOT NULL DEFAULT 0, hand_no INTEGER NOT NULL DEFAULT 1, paid INTEGER NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS life_accounts(
+  user_id INTEGER PRIMARY KEY, balance INTEGER NOT NULL DEFAULT 0 CHECK(balance >= 0), created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS life_ledger(
+  id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, kind TEXT NOT NULL, ref TEXT NOT NULL, delta INTEGER NOT NULL,
+  balance_after INTEGER NOT NULL, stock_delta INTEGER NOT NULL DEFAULT 0, note TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL,
+  UNIQUE(user_id, kind, ref)
+);
+CREATE INDEX IF NOT EXISTS ix_ledger_user ON life_ledger(user_id, id);
+CREATE TABLE IF NOT EXISTS fx_quotes(
+  id TEXT PRIMARY KEY, user_id INTEGER NOT NULL, direction TEXT NOT NULL CHECK(direction IN ('s2c','c2s')),
+  src INTEGER NOT NULL CHECK(src > 0), dst INTEGER NOT NULL CHECK(dst > 0),
+  state TEXT NOT NULL DEFAULT 'open' CHECK(state IN ('open','done','cancelled')), created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_fx_user ON fx_quotes(user_id, state);
+CREATE TABLE IF NOT EXISTS work_tasks(
+  id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, world_id INTEGER NOT NULL, job TEXT NOT NULL, kind TEXT NOT NULL DEFAULT '',
+  stage TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'open' CHECK(state IN ('open','done','cancelled')), data TEXT NOT NULL DEFAULT '{}',
+  reward INTEGER NOT NULL DEFAULT 0, cost INTEGER NOT NULL DEFAULT 0, paid INTEGER NOT NULL DEFAULT 0, receipt TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL, started_at INTEGER, due_at INTEGER, expires_at INTEGER, finished_at INTEGER
+);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_work_open ON work_tasks(user_id) WHERE state='open';
+CREATE INDEX IF NOT EXISTS ix_work_user ON work_tasks(user_id, job, finished_at);
+CREATE TABLE IF NOT EXISTS interactions(
+  id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL CHECK(kind IN ('greet','hug')), chat_id INTEGER NOT NULL,
+  from_id INTEGER NOT NULL, to_id INTEGER NOT NULL,
+  state TEXT NOT NULL DEFAULT 'sent' CHECK(state IN ('sent','pending','accepted','declined','cancelled','expired')),
+  message_id INTEGER, created_at INTEGER NOT NULL, expires_at INTEGER, answered_at INTEGER
+);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_hug_pending ON interactions(from_id, to_id) WHERE kind='hug' AND state='pending';
+CREATE INDEX IF NOT EXISTS ix_inter_from ON interactions(from_id, kind, created_at);
 """
+
+
+def _migrate_8(conn) -> None:
+    """v0.18: a trip remembers how it is travelled (walk / car), and every existing human player gets the $100 starting cash exactly once.
+    Nothing existing is changed or removed: one column is added with a default, and the new life-cash tables (created by SCHEMA, empty) are
+    filled. The grant is a ledger row ('grant','start') that is UNIQUE per player, so repeating this step could not pay anyone twice."""
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(world_trips)").fetchall()]
+    if "mode" not in cols:
+        conn.execute("ALTER TABLE world_trips ADD COLUMN mode TEXT NOT NULL DEFAULT 'walk'")
+    import time
+    now = int(time.time())
+    cents = 100_00
+    for (uid,) in conn.execute("SELECT id FROM users WHERE bot=0 ORDER BY id").fetchall():
+        conn.execute("INSERT OR IGNORE INTO life_accounts(user_id,balance,created_at,updated_at) VALUES(?,0,?,?)", (uid, now, now))
+        cur = conn.execute("INSERT OR IGNORE INTO life_ledger(user_id,kind,ref,delta,balance_after,stock_delta,note,created_at) VALUES(?,?,?,?,?,0,'',?)",
+                           (uid, "grant", "start", cents, cents, now))
+        if cur.rowcount == 1:
+            conn.execute("UPDATE life_accounts SET balance=balance+?, updated_at=? WHERE user_id=?", (cents, now, uid))
+
+
+def _migrate_9(conn) -> None:
+    """v0.18.1: blackjack is played for life cash. A game row remembers the stake of its hand (`bet`, cents), which hand of the table it is
+    (`hand_no`, it names the ledger rows of that hand) and what the finished hand paid back (`paid`, cents). Three columns are added with
+    defaults; every existing game keeps its cards and its result (bet 0: a hand of the old no-stakes table, nothing was ever at risk)."""
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(casino_games)").fetchall()]
+    for name in ("bet", "hand_no", "paid"):
+        if name not in cols:
+            conn.execute(f"ALTER TABLE casino_games ADD COLUMN {name} INTEGER NOT NULL DEFAULT {1 if name == 'hand_no' else 0}")
 
 
 def _migrate_5(conn) -> None:
@@ -138,7 +199,7 @@ def _migrate_5(conn) -> None:
     conn.execute("DROP TABLE IF EXISTS shorts")
 
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 9
 # version -> SQL (or a function taking the connection) upgrading a database FROM version-1.
 # New tables need no entry: SCHEMA creates them with IF NOT EXISTS.
 MIGRATIONS: dict = {
@@ -152,6 +213,8 @@ MIGRATIONS: dict = {
     5: _migrate_5,    # v5: short selling removed; the exchange tables are created by SCHEMA
     6: "SELECT 1;",                          # v0.15: the `worlds` table (one city per group) comes from SCHEMA; nothing else changes
     7: "SELECT 1;",                          # v0.17: world_places / world_players / world_trips / map_sessions / casino_games are new tables from SCHEMA; no existing table or row changes
+    8: _migrate_8,                           # v0.18: life cash + exchange + jobs + interactions tables (from SCHEMA), world_trips.mode, and the one-time $100 grant to existing players
+    9: _migrate_9,                           # v0.18.1: casino_games.bet / hand_no / paid (blackjack for life cash); nothing existing changes
 }
 
 

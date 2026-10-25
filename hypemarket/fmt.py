@@ -6,7 +6,17 @@ import html
 from . import config as C
 
 FA_DIGITS = str.maketrans("0123456789", "۰۱۲۳۴۵۶۷۸۹")
+EN_DIGITS = str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩٬٫٪", "01234567890123456789,.%")      # Persian and Arabic-Indic digits and their signs -> 0-9 , . %
 LRM = "\u200e"
+
+
+def digits(s):
+    """The ONE place the number style of everything the bot says is decided (v0.18.1). With config.digits_mode() == 'en' (the default) any Persian /
+    Arabic-Indic digit and the signs ٬ ٫ ٪ in `s` become 0-9 , . %; with 'fa' (env DIGITS=fa, the old look) the text is left exactly as written.
+    Applied to every template, every number formatter, every button label and every outgoing message, so a hard-coded «۱۰۰۰» says «1000» too."""
+    if not s or not isinstance(s, str) or C.digits_mode() != "en":
+        return s
+    return s.translate(EN_DIGITS)
 
 
 def esc(x) -> str:
@@ -15,7 +25,7 @@ def esc(x) -> str:
 
 def loc(s: str, lang: str) -> str:
     """Localize digits and separators of an already formatted number."""
-    if lang == "fa":
+    if lang == "fa" and C.digits_mode() == "fa":
         return s.translate(FA_DIGITS).replace(",", "٬").replace(".", "٫")
     return s
 
@@ -36,6 +46,31 @@ def coins(units: int, lang: str) -> str:
     return f"{loc(s, lang)} 🪙"
 
 
+def coins_x(units: int, lang: str) -> str:
+    """Stock money shown EXACTLY (never rounded): whole coins, plus up to two decimals when the amount has a fraction. Used where the exact
+    amount matters, i.e. on the exchange screens."""
+    units = int(units)
+    sign = "-" if units < 0 else ""
+    a = abs(units)
+    whole, frac = divmod(a, C.UNIT)
+    s = f"{whole:,}" + (("." + f"{frac:02d}".rstrip("0")) if frac else "")
+    return f"{sign}{loc(s, lang)} 🪙"
+
+
+def usd(cents: int, lang: str) -> str:
+    """Life cash: always with the $ sign and two decimals («$100.00», «$۰٫۴۵»); never mixed up with a 🪙 amount. Exact integer arithmetic."""
+    cents = int(cents)
+    sign = "-" if cents < 0 else ""
+    a = abs(cents)
+    return f"{sign}${loc(f'{a // 100:,}.{a % 100:02d}', lang)}"
+
+
+def clock(ts: int, lang: str) -> str:
+    """A time of day for a timestamp, in the configured display zone («۱۴:۳۰»); the zone is named by the caller's text."""
+    mins = (int(ts) // 60 + C.display_utc_offset()) % 1440
+    return loc(f"{mins // 60:02d}:{mins % 60:02d}", lang)
+
+
 def price(units: int, lang: str) -> str:
     """Prices of single shares are shown with two decimals (balances are rounded harder)."""
     v = units / C.UNIT
@@ -44,7 +79,7 @@ def price(units: int, lang: str) -> str:
 
 
 def pct(p: float, lang: str, arrows: bool = True) -> str:
-    sign = "٪" if lang == "fa" else "%"
+    sign = "٪" if lang == "fa" and C.digits_mode() == "fa" else "%"
     body = loc(f"{abs(p):,.1f}", lang) + sign
     if not arrows:
         return body

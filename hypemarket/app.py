@@ -42,12 +42,12 @@ async def main() -> None:
     if settings.bots:
         bots.ensure_bots(db)
     exchange.ensure_listed(db)                 # the six house-priced companies (no-op once they exist)
-    try:                                       # every saved city gets its permanent casino; nothing about a city is regenerated or moved (no-op once done)
+    try:                                       # every saved city gets its permanent public places (casino, McDonald's); nothing about a city is regenerated or moved (no-op once done)
         added = worldplaces.ensure_all(db)
         if added:
-            log.info("casino added to %d saved cities", added)
+            log.info("public places added to %d saved cities", added)
     except Exception:
-        log.exception("adding the casino to saved cities failed (each city gets it the first time its map is opened instead)")
+        log.exception("adding the public places to saved cities failed (each city gets them the first time its map is opened instead)")
     session = AiohttpSession(proxy=settings.proxy) if settings.proxy else None     # PROXY_URL in .env
     bot = Bot(settings.token, session=session, default=DefaultBotProperties(parse_mode=ParseMode.HTML, link_preview_is_disabled=True))
     me = await bot.get_me()

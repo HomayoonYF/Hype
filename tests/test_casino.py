@@ -1,4 +1,5 @@
-"""Milestone C (v0.17): the casino as a permanent place of every city, and its no-stakes blackjack table.
+"""Milestone C (v0.17): the casino as a permanent place of every city, and its blackjack table (v0.18.1: played for life cash; the money
+rules are tested in test_casino_cash.py, the table's mechanics here).
 
 Rules of blackjack are tested on scripted decks; the walk to the casino, the entrance, owner locks, repeated buttons, restarts and the
 «nothing else changes» promises are tested through the real handlers."""
@@ -50,20 +51,20 @@ def test_every_new_world_has_exactly_one_casino_on_a_reserved_empty_parcel(seed)
     db = Database(":memory:")
     w, created = world.save_world(db, CH, world.build(seed))
     assert created
-    rows = db.qa("SELECT * FROM world_places WHERE world_id=?", (w["id"],))
-    assert [(r["kind"], r["place_id"]) for r in rows] == [("casino", "l5")]
+    rows = db.qa("SELECT * FROM world_places WHERE world_id=? ORDER BY place_id", (w["id"],))
+    assert [(r["kind"], r["place_id"]) for r in rows] == [("casino", "l5"), ("mcdonalds", "l6")]      # v0.18 added the McDonald's after the casino: l5 is untouched
     base = world.load_layout(w)
     assert world.validate(base) and len(base["landmarks"]) == 4 and {m["kind"] for m in base["landmarks"]} == set(world.LANDMARKS)
     parcel = next(p for p in base["parcels"] if p["id"] == rows[0]["parcel_id"])
     assert parcel["use"] == "vacant"                                                                  # a parcel that really was empty land
     c = worldplaces.load_city(db, w)
     kinds = [m["kind"] for m in c.layout["landmarks"]]
-    assert kinds.count("casino") == 1 and len(kinds) == 5
+    assert kinds.count("casino") == 1 and kinds.count("mcdonalds") == 1 and len(kinds) == 6
     changed = [(a["id"]) for a, b in zip(base["parcels"], c.layout["parcels"]) if a != b]
-    assert changed == [parcel["id"]]                                                                  # exactly one parcel differs...
+    assert sorted(changed) == sorted(r["parcel_id"] for r in rows)                                    # exactly the two parcels of the places differ...
     mine = next(p for p in c.layout["parcels"] if p["id"] == parcel["id"])
     assert mine["use"] == "landmark" and mine["poly"] == parcel["poly"] and mine["c"] == parcel["c"]    # ...only by being a public place
-    assert world.stats(c.layout)["vacant"] == world.stats(base)["vacant"] - 1 and world.stats(c.layout)["parcels"] == world.stats(base)["parcels"]
+    assert world.stats(c.layout)["vacant"] == world.stats(base)["vacant"] - 2 and world.stats(c.layout)["parcels"] == world.stats(base)["parcels"]
     cl = next(m for m in c.layout["landmarks"] if m["kind"] == "casino")
     assert cl["id"] == "l5" and cl["parcel"] == parcel["id"] and cl["at"] == parcel["c"]
 
@@ -86,7 +87,7 @@ def test_the_casino_choice_is_a_pure_function_of_the_saved_city():
     for _ in range(3):
         db = Database(":memory:")
         w, _ = world.save_world(db, CH, world.build(7))
-        picks.add(db.q1("SELECT parcel_id FROM world_places")["parcel_id"])
+        picks.add(db.q1("SELECT parcel_id FROM world_places WHERE kind='casino'")["parcel_id"])
     assert len(picks) == 1
 
 
@@ -110,11 +111,11 @@ def test_existing_worlds_get_a_casino_without_being_regenerated_at_startup(h):
     assert dict(after) == row_before and after["layout"] == w["layout"]                               # not one byte of the saved city changed
     assert world.load_layout(after) == frozen
     assert dict(world.get_world(h.db, CH)) == other
-    assert h.db.q1("SELECT kind,place_id FROM world_places WHERE world_id=?", (w["id"],))["place_id"] == "l5"
+    assert h.db.q1("SELECT kind,place_id FROM world_places WHERE world_id=? AND kind='casino'", (w["id"],))["place_id"] == "l5"      # the casino keeps l5 (v0.18 adds the McDonald's as l6)
     c = worldplaces.load_city(h.db, after)
     for key in ("roads", "water", "districts", "nodes", "footprint", "blocks", "terrain", "seed", "name"):
         assert c.layout[key] == frozen[key]
-    assert [m for m in c.layout["landmarks"] if m["kind"] != "casino"] == frozen["landmarks"]         # the four public places, unmoved
+    assert [m for m in c.layout["landmarks"] if m["kind"] not in ("casino", "mcdonalds")] == frozen["landmarks"]         # the four public places, unmoved
     assert {p["id"]: (p["poly"], p["c"], p["area"]) for p in c.layout["parcels"]} == {p["id"]: (p["poly"], p["c"], p["area"]) for p in frozen["parcels"]}
     assert worldplaces.ensure_all(h.db) == 0 and worldplaces.ensure_all(h.db) == 0                    # and a second pass has nothing to do
 
@@ -124,12 +125,12 @@ def test_existing_worlds_get_a_casino_the_first_time_somebody_opens_the_map(h, d
     before = dict(w)
     d2 = mapkit.Driver(h, CH2)
     v = d2.open(A)
-    assert v.photo and h.db.q1("SELECT COUNT(*) c FROM world_places WHERE world_id=?", (w["id"],))["c"] == 1
+    assert v.photo and h.db.q1("SELECT COUNT(*) c FROM world_places WHERE world_id=?", (w["id"],))["c"] == 2          # the casino and (v0.18) the McDonald's
     assert dict(world.get_world(h.db, CH2)) == before
     assert t("fa", "map.lm.casino") in v.caption and "L5" in v.caption                                 # the public places line lists it
     for _ in range(3):
         d2.open(B)
-    assert h.db.q1("SELECT COUNT(*) c FROM world_places WHERE world_id=?", (w["id"],))["c"] == 1
+    assert h.db.q1("SELECT COUNT(*) c FROM world_places WHERE world_id=?", (w["id"],))["c"] == 2
 
 
 def test_players_and_trips_are_untouched_when_a_casino_is_added_later(h, d):
@@ -139,11 +140,11 @@ def test_players_and_trips_are_untouched_when_a_casino_is_added_later(h, d):
     o = d.press(A, f"mp:{v.sid}:o:p3", v)
     d.go(A, o, t("fa", "mp.b.go"))
     players, trips = [tuple(r) for r in h.db.qa("SELECT * FROM world_players ORDER BY user_id")], [tuple(r) for r in h.db.qa("SELECT * FROM world_trips")]
-    parcel = h.db.q1("SELECT parcel_id FROM world_places")["parcel_id"]
+    parcel = h.db.q1("SELECT parcel_id FROM world_places WHERE kind='casino'")["parcel_id"]
     h.db.x("DELETE FROM world_places")                                                                # as if this city had never had one
     worldplaces.cache_clear()
     d.open(B)
-    assert h.db.q1("SELECT parcel_id FROM world_places")["parcel_id"] == parcel                       # the same parcel again: the choice is stable
+    assert h.db.q1("SELECT parcel_id FROM world_places WHERE kind='casino'")["parcel_id"] == parcel                       # the same parcel again: the choice is stable
     assert [tuple(r) for r in h.db.qa("SELECT * FROM world_players ORDER BY user_id")] == players
     assert [tuple(r) for r in h.db.qa("SELECT * FROM world_trips")] == trips
 
@@ -155,15 +156,16 @@ def test_initialization_is_idempotent_and_the_database_forbids_duplicates(h):
     for _ in range(5):
         assert tuple(worldplaces.ensure_casino(h.db, w, base)) == first
         worldplaces.load_city(h.db, w)
-    assert h.db.q1("SELECT COUNT(*) c FROM world_places")["c"] == 1
-    free = next(p["id"] for p in base["parcels"] if p["use"] == "vacant" and p["id"] != first[3])
+    assert h.db.q1("SELECT COUNT(*) c FROM world_places")["c"] == 2                                  # the casino and (v0.18) the McDonald's
+    taken = {r["parcel_id"] for r in h.db.qa("SELECT parcel_id FROM world_places")}
+    free = next(p["id"] for p in base["parcels"] if p["use"] == "vacant" and p["id"] not in taken)
     with pytest.raises(sqlite3.IntegrityError):
         h.db.x("INSERT INTO world_places(world_id,place_id,kind,parcel_id,created_at) VALUES(?,?,?,?,0)", (w["id"], "l9", "casino", free))     # a second casino
     with pytest.raises(sqlite3.IntegrityError):
         h.db.x("INSERT INTO world_places(world_id,place_id,kind,parcel_id,created_at) VALUES(?,?,?,?,0)", (w["id"], "l5", "other", free))      # the same ID
     with pytest.raises(sqlite3.IntegrityError):
         h.db.x("INSERT INTO world_places(world_id,place_id,kind,parcel_id,created_at) VALUES(?,?,?,?,0)", (w["id"], "l7", "other", first[3]))   # the same parcel
-    assert h.db.q1("SELECT COUNT(*) c FROM world_places")["c"] == 1
+    assert h.db.q1("SELECT COUNT(*) c FROM world_places")["c"] == 2
 
 
 def test_two_callers_racing_to_add_the_casino_end_with_one(h):
@@ -181,13 +183,13 @@ def test_two_callers_racing_to_add_the_casino_end_with_one(h):
 
 def test_a_place_that_does_not_fit_its_saved_city_is_reported_not_repaired(h, d):
     w = world.get_world(h.db, CH)
-    h.db.x("UPDATE world_places SET parcel_id='p999999'")
+    h.db.x("UPDATE world_places SET parcel_id='p999999' WHERE kind='casino'")
     worldplaces.cache_clear()
     with pytest.raises(world.WorldError):
         worldplaces.load_city(h.db, w)
     calls = h.say(A, "مپ", chat=CH)
     assert "خراب" in tb.Harness.texts(calls) and not [c for c in calls if c.__class__.__name__ == "SendPhoto"]
-    assert h.db.q1("SELECT parcel_id FROM world_places")["parcel_id"] == "p999999"                     # reported, left as it is
+    assert h.db.q1("SELECT parcel_id FROM world_places WHERE kind='casino'")["parcel_id"] == "p999999"                     # reported, left as it is
 
 
 def test_the_casino_is_drawn_on_the_map_with_its_label(h, d, monkeypatch):
@@ -259,10 +261,31 @@ def enter(h, d, uid):
     return v, lobby
 
 
-def table_of(d, uid, v, lobby):
-    tb_ = d.go(uid, lobby, t("fa", "mp.b.bj"))
+def chip_label(bet, lang="fa"):
+    return t(lang, "bj.b.chip", amount=fmt.usd(bet, lang))
+
+
+def chip_data(out, bet, lang="fa"):
+    return next(dd for x, dd in out.buttons if x == chip_label(bet, lang))
+
+
+def table_of(d, uid, v, lobby, bet=1_00):
+    """Open the table from the lobby and put down the chip `bet`: the hand is dealt and its screen returned."""
+    chips = d.go(uid, lobby, t("fa", "mp.b.bj"))
+    chips.sid, chips.mid = v.sid, v.mid
+    tb_ = d.press(uid, chip_data(chips, bet), v)
     tb_.sid, tb_.mid = v.sid, v.mid
     return tb_
+
+
+def next_hand(d, uid, v, out, bet=1_00, lang="fa"):
+    """From a finished hand's screen: the next hand for the chip `bet`."""
+    return d.press(uid, chip_data(out, bet, lang), v)
+
+
+def cash_of(h, uid=A):
+    from hypemarket import cash
+    return cash.balance(h.db, uid)
 
 
 def scripted(monkeypatch, player, dealer, draws=()):
@@ -406,11 +429,12 @@ def test_the_deck_is_a_standard_52_cards_shuffled_fairly():
 
 def test_the_decks_randomness_is_isolated_from_the_global_generator(h, d, monkeypatch):
     assert casino.RNG_FACTORY is random.SystemRandom
+    core.ensure_user(h.db, A, "a", "A", lang="fa")
     random.seed(1234)
     state = random.getstate()
     for _ in range(40):
         casino.shuffled()
-        casino.start(h.db, f"s{_}", 1, A, 0, 1_700_000_000)
+        casino.start(h.db, f"s{_}", 1, A, 0, 1_700_000_000, 1_00)
     assert random.getstate() == state                                                                  # not read, not advanced, not reseeded
     random.seed(1234)
     expected = [random.random() for _ in range(5)]
@@ -425,7 +449,7 @@ def test_the_decks_randomness_is_isolated_from_the_global_generator(h, d, monkey
     for _ in range(6):
         row = h.db.q1("SELECT * FROM casino_games WHERE sid=?", (v.sid,))
         if row["state"] == "done":
-            table = d.press(A, f"mp:{v.sid}:bj:n:{row['seq']}", v)
+            table = next_hand(d, A, v, table)
         else:
             table = d.press(A, f"mp:{v.sid}:bj:s:{row['seq']}", v)
     assert random.getstate() == state
@@ -442,43 +466,41 @@ def test_playing_a_hand_through_the_buttons(h, d, monkeypatch):
     table = table_of(d, A, v, lobby)
     assert "10♠ 5♥" in table.caption and "9♣" in table.caption and "7♦" not in table.caption and "🎴" in table.caption   # the second dealer card is hidden
     labels = [x for x, _ in table.buttons]
-    assert t("fa", "mp.b.hit") in labels and t("fa", "mp.b.stand") in labels and t("fa", "mp.b.again") not in labels
-    assert t("fa", "bj.nostakes") not in table.caption                                                 # (said at the end of a hand)
+    assert t("fa", "mp.b.hit") in labels and t("fa", "mp.b.stand") in labels and chip_label(1_00) not in labels      # no new chips while a hand is being played
+    assert t("fa", "bj.stake", bet=fmt.usd(1_00, "fa")) in table.caption                              # the bet of this hand is shown
+    assert cash_of(h) == 99_00                                                                          # and the chip is already off the player's cash
     hit = d.go(A, table, t("fa", "mp.b.hit"))
     hit.sid, hit.mid = v.sid, v.mid
     assert "10♠ 5♥ 4♥" in hit.caption and fmt.num(19, "fa") in hit.caption and "7♦" not in hit.caption
     stand = d.go(A, hit, t("fa", "mp.b.stand"))
     assert "9♣ 7♦ K♠" in stand.caption and fmt.num(26, "fa") in stand.caption and fmt.num(19, "fa") in stand.caption     # dealer reveals 16, draws the king and busts on 26
-    assert t("fa", "bj.r.dealer_bust") in stand.caption and t("fa", "bj.nostakes") in stand.caption
-    assert t("fa", "mp.b.again") in [x for x, _ in stand.buttons] and t("fa", "mp.b.hit") not in [x for x, _ in stand.buttons]
+    assert t("fa", "bj.r.dealer_bust") in stand.caption and t("fa", "bj.net.win", amount=fmt.usd(1_00, "fa")) in stand.caption
+    assert chip_label(1_00) in [x for x, _ in stand.buttons] and t("fa", "mp.b.hit") not in [x for x, _ in stand.buttons]
+    assert cash_of(h) == 101_00                                                                         # bet $1 back plus $1: net +$1
     row = h.db.q1("SELECT * FROM casino_games WHERE sid=?", (v.sid,))
     assert row["state"] == "done" and row["result"] == "dealer_bust" and row["user_id"] == A
     scripted(monkeypatch, ["A♠", "K♥"], ["5♠", "5♦"])
-    again = d.go(A, stand, t("fa", "mp.b.again"))
+    again = next_hand(d, A, v, stand)
     assert t("fa", "bj.r.player_blackjack") in again.caption and "5♦" in again.caption                  # natural: finished and revealed at once
+    assert cash_of(h) == 102_50                                                                         # a natural pays 3 to 2: +$1.50
     assert h.db.q1("SELECT COUNT(*) c FROM casino_games")["c"] == 1                                    # one game row per map session
 
 
 def test_every_screen_of_the_table_fits_telegram_in_both_languages(h, d):
     from hypemarket import social
-    for lang in ("fa", "en"):
+    for lang, uid in (("fa", A), ("en", B)):
         social.set_group_lang(h.db, CH, lang)
-        v, lobby = enter(h, d, A) if lang == "fa" else (None, None)
-        if v is None:
-            v = walk_to_casino(h, d, B, "en")
-            o = d.press(B, f"mp:{v.sid}:o:casino", v)
-            lobby = d.go(B, o, t("en", "mp.b.enter"))
-            table = d.go(B, lobby, t("en", "mp.b.bj"))
-            uid = B
-        else:
-            table = d.go(A, lobby, t("fa", "mp.b.bj"))
-            uid = A
-        table.sid, table.mid = v.sid, v.mid
-        for _ in range(4):
-            assert len(table.caption) <= 1024
+        v = walk_to_casino(h, d, uid, lang)
+        o = d.press(uid, f"mp:{v.sid}:o:casino", v)
+        lobby = d.go(uid, o, t(lang, "mp.b.enter"))
+        chips = d.go(uid, lobby, t(lang, "mp.b.bj"))                                                      # the table before the first hand: the chips
+        assert len(lobby.caption) <= 1024 and len(chips.caption) <= 1024
+        assert [x for x, _ in chips.buttons][:5] == [chip_label(b, lang) for b in C.CASINO_BETS_CENTS]   # $1 $5 $10 $25 $100 (the new player has $100)
+        table = d.press(uid, chip_data(chips, 1_00, lang), v)
+        for _ in range(8):
+            assert len(table.caption) <= 1024, table.caption
             row = h.db.q1("SELECT * FROM casino_games WHERE sid=?", (v.sid,))
-            table = d.press(uid, f"mp:{v.sid}:bj:{'n' if row['state'] == 'done' else 'h'}:{row['seq']}", v)
-        assert len(lobby.caption) <= 1024
+            table = next_hand(d, uid, v, table, lang=lang) if row["state"] == "done" else d.press(uid, f"mp:{v.sid}:bj:h:{row['seq']}", v)
 
 
 def test_nobody_but_the_owner_can_use_the_table(h, d, monkeypatch):
@@ -489,7 +511,7 @@ def test_nobody_but_the_owner_can_use_the_table(h, d, monkeypatch):
     row = tuple(h.db.q1("SELECT * FROM casino_games WHERE sid=?", (v.sid,)))
     before = {n: [tuple(r) for r in h.db.qa(f"SELECT * FROM {n}")] for n in ("casino_games", "world_players", "world_trips", "map_sessions", "users")}
     for uid in (B, X):
-        for what in table.data() + [f"mp:{v.sid}:bj:h:{row[8]}", f"mp:{v.sid}:bj:s:{row[8]}", f"mp:{v.sid}:bj:n:{row[8]}", f"mp:{v.sid}:bj:o"]:
+        for what in table.data() + [f"mp:{v.sid}:bj:h:{row[8]}", f"mp:{v.sid}:bj:s:{row[8]}", f"mp:{v.sid}:bj:n:{row[8]}", f"mp:{v.sid}:bj:b:{row[8]}:100", f"mp:{v.sid}:bj:o"]:
             out = d.press(uid, what, v)
             assert out.alerts == [t("fa", "mp.not_yours")] and not out.edits and not out.sent, (uid, what)
     assert {n: [tuple(r) for r in h.db.qa(f"SELECT * FROM {n}")] for n in before} == before            # no card drawn, no game ended, nobody registered
@@ -553,12 +575,14 @@ def test_repeated_and_stale_button_presses_are_applied_once(h, d, monkeypatch):
     assert row["state"] == "done" and len(json.loads(row["dealer"])) == 3 and t("fa", "bj.stale") in again.toasts[-1]
     late_hit = d.press(A, hit, v)                                                                      # a hit after the hand is over
     assert tuple(h.db.q1("SELECT * FROM casino_games WHERE sid=?", (v.sid,))) == tuple(row) and t("fa", "bj.stale") in late_hit.toasts[-1]
-    new = [dd for x, dd in done.buttons if x == t("fa", "mp.b.again")][0]
+    new = chip_data(done, 5_00)
+    before = cash_of(h)
     scripted(monkeypatch, ["10♠", "7♥"], ["9♣", "8♦"])
     a1 = d.press(A, new, v)
-    a2 = d.press(A, new, v)                                                                            # «new hand» pressed twice: one new hand
+    a2 = d.press(A, new, v)                                                                            # «chip» pressed twice: one new hand, one bet
     assert h.db.q1("SELECT seq FROM casino_games WHERE sid=?", (v.sid,))["seq"] == row["seq"] + 1
     assert "10♠ 7♥" in a1.caption and t("fa", "bj.stale") in a2.toasts[-1]
+    assert cash_of(h) == before - 5_00
 
 
 def test_a_new_hand_cannot_be_dealt_over_a_hand_in_progress(h, d, monkeypatch):
@@ -566,10 +590,14 @@ def test_a_new_hand_cannot_be_dealt_over_a_hand_in_progress(h, d, monkeypatch):
     scripted(monkeypatch, ["10♠", "5♥"], ["9♣", "7♦"], draws=["4♥"])
     table = table_of(d, A, v, lobby)
     row = h.db.q1("SELECT * FROM casino_games WHERE sid=?", (v.sid,))
-    for forged in (f"mp:{v.sid}:bj:n:{row['seq']}", f"mp:{v.sid}:bj:n:0", f"mp:{v.sid}:bj:n:{row['seq'] + 1}"):
+    cash0, ledger0 = cash_of(h), h.db.q1("SELECT COUNT(*) c FROM life_ledger")["c"]
+    for forged in (f"mp:{v.sid}:bj:b:{row['seq']}:100", f"mp:{v.sid}:bj:b:0:100", f"mp:{v.sid}:bj:b:{row['seq'] + 1}:500"):
         out = d.press(A, forged, v)
         assert t("fa", "bj.stale") in out.toasts[-1]
+    out = d.press(A, f"mp:{v.sid}:bj:n:{row['seq']}", v)                                               # the old «again» button of v0.18: only shows the table
+    assert "10♠ 5♥" in out.caption
     assert tuple(h.db.q1("SELECT * FROM casino_games WHERE sid=?", (v.sid,))) == tuple(row)
+    assert cash_of(h) == cash0 and h.db.q1("SELECT COUNT(*) c FROM life_ledger")["c"] == ledger0     # not one cent moved
     again = d.press(A, f"mp:{v.sid}:bj:o", v)                                                          # opening the table again resumes the same hand
     assert "10♠ 5♥" in again.caption and tuple(h.db.q1("SELECT * FROM casino_games WHERE sid=?", (v.sid,))) == tuple(row)
 
@@ -578,10 +606,14 @@ def test_garbage_in_blackjack_buttons_fails_safely(h, d):
     v, lobby = enter(h, d, A)
     table = table_of(d, A, v, lobby)
     row = tuple(h.db.q1("SELECT * FROM casino_games WHERE sid=?", (v.sid,)))
-    for junk in ("bj", "bj:x", "bj:h", "bj:h:abc", "bj:h:-1", "bj:h:99999999999999999999", "bj:s:", "bj:n:x", "bj:o:1", "bj:hit:1"):
+    cash0, ledger0 = cash_of(h), h.db.q1("SELECT COUNT(*) c FROM life_ledger")["c"]
+    for junk in ("bj", "bj:x", "bj:h", "bj:h:abc", "bj:h:-1", "bj:h:99999999999999999999", "bj:s:", "bj:n:x", "bj:o:1", "bj:hit:1",
+                 "bj:b", "bj:b:1", "bj:b:1:", "bj:b:1:abc", "bj:b:1:50", "bj:b:1:-100", "bj:b:1:100.5", "bj:b:1:100:1", "bj:b:abc:100",
+                 "bj:b:1:99999999999999999999", "bj:b:99999999999999999999:100", "bj:b:1:0", "bj:b:1:1e3"):
         out = d.press(A, f"mp:{v.sid}:{junk}", v)
-        assert len(out.alerts) + len(out.toasts) >= 0 and "Traceback" not in " ".join(out.toasts)
-    assert tuple(h.db.q1("SELECT * FROM casino_games WHERE sid=?", (v.sid,))) == row or h.db.q1("SELECT seq FROM casino_games WHERE sid=?", (v.sid,))["seq"] >= row[8]
+        assert "Traceback" not in " ".join(out.toasts)
+    assert tuple(h.db.q1("SELECT * FROM casino_games WHERE sid=?", (v.sid,))) == row                    # not a card, not a cent
+    assert cash_of(h) == cash0 and h.db.q1("SELECT COUNT(*) c FROM life_ledger")["c"] == ledger0
 
 
 def test_the_table_stops_working_when_the_player_leaves_the_casino(h, d, monkeypatch):
@@ -641,11 +673,14 @@ def test_expired_sessions_cannot_touch_a_table(h, d, monkeypatch):
     out = d.press(A, hit, v)
     assert out.alerts == [t("fa", "mp.expired")] and not out.edits
     assert tuple(h.db.q1("SELECT * FROM casino_games WHERE sid=?", (v.sid,))) == row
-    d.open(A)                                                                                          # the next map message cleans the dead session's game away
+    assert cash_of(h) == 99_00                                                                          # the chip is on the table
+    d.open(A)                                                                                          # the next map message cleans the dead session's game away...
     assert h.db.q1("SELECT COUNT(*) c FROM casino_games WHERE sid=?", (v.sid,))["c"] == 0
+    kinds = [(r["kind"], r["delta"]) for r in h.db.qa("SELECT * FROM life_ledger WHERE kind LIKE 'casino%' ORDER BY id")]
+    assert kinds == [("casino_bet", -1_00)]                                                            # ...after standing the hand: 15 against 20 loses, so the chip is simply gone
 
 
-# ============================================================================================== no stakes, no side effects
+# ============================================================================================== only life cash moves, nothing else
 def test_blackjack_changes_nothing_in_the_economy_or_progression(h, d, monkeypatch):
     d.open(B)
     h.say(A, "daily")
@@ -653,34 +688,38 @@ def test_blackjack_changes_nothing_in_the_economy_or_progression(h, d, monkeypat
     v, lobby = enter(h, d, A)
     before = econ_snapshot(h.db)
     xp = [tuple(r) for r in h.db.qa("SELECT * FROM quests ORDER BY user_id, qid, period")]
-    ach = [tuple(r) for r in h.db.qa("SELECT * FROM achievements ORDER BY 1,2")] if h.db.q1("SELECT name FROM sqlite_master WHERE name='achievements'") else []
     table = table_of(d, A, v, lobby)
+    cash0, rows0 = cash_of(h), h.db.q1("SELECT COUNT(*) c FROM life_ledger WHERE user_id=?", (A,))["c"]
     for _ in range(25):
         row = h.db.q1("SELECT * FROM casino_games WHERE sid=?", (v.sid,))
-        act = "n" if row["state"] == "done" else random.choice("hs")
-        d.press(A, f"mp:{v.sid}:bj:{act}:{row['seq']}", v)
+        if row["state"] == "done":
+            table = next_hand(d, A, v, table)
+        else:
+            table = d.press(A, f"mp:{v.sid}:bj:{random.choice('hs')}:{row['seq']}", v)
     assert h.db.q1("SELECT seq FROM casino_games WHERE sid=?", (v.sid,))["seq"] > 5                    # plenty of hands were really played
-    assert econ_snapshot(h.db) == before
+    assert econ_snapshot(h.db) == before                                                               # stock coins, shares, levels, perks, news: untouched
     assert [tuple(r) for r in h.db.qa("SELECT * FROM quests ORDER BY user_id, qid, period")] == xp
     assert h.db.q1("SELECT COUNT(*) c FROM news")["c"] == 0 and h.db.q1("SELECT COUNT(*) c FROM history WHERE ts>?", (1_700_000_100,))["c"] == 0
     assert not h.db.outbox and not h.db.quest_events and not h.db.ach_events
+    moved = h.db.qa("SELECT * FROM life_ledger WHERE user_id=? AND id>(SELECT MAX(id) FROM life_ledger WHERE user_id=? AND kind='grant')", (A, A))
+    assert all(r["kind"] in ("casino_bet", "casino_win") for r in moved) and len(moved) > rows0 - 1       # the only cash that moved is the casino's
+    assert cash_of(h) == 100_00 + sum(r["delta"] for r in h.db.qa("SELECT delta FROM life_ledger WHERE user_id=?", (A,))) - 100_00
 
 
-def test_there_is_nothing_to_stake_anywhere_in_the_casino(h, d):
+def test_the_casino_is_blackjack_only_and_stakes_life_cash_only(h, d):
     cols = {r["name"] for r in h.db.qa("PRAGMA table_info(casino_games)")}
-    assert cols == {"sid", "world_id", "user_id", "deck", "player", "dealer", "state", "result", "seq", "created_at", "updated_at"}
+    assert cols == {"sid", "world_id", "user_id", "deck", "player", "dealer", "state", "result", "seq", "created_at", "updated_at", "bet", "hand_no", "paid"}
     v, lobby = enter(h, d, A)
+    games = [x for x, _ in lobby.buttons if x != t("fa", "mp.b.exit")]
+    assert games == [t("fa", "mp.b.bj")]                                                               # the lobby offers one game: blackjack
     table = table_of(d, A, v, lobby)
-    words = ("bet", "stake", "buy", "coin", "cash", "prize", "pay", "شرط", "جایزه", "سکه", "خرید")
     for screen in (lobby, table):
         for label, data in screen.buttons:
-            assert not any(w in (label + data).lower() for w in words), (label, data)
-    src = open(casino.__file__, encoding="utf-8").read()
-    import re
-    imports = set(re.findall(r"^(?:from|import) ([\w.]+)", src, re.M))
-    assert imports <= {"__future__", "json", "random", "sqlite3", "dataclasses"}, imports              # sealed off: no economy module is even imported
-    for name in ("cash", "UPDATE users", "INSERT INTO users", "holdings", "stocks", "progress", "quests"):
-        assert name not in src.replace("# ", ""), name
+            assert not any(w in label.lower() for w in ("slot", "roulette", "poker", "dice", "lottery", "اسلات", "رولت", "پوکر", "قرعه")), label
+    src = open(casino.__file__, encoding="utf-8").read().replace("# ", "")
+    for name in ("UPDATE users", "INSERT INTO users", "holdings", "stocks", "progress", "quests", "exchange", "users.cash", "fx_"):
+        assert name not in src, name
+    assert "cash.apply" in src                                                                          # the one door to money
     mapsrc = open(__import__("hypemarket.mapui", fromlist=["x"]).__file__, encoding="utf-8").read()
     for name in ("UPDATE users", "UPDATE holdings", "INSERT INTO news", "trading.", "progress.", "quests."):
         assert name not in mapsrc, name
@@ -711,11 +750,11 @@ def test_schema_7_is_added_to_an_old_database_without_touching_its_data(tmp_path
     db.x("PRAGMA user_version=6")
     db.close()
     d2 = Database(path)
-    assert d2.q1("PRAGMA user_version")[0] == SCHEMA_VERSION == 7 and 7 in MIGRATIONS
+    assert d2.q1("PRAGMA user_version")[0] == SCHEMA_VERSION == 9 and 7 in MIGRATIONS and 8 in MIGRATIONS and 9 in MIGRATIONS
     for tbl in ("world_places", "world_players", "world_trips", "map_sessions", "casino_games"):
         assert d2.q1("SELECT COUNT(*) c FROM " + tbl)["c"] == 0
     assert [tuple(r) for r in d2.qa("SELECT * FROM users")] == before_users and d2.q1("SELECT layout FROM worlds")["layout"] == layout
-    assert Database(path).q1("PRAGMA user_version")[0] == 7                                            # reopening is a no-op
+    assert Database(path).q1("PRAGMA user_version")[0] == 9                                            # reopening is a no-op
     assert worldplaces.ensure_all(d2) == 1                                                             # and the old city now gets its casino
 
 

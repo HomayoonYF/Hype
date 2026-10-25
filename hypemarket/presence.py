@@ -55,6 +55,23 @@ def trip_position(trip, now: int) -> tuple:
     return N.point_along(pts, frac * trip["length"])
 
 
+def trip_heading(trip, now: int) -> float:
+    """The direction a traveller is going at `now` (radians, 0 = east, map y points down), from the saved route and the clock only; 0.0 when it
+    cannot be told (a damaged route, a route of no length)."""
+    try:
+        pts = route_of(trip)
+        span = trip["arrive_at"] - trip["started_at"]
+        frac = 0.0 if now <= trip["started_at"] else 1.0 if now >= trip["arrive_at"] else (now - trip["started_at"]) / span
+        d = frac * trip["length"]
+        total = N.path_length(pts)
+        a, b = N.point_along(pts, max(0.0, min(d, total) - 4.0)), N.point_along(pts, min(total, max(d, 0.0) + 4.0))
+        if abs(b[0] - a[0]) + abs(b[1] - a[1]) < 1e-6:
+            a, b = pts[0], pts[-1]
+        return math.atan2(b[1] - a[1], b[0] - a[0])
+    except (ValueError, TypeError, ZeroDivisionError, json.JSONDecodeError, KeyError):
+        return 0.0
+
+
 def trip_progress(trip, now: int) -> float:
     span = trip["arrive_at"] - trip["started_at"]
     return 0.0 if now <= trip["started_at"] else 1.0 if now >= trip["arrive_at"] else (now - trip["started_at"]) / span
@@ -166,10 +183,14 @@ class Outcome:
     same: bool = False           # busy: the walk in progress already goes to the requested place
 
 
-def start_trip(db, city, uid: int, ref: str, now: int | None = None) -> Outcome:
+def start_trip(db, city, uid: int, ref: str, now: int | None = None, *, mode: str = "walk", speed: float | None = None) -> Outcome:
     """Plan the walk to `ref` and save it. The saved row is the authority: if this returns "started" the trip exists and cannot be started
-    a second time (one walk at a time per player per city). Nothing but the five map tables is touched."""
+    a second time (one walk at a time per player per city). Nothing but the five map tables is touched.
+    v0.18: `mode` is how the trip is travelled ("walk" by default; the Snapp job drives a rental car: "car", at the configured car speed).
+    It is stored with the trip and changes nothing but the speed and the wording; routes, arrival and one-trip-at-a-time are the same."""
     now = core.now() if now is None else now
+    if mode not in ("walk", "car"):
+        raise ValueError("unknown travel mode")
     spot = city.spot(ref)
     if spot is None:
         return Outcome("unknown")
@@ -184,15 +205,38 @@ def start_trip(db, city, uid: int, ref: str, now: int | None = None) -> Outcome:
             return Outcome("unreachable")
         pts = [[round(x, 2), round(y, 2)] for x, y in route.pts]
         length = round(N.path_length(pts), 2)
-        speed = C.walk_speed()
+        speed = (C.walk_speed() if mode == "walk" else C.car_speed()) if speed is None else float(speed)
         arrive = now + max(1, math.ceil(length / speed - 1e-9))
         try:
-            db.x("INSERT INTO world_trips(world_id,user_id,dest_id,dest_kind,route,length,speed,started_at,arrive_at,state) VALUES(?,?,?,?,?,?,?,?,?,'walking')",
-                 (city.id, uid, spot.id, spot.kind, json.dumps(pts, separators=(",", ":")), length, speed, now, arrive))
+            db.x("INSERT INTO world_trips(world_id,user_id,dest_id,dest_kind,route,length,speed,started_at,arrive_at,state,mode) VALUES(?,?,?,?,?,?,?,?,?,'walking',?)",
+                 (city.id, uid, spot.id, spot.kind, json.dumps(pts, separators=(",", ":")), length, speed, now, arrive, mode))
         except sqlite3.IntegrityError:                                  # the partial unique index: another walk is already saved
             return Outcome("busy", walking_trip(db, city.id, uid), False)
         db.x("UPDATE world_players SET at_place=NULL, updated_at=? WHERE world_id=? AND user_id=?", (now, city.id, uid))
         return Outcome("started", walking_trip(db, city.id, uid))
+
+
+def cancel_trip(db, world_id: int, uid: int, now: int | None = None) -> bool:
+    """Stop the trip in progress where the traveller is RIGHT NOW (v0.18: a Snapp ride that is cancelled mid-way). Nothing teleports: the player's
+    row takes the point of the route the clock has reached and they are standing on the road, at no place. A trip whose time has come is applied
+    as an arrival instead. Idempotent: True only when this call stopped a trip that was still going."""
+    now = core.now() if now is None else now
+    trip = walking_trip(db, world_id, uid)
+    if trip is None:
+        return False
+    if trip["arrive_at"] <= now:
+        settle(db, world_id, uid, now)
+        return False
+    try:
+        x, y = trip_position(trip, now)
+    except (ValueError, TypeError, json.JSONDecodeError):
+        row = get_player(db, world_id, uid)
+        x, y = row["x"], row["y"]
+    with db.tx():
+        if db.x("UPDATE world_trips SET state='cancelled' WHERE id=? AND state='walking'", (trip["id"],)).rowcount != 1:
+            return False
+        db.x("UPDATE world_players SET x=?, y=?, at_place=NULL, updated_at=? WHERE world_id=? AND user_id=?", (round(x, 2), round(y, 2), now, world_id, uid))
+    return True
 
 
 # --- who is near ----------------------------------------------------------------------------------------------------------------
@@ -203,6 +247,8 @@ class Other:
     pos: tuple
     dist: float                  # road distance from the viewer
     walking: bool
+    mode: str = "walk"           # v0.18.1: "car" while the player drives (a Snapp ride), so the map can draw a car instead of a ring
+    heading: float = 0.0         # v0.18.1: the direction of travel in radians (0 = east, y points down), for a car marker
 
 
 def nearby(db, city, uid: int, pos, now: int | None = None, radius: float | None = None, limit: int | None = None) -> list:
@@ -230,7 +276,10 @@ def nearby(db, city, uid: int, pos, now: int | None = None, radius: float | None
     for r, here, walking in cand:
         d = field.to_point(here)
         if d <= radius:
-            out.append(Other(r["user_id"], core.display_name(r, with_badge=False), here, d, walking))
+            tr = trips.get(r["user_id"])
+            mode = tr["mode"] if tr is not None and walking and tr["mode"] else "walk"
+            out.append(Other(r["user_id"], core.display_name(r, with_badge=False), here, d, walking, mode,
+                             trip_heading(tr, now) if mode == "car" else 0.0))
     out.sort(key=lambda o: (o.dist, o.uid))
     return out[:limit]
 

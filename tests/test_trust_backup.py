@@ -404,7 +404,7 @@ def test_streak_level_and_whale_achievements(db):
     user(db, 1)
     for _ in range(7):
         progress.daily(db, 1)
-        adv(21 * 3600)
+        adv(progress.daily_wait_secs(core.now()) + 60)                                              # v0.18.1: the bonus opens again at 00:00 Tehran time (one minute past it)
     assert "streak_7" in achievements.unlocked(db, 1)
     db.x("UPDATE users SET max_level=3 WHERE id=1")
     achievements.check(db, 1, "level")

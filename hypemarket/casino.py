@@ -1,14 +1,24 @@
-"""Blackjack, the casino's one game (v0.17): player against dealer, no stakes of any kind.
+"""Blackjack, the casino's one game: player against dealer, played for life cash (v0.18.1; v0.17 had no stakes).
 
 Rules (also shown to players): one standard 52-card deck, freshly shuffled for every hand. Two cards each; one dealer card stays face down.
 An ace counts 11 unless that busts the hand, then 1; J, Q and K count 10. Two cards worth 21 are a natural blackjack: if either side has
 one the hand ends at once (both: push; one: that side wins). Otherwise the player may hit or stand; going over 21 loses at once; reaching
 21 stands automatically. When the player stands the dealer turns the hidden card over and draws until the hand is worth 17 or more: the
 dealer STANDS ON EVERY 17, soft 17 included. Dealer over 21: the player wins; higher total wins; equal totals push. There is no
-doubling, splitting or insurance.
+doubling, splitting or insurance, and no other game: blackjack is the casino's only game.
 
-This module is deliberately sealed off from the game. It imports no economy code, reads and writes only the `casino_games` table, and
-nothing in it can touch money, shares, levels, items or any other part of a player's standing: there is nothing to bet, win or lose but the hand itself. Its cards come out of a
+THE MONEY (life cash only, in cents; never the stock coins, shares, levels or items)
+    * A hand is played for one CHIP (`config.CASINO_BETS_CENTS`: $1, $5, $10, $25, $100). The chip is taken from the player's life cash when
+      the hand is dealt, in the SAME database transaction that creates the hand: a player who cannot pay the chip gets no hand and loses nothing.
+    * Payout, credited in the same transaction in which the hand finishes: win or dealer bust 1 to 1 (the chip comes back plus the same
+      again), a natural blackjack 3 to 2, a push gives the chip back, a loss or a bust pays nothing.
+    * Every movement is a row of the cash ledger (`casino_bet` / `casino_win`, ref "<session>:<hand number>"), and (user, kind, ref) is
+      UNIQUE: a repeated, late or duplicated press, a retry after a crash, or the sweep below can never charge or pay a hand twice.
+    * A hand nobody touches for `config.CASINO_IDLE_SECS`, or whose map message has expired or been dropped, is STOOD by `sweep` (the player's
+      cards are played out exactly like a press on Stand) and paid by the same rules, so a stake never disappears with a forgotten message.
+    * A balance is never pushed past the cash cap: a payout that would pass it is cut to the room that is left.
+
+The module reads and writes only `casino_games` and, through `cash.apply`, the player's life cash. Its cards come out of a
 `random.SystemRandom()` of its own (no seed, no shared state), so it never reads or advances the module-level `random` that the rest of
 the program may use; a test can swap `RNG_FACTORY` for a seeded generator to get a fixed deal.
 
@@ -22,6 +32,8 @@ import json
 import random
 import sqlite3
 from dataclasses import dataclass
+
+from . import cash, config as C, core
 
 SUITS = "♠♥♦♣"
 RANKS = ("A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K")
@@ -141,6 +153,35 @@ def outcome(result: str) -> str:
     return "win" if result in WIN_RESULTS else "lose" if result in LOSS_RESULTS else "push"
 
 
+# --- money -----------------------------------------------------------------------------------------------------------------------
+def payout(bet: int, result: str) -> int:
+    """Cents the table gives back for a finished hand of stake `bet` (the chip itself included): 0 for a loss, `bet` for a push,
+    2 x `bet` for a win, `bet` + 3/2 x `bet` for a natural blackjack."""
+    if result == "player_blackjack":
+        return bet + bet * C.CASINO_BLACKJACK_NUM // C.CASINO_BLACKJACK_DEN
+    if result in ("win", "dealer_bust"):
+        return 2 * bet
+    if result in PUSH_RESULTS:
+        return bet
+    return 0
+
+
+def ref_of(sid: str, hand_no: int) -> str:
+    return f"{sid}:{int(hand_no)}"
+
+
+def _pay(db, uid: int, sid: str, hand_no: int, bet: int, result: str, now: int) -> int:
+    """Credit a finished hand (inside the caller's transaction). Returns the cents credited (cut to the room under the balance cap)."""
+    amount = payout(bet, result)
+    if amount <= 0:
+        return 0
+    amount = min(amount, C.CASH_CAP_CENTS - cash.balance(db, uid))
+    if amount <= 0:
+        return 0
+    cash.apply(db, uid, amount, "casino_win", ref_of(sid, hand_no), note="blackjack", now=now)
+    return amount
+
+
 # --- storage: one row per map session ---------------------------------------------------------------------------------------------
 def get(db, sid: str):
     return db.q1("SELECT * FROM casino_games WHERE sid=?", (sid,))
@@ -154,9 +195,13 @@ def _dump(h: Hand) -> tuple:
     return json.dumps(h.deck), json.dumps(h.player, ensure_ascii=False), json.dumps(h.dealer, ensure_ascii=False)
 
 
-def start(db, sid: str, world_id: int, uid: int, seq: int, now: int, rng=None):
-    """Deal a new hand for session `sid` if the press is current: `seq` 0 when there is no game yet, or the finished game's seq. Returns
-    the row, or None when the press is stale (a game is already running, or it was pressed twice): nothing changes then."""
+def start(db, sid: str, world_id: int, uid: int, seq: int, now: int, bet: int, rng=None):
+    """Deal a new hand for session `sid`, for the chip `bet` (cents), if the press is current: `seq` 0 when there is no game yet, or the
+    finished game's seq. The chip is taken from the player's life cash in the same transaction (GameError('cash_low') when they cannot pay:
+    nothing happens then). Returns the row, or None when the press is stale (a game is already running, or it was pressed twice): nothing
+    changes then."""
+    if bet not in C.CASINO_BETS_CENTS:
+        raise ValueError("not a chip of the table")
     cards = shuffled(rng)                                                  # the shuffle happens before the write, outside the transaction
     with db.tx():
         row = get(db, sid)
@@ -165,33 +210,66 @@ def start(db, sid: str, world_id: int, uid: int, seq: int, now: int, rng=None):
         if row is None:
             if seq != 0:
                 return None
+            hand_no = 1
             try:
-                db.x("INSERT INTO casino_games(sid,world_id,user_id,deck,player,dealer,state,result,seq,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,1,?,?)",
-                     (sid, world_id, uid, deck, pl, de, h.state, h.result, now, now))
+                db.x("INSERT INTO casino_games(sid,world_id,user_id,deck,player,dealer,state,result,seq,created_at,updated_at,bet,hand_no,paid) VALUES(?,?,?,?,?,?,?,?,1,?,?,?,?,0)",
+                     (sid, world_id, uid, deck, pl, de, h.state, h.result, now, now, bet, hand_no))
             except sqlite3.IntegrityError:
                 return None
         else:
             if row["user_id"] != uid or row["world_id"] != world_id or row["state"] != "done" or row["seq"] != seq:
                 return None
-            if db.x("UPDATE casino_games SET deck=?,player=?,dealer=?,state=?,result=?,seq=seq+1,updated_at=? WHERE sid=? AND seq=? AND state='done' AND user_id=?",
-                    (deck, pl, de, h.state, h.result, now, sid, seq, uid)).rowcount != 1:
+            hand_no = row["hand_no"] + 1
+            if db.x("UPDATE casino_games SET deck=?,player=?,dealer=?,state=?,result=?,seq=seq+1,updated_at=?,bet=?,hand_no=?,paid=0 WHERE sid=? AND seq=? AND state='done' AND user_id=?",
+                    (deck, pl, de, h.state, h.result, now, bet, hand_no, sid, seq, uid)).rowcount != 1:
                 return None
+        # the chip: raises 'cash_low' (the whole transaction, the new hand included, is then undone)
+        if cash.apply(db, uid, -bet, "casino_bet", ref_of(sid, hand_no), note="blackjack", now=now) is None:
+            raise RuntimeError("a casino hand was charged twice")          # the ref names a hand that exists once: cannot happen
+        if h.over:                                                         # a natural ends the hand at the deal: pay it now
+            paid = _pay(db, uid, sid, hand_no, bet, h.result, now)
+            db.x("UPDATE casino_games SET paid=? WHERE sid=?", (paid, sid))
         return get(db, sid)
 
 
+def _apply_action(db, row, action: str, now: int):
+    """Play `action` on the running hand of `row` and pay it if it finishes (inside the caller's transaction). None when the row had changed."""
+    h = hand_of(row)
+    (hit if action == "hit" else stand)(h)
+    deck, pl, de = _dump(h)
+    if db.x("UPDATE casino_games SET deck=?,player=?,dealer=?,state=?,result=?,seq=seq+1,updated_at=? WHERE sid=? AND seq=? AND state='playing' AND user_id=?",
+            (deck, pl, de, h.state, h.result, now, row["sid"], row["seq"], row["user_id"])).rowcount != 1:
+        return None
+    if h.over:
+        paid = _pay(db, row["user_id"], row["sid"], row["hand_no"], row["bet"], h.result, now)
+        db.x("UPDATE casino_games SET paid=? WHERE sid=?", (paid, row["sid"]))
+    return get(db, row["sid"])
+
+
 def act(db, sid: str, world_id: int, uid: int, action: str, seq: int, now: int):
-    """Apply 'hit' or 'stand' to the running hand of `sid` if the press is current (right owner, right seq, hand still being played).
-    Returns the new row, or None when nothing was changed."""
+    """Apply 'hit' or 'stand' to the running hand of `sid` if the press is current (right owner, right seq, hand still being played), and
+    pay the hand if it ends. Returns the new row, or None when nothing was changed."""
     if action not in ("hit", "stand"):
         return None
     with db.tx():
         row = get(db, sid)
         if row is None or row["user_id"] != uid or row["world_id"] != world_id or row["state"] != "playing" or row["seq"] != seq:
             return None
-        h = hand_of(row)
-        (hit if action == "hit" else stand)(h)
-        deck, pl, de = _dump(h)
-        if db.x("UPDATE casino_games SET deck=?,player=?,dealer=?,state=?,result=?,seq=seq+1,updated_at=? WHERE sid=? AND seq=? AND state='playing' AND user_id=?",
-                (deck, pl, de, h.state, h.result, now, sid, seq, uid)).rowcount != 1:
-            return None
-        return get(db, sid)
+        return _apply_action(db, row, action, now)
+
+
+def sweep(db, now: int | None = None, idle: int | None = None) -> int:
+    """Stand and pay every hand that was left behind: untouched for `idle` seconds (CASINO_IDLE_SECS), or whose map message (session) has
+    expired or been dropped. Each hand is settled in its own transaction and exactly once (the seq guard and the ledger's unique refs).
+    Returns how many hands were settled."""
+    now = core.now() if now is None else now
+    idle = C.CASINO_IDLE_SECS if idle is None else idle
+    rows = db.qa("SELECT sid FROM casino_games WHERE state='playing' AND (updated_at<=? OR sid NOT IN (SELECT sid FROM map_sessions WHERE expires_at>?))",
+                 (now - idle, now))
+    n = 0
+    for r in rows:
+        with db.tx():
+            row = get(db, r["sid"])
+            if row is not None and row["state"] == "playing" and _apply_action(db, row, "stand", now) is not None:
+                n += 1
+    return n

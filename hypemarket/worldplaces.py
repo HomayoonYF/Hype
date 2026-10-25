@@ -1,4 +1,4 @@
-"""Fixed public places that were added to a city AFTER it was generated (v0.17: the casino), and the one object the map code works with.
+"""Fixed public places that were added to a city AFTER it was generated (v0.17: the casino; v0.18: the McDonald's), and the one object the map code works with.
 
 A saved layout is never edited: the layout JSON, its seed, roads, river, districts and every parcel ID and coordinate stay byte-for-byte what
 the generator wrote. A place is a row of `world_places` that says «this parcel of this city is, for good, a public place of this kind».
@@ -7,10 +7,12 @@ the landmark list under its own stable ID (`l5`). Every reader of a city (the ma
 day, land sales) goes through `load_city`, so a reserved parcel can never be offered as empty land.
 
 * New cities get their casino in the same transaction that saves them (`world.save_world`); cities saved by an older version get it the first
-  time anyone loads them (and in one pass at start-up, `ensure_all`). Both go through `ensure_casino`, which is idempotent: UNIQUE(world, kind)
+  time anyone loads them (and in one pass at start-up, `ensure_all`). Both go through `ensure_place`, which is idempotent: UNIQUE(world, kind)
   and UNIQUE(world, parcel) make a second casino impossible, and a second call only reads.
-* Which parcel? A pure function of the saved layout: an empty parcel, preferably in the commercial district, fronting a main road, away from
-  the other public places and close to the middle of town. It is chosen once and persisted, so it never moves.
+* Which parcel? A pure function of the saved layout (and the parcels earlier places already took): an empty parcel, preferably in the commercial
+  district, fronting a main road, away from the other public places and close to the middle of town. It is chosen once and persisted, so it never moves.
+* v0.18 adds the McDonald's the same way. It is added AFTER the casino and takes the next free place ID (`l{max+1}`): every ID, parcel and
+  coordinate that already existed is untouched, and a city with no room left simply has no McDonald's (the job says so) instead of failing to load.
 """
 from __future__ import annotations
 
@@ -24,7 +26,8 @@ from . import core, world, worldgeom as G, worldinspect, worldnet
 log = logging.getLogger("hypemarket")
 
 CASINO = "casino"
-PLACE_KINDS = (CASINO,)                       # kinds of places this module adds (the generator's own four stay in world.LANDMARKS)
+MCDONALDS = "mcdonalds"
+PLACE_KINDS = (CASINO, MCDONALDS)             # kinds of places this module adds, in the order they are added (the generator's own four stay in world.LANDMARKS)
 ZONE_RANK = {"commercial": 0, "civic": 1, "residential": 2, "industrial": 3, "park": 4}
 SPACING = 70.0                                # keep this far from the other public places when the city allows it
 FRONT = 24.0                                  # a parcel whose centre is this close to a road fronts it
@@ -35,13 +38,17 @@ def _num(ident: str) -> int:
 
 
 # --- choosing and saving ------------------------------------------------------------------------------------------------------
-def choose_parcel(base: dict, net: worldnet.RoadNet) -> dict:
-    """The empty parcel of `base` that becomes the casino. Pure and deterministic: same layout, same parcel."""
-    free = [p for p in base["parcels"] if p["use"] == "vacant"]
+def choose_parcel(base: dict, net: worldnet.RoadNet, taken=()) -> dict:
+    """The empty parcel of `base` that becomes the next public place. Pure and deterministic: same layout (and same parcels already taken
+    by earlier places), same parcel. With nothing taken this is exactly the v0.17 casino choice."""
+    taken = set(taken)
+    free = [p for p in base["parcels"] if p["use"] == "vacant" and p["id"] not in taken]
     if not free:
         raise world.WorldError("no_room")
     centre = G.centroid(base["footprint"])
     spots = [m["at"] for m in base["landmarks"]]
+    by_id = {p["id"]: p for p in base["parcels"]}
+    spots += [by_id[i]["c"] for i in sorted(taken) if i in by_id]
 
     def score(p):
         door = net.door(p["id"], p["c"])
@@ -63,23 +70,41 @@ def places(db, world_id: int) -> list:
     return db.qa("SELECT * FROM world_places WHERE world_id=? ORDER BY place_id", (world_id,))
 
 
-def ensure_casino(db, w, base: dict, net: worldnet.RoadNet | None = None):
-    """The world's casino row, created if the city has none yet. Idempotent and safe against two callers at once."""
-    row = get_place(db, w["id"], CASINO)
+def ensure_place(db, w, base: dict, net: worldnet.RoadNet | None, kind: str):
+    """The world's row for public place `kind`, created if the city has none yet. Idempotent and safe against two callers at once.
+    Raises WorldError("no_room") when the city has no empty parcel left for it."""
+    row = get_place(db, w["id"], kind)
     if row is not None:
         return row
     net = net or worldnet.RoadNet(base)
-    parcel = choose_parcel(base, net)
     with db.tx():
-        row = get_place(db, w["id"], CASINO)                          # someone may have just made it
+        row = get_place(db, w["id"], kind)                            # someone may have just made it
         if row is None:
-            used = [_num(m["id"]) for m in base["landmarks"]] + [_num(r["place_id"]) for r in places(db, w["id"])]
+            rows = places(db, w["id"])
+            parcel = choose_parcel(base, net, [r["parcel_id"] for r in rows])
+            used = [_num(m["id"]) for m in base["landmarks"]] + [_num(r["place_id"]) for r in rows]
             db.x("INSERT OR IGNORE INTO world_places(world_id,place_id,kind,parcel_id,created_at) VALUES(?,?,?,?,?)",
-                 (w["id"], f"l{max(used) + 1}", CASINO, parcel["id"], core.now()))
-            row = get_place(db, w["id"], CASINO)
+                 (w["id"], f"l{max(used) + 1}", kind, parcel["id"], core.now()))
+            row = get_place(db, w["id"], kind)
     if row is None:
         raise world.WorldError("no_room")
     return row
+
+
+def ensure_casino(db, w, base: dict, net: worldnet.RoadNet | None = None):
+    """The world's casino row (see `ensure_place`)."""
+    return ensure_place(db, w, base, net, CASINO)
+
+
+def ensure_places(db, w, base: dict, net: worldnet.RoadNet | None = None) -> None:
+    """Every public place this module adds, in order. The casino is required (as in v0.17); the McDonald's is best-effort: a city that has
+    no room for it stays loadable and simply has none."""
+    net = net or worldnet.RoadNet(base)
+    ensure_place(db, w, base, net, CASINO)
+    try:
+        ensure_place(db, w, base, net, MCDONALDS)
+    except world.WorldError:
+        log.warning("world %s has no room for a McDonald's", w["id"])
 
 
 # --- the city object ----------------------------------------------------------------------------------------------------------
@@ -137,6 +162,12 @@ class City:
         r = self.rows.get(CASINO)
         return r["place_id"] if r else None
 
+    @property
+    def mcd_id(self) -> str | None:
+        """ID of the city's McDonald's (None for a city that had no room for one)."""
+        r = self.rows.get(MCDONALDS)
+        return r["place_id"] if r else None
+
     def spot(self, ref: str) -> Spot | None:
         """The walkable place `ref` names («p14», «l5») or None (unknown, or a district: you walk to places, not to areas)."""
         if not isinstance(ref, str):
@@ -188,7 +219,7 @@ def _build_base(w) -> tuple:
 
 
 def _city(db, w, base: dict, net: worldnet.RoadNet) -> City:
-    ensure_casino(db, w, base, net)
+    ensure_places(db, w, base, net)
     rows = places(db, w["id"])
     return City(w, base, overlay(base, rows), net, {r["kind"]: r for r in rows})
 
@@ -216,13 +247,15 @@ async def aload_city(db, w) -> City:
 
 
 def ensure_all(db) -> int:
-    """Give every saved city that has no casino yet its casino (start-up pass; the cities themselves are never regenerated or touched).
-    A city that cannot be read is skipped and logged. Returns how many casinos were added."""
+    """Give every saved city that lacks one of the added places (casino, McDonald's) that place (start-up pass; the cities themselves are
+    never regenerated or touched). A city that cannot be read is skipped and logged. Returns how many cities were visited."""
     added = 0
-    for w in db.qa("SELECT * FROM worlds WHERE id NOT IN (SELECT world_id FROM world_places WHERE kind=?) ORDER BY id", (CASINO,)):
+    rows = db.qa("SELECT * FROM worlds WHERE id NOT IN (SELECT world_id FROM world_places WHERE kind=?) "
+                 "OR id NOT IN (SELECT world_id FROM world_places WHERE kind=?) ORDER BY id", (CASINO, MCDONALDS))
+    for w in rows:
         try:
             load_city(db, w)
             added += 1
         except Exception:
-            log.exception("could not add the casino to world %s", w["id"])
+            log.exception("could not add the public places to world %s", w["id"])
     return added

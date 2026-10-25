@@ -21,7 +21,7 @@ def company_synergy_pct(db: Database, u) -> int:
 
 def _daily_quote(db: Database, u, t: int) -> tuple[int, int, int]:
     """(streak after claiming, bonus percent, amount) for a player who claims at time t."""
-    streak = u["streak"] + 1 if u["last_daily"] and t - u["last_daily"] < C.DAILY_RESET else 1
+    streak = u["streak"] + 1 if u["last_daily"] and C.daily_day(u["last_daily"]) == C.daily_day(t) - 1 else 1      # claimed YESTERDAY (Tehran calendar day) = the streak goes on
     base = C.DAILY_BASE + C.DAILY_STEP * min(streak, C.DAILY_STREAK_CAP)
     pct = 100 + 15 * perk(db, u["id"], "daily") + 5 * u["rebirths"] + company_synergy_pct(db, u)
     if u["pass_season"] and u["pass_season"] == season_id(db):
@@ -29,11 +29,21 @@ def _daily_quote(db: Database, u, t: int) -> tuple[int, int, int]:
     return streak, pct, base * pct // 100
 
 
+def daily_claimed_today(u, t: int) -> bool:
+    """True when the player already took the bonus in the Tehran calendar day that `t` falls in."""
+    return bool(u["last_daily"]) and C.daily_day(u["last_daily"]) >= C.daily_day(t)
+
+
+def daily_wait_secs(t: int) -> int:
+    """Seconds until the bonus can be claimed again: the next 00:00 Tehran time."""
+    return max(1, C.daily_next_reset(t) - t)
+
+
 def daily_preview(db: Database, uid: int) -> dict | None:
-    """What claiming now would pay, or None while the bonus is still cooling down."""
+    """What claiming now would pay, or None when today's bonus (Tehran day, resets at 00:00 Tehran time) was already claimed."""
     u = need_user(db, uid)
     t = now()
-    if u["last_daily"] and C.DAILY_COOLDOWN - (t - u["last_daily"]) > 0:
+    if daily_claimed_today(u, t):
         return None
     streak, pct, amount = _daily_quote(db, u, t)
     return {"amount": amount, "streak": streak, "pct": pct}
@@ -43,9 +53,8 @@ def daily(db: Database, uid: int) -> dict:
     with db.tx():
         u = need_user(db, uid)
         t = now()
-        wait = C.DAILY_COOLDOWN - (t - u["last_daily"])
-        if u["last_daily"] and wait > 0:
-            raise GameError("daily_wait", secs=wait)
+        if daily_claimed_today(u, t):
+            raise GameError("daily_wait", secs=daily_wait_secs(t))
         streak, pct, amount = _daily_quote(db, u, t)
         db.x("UPDATE users SET cash=cash+?, last_daily=?, streak=? WHERE id=?", (amount, t, streak, uid))
         mint(db, amount)

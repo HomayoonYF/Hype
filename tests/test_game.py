@@ -289,9 +289,13 @@ def test_daily_streak(db):
     with pytest.raises(GameError) as e:
         progress.daily(db, 1)
     assert e.value.code == "daily_wait"
-    adv(21 * 3600)
+    adv(21 * 3600)                                                  # 21 hours later it is still the same Tehran calendar day (the clock here is 01:43 Tehran time)
+    with pytest.raises(GameError) as e:
+        progress.daily(db, 1)
+    assert e.value.code == "daily_wait"
+    adv(3 * 3600)                                                   # past 00:00 Tehran time: a new day, the streak goes on
     assert progress.daily(db, 1)["streak"] == 2
-    adv(60 * 3600)
+    adv(60 * 3600)                                                  # two whole days without a claim: the streak starts again
     assert progress.daily(db, 1)["streak"] == 1
 
 

@@ -51,7 +51,8 @@ The whole game is one SQLite file (`hypemarket.db`) — **back it up** (copy it 
 | Sharing | `کارت` makes a picture card (portfolio, rank or a stock) with your invite link and a Telegram "send to friends" button; a friend who opens a shared stock card lands on that stock and counts as your invite |
 | Daily salary | every morning a private message with your wealth summary and a **claim salary** button (`حقوق` turns it on/off) |
 | Progress | 26 achievements (`دستاوردها`) with rewards · admin analytics dashboard (`/stats`) and a daily report |
-| City | `مپ` — the group's own persistent city map (v0.15) · `مپ P14`, `مپ L1`, `مپ D2` inspect one parcel, public place or district and mark it on the map (v0.16) · **v0.17: the map has buttons** (you, the people near you, places, empty lots, 🚶 walking along the roads), **every city has a casino** with no-stakes blackjack, and the buttons only obey the player who sent `مپ` · nothing can be bought or built yet · sections 12, 14 and 15 |
+| City | `مپ` — the group's own persistent city map (v0.15) · `مپ P14`, `مپ L1`, `مپ D2` inspect one parcel, public place or district and mark it on the map (v0.16) · **v0.17: the map has buttons** (you, the people near you, places, empty lots, 🚶 walking along the roads), **every city has a casino** (v0.18.1: blackjack for cash, see section 17), and the buttons only obey the player who sent `مپ` · nothing can be bought or built yet · sections 12, 14 and 15 |
+| Life cash & jobs | **v0.18:** a second balance, `پول نقد` ($, $100 at the start), next to stock money · `صرافی` converts them at a fixed 1,000 🪙 = $5 (v0.18.1) · `مشاغل`: Snapp rides, McDonald's shifts, City Hall errands, each with its picture · greetings and hugs are buttons under `📍 اطراف من` · see sections 16 and 17 |
 | Guidance | `راهنما` is a menu: starter guide (a checklist that ticks itself off), all commands, and how the game works · quests: a starter checklist, 3 daily and 3 weekly quests with automatic rewards |
 | Telegram | inline buttons everywhere · price alerts by DM · charts · Stars shop (badges, season pass, extra slot, spotlight) · live market board per group (one message the bot keeps editing) |
 
@@ -76,7 +77,7 @@ When a version changes the database layout, the bot **upgrades your existing dat
 this version added three columns and the quests table). Still, copy `hypemarket.db` before updating, and never commit it:
 the included `.gitignore` already excludes `.env` (your token), `*.db` and `backups/`. If your token was ever pushed to a public repo,
 revoke it in @BotFather (`/revoke`) and put the new one in `.env`.
-Schema changes are applied automatically on start and keep all data; older databases are upgraded step by step (v0.13 = schema 5: short selling is removed, every open margin is refunded to its owner's cash, the 3 skill points of the old skill are returned, and each affected player gets one private message; v0.15 = schema 6: only adds the empty `worlds` table, nothing else is read or written; v0.17 = schema 7: only adds five new map tables, `world_places`, `world_players`, `world_trips`, `map_sessions` and `casino_games`, no existing table or row is touched).
+Schema changes are applied automatically on start and keep all data; older databases are upgraded step by step (v0.13 = schema 5: short selling is removed, every open margin is refunded to its owner's cash, the 3 skill points of the old skill are returned, and each affected player gets one private message; v0.15 = schema 6: only adds the empty `worlds` table, nothing else is read or written; v0.17 = schema 7: only adds five new map tables, `world_places`, `world_players`, `world_trips`, `map_sessions` and `casino_games`, no existing table or row is touched; v0.18 = schema 8: life cash, jobs, interactions; v0.18.1 = schema 9: three columns on `casino_games`, see section 17).
 `راهنما` ← `همه‌ی دستورها` is generated from `hypemarket/docs.py`: add a command there (the tests fail if one is missing or an example doesn't parse).
 
 ## 4. Backups (read this once)
@@ -146,7 +147,7 @@ Only aggregated numbers are collected; the one per-player record is a "seen toda
   trade cooldown, daily activity caps, referral rewards only after 3 real trades, and the exchange companies are priced by the house so nobody can move them with alts. For a big launch, add
   account-age rules or a captcha-like gate in `ensure_user`.
 * **Scale:** SQLite + one process comfortably handles thousands of players. If you outgrow it, the database layer is isolated in `db.py`.
-* **Tested vs. not tested:** the game rules, Persian parsing, buttons, payments, group flows and background jobs are covered by about 550 automated tests,
+* **Tested vs. not tested:** the game rules, Persian parsing, buttons, payments, group flows and background jobs are covered by about 950 automated tests,
   including a randomized simulation (traders, whales, quests, rug pulls, exchange trades and earnings nights, rebirths all at once) that checks every coin is accounted for, and a set of simulated *farmers* that attack the exchange (section 10). These run against a *simulated* Telegram. I could not run
   against real Telegram servers, so do a 15-minute manual test with two accounts and a test group before announcing it.
 
@@ -174,7 +175,7 @@ Commands: `بورس` (the six companies), `خرید 5 CHAT`, `فروش همه CH
   but only the **surprise** counts: activity is compared with what the model expected (learned normal level, correlation removed, the average of each half hour
   of the day cancelled), so daily rhythms and slowly growing communities give nothing to trade on.
 * Every Thursday 17:00 UTC (20:30 Tehran) is **earnings night**: a random, zero-mean jump (about ±2.5%, plus at most 0.3% from the week's activity),
-  a chart and a report with real numbers posted to every group that follows the market, with a made-up CEO commenting on the numbers. Moves are announced *after* they happen.
+  a chart and a report with real numbers posted to every group that follows the market, with a short statement of the company itself commenting on the numbers (v0.18.1: no made-up people; the voice is «بیانیه‌ی <company>»). Moves are announced *after* they happen.
 * Prices stay between 10% and 10× of their listing price.
 
 **What trading costs (house rules, nobody is exempt):** a fixed levy of 1.5% on every buy and every sell, plus slippage that grows with how much *all players together* traded in the
@@ -290,7 +291,7 @@ Zero stock impact: no stock command, price, balance, level, rebirth, legacy, sea
 
 ## 15. Interactive map, walking and the casino (v0.17)
 
-**What changed for players.** `مپ` still sends the group's city, now with your own marker, the players near you and a small keyboard. Everything you can look at is a button: no IDs to type. Nothing here costs or pays anything, and nothing here touches stocks, XP, levels or any stock-game number.
+**What changed for players.** `مپ` still sends the group's city, now with your own marker, the players near you and a small keyboard. Everything you can look at is a button: no IDs to type. Walking and browsing cost nothing (v0.18.1: only blackjack at the casino is played for cash, section 17), and nothing here touches stocks, XP, levels or any stock-game number.
 
 | What | How it works |
 |---|---|
@@ -301,14 +302,155 @@ Zero stock impact: no stock command, price, balance, level, rebirth, legacy, sea
 | **Walking** | `🚶 رفتن` plans the shortest route **along the saved roads** (a graph built from the city's own road geometry; the river is crossed only on bridges) from where you stand to the place's door, saves it in `world_trips` (route, length, speed, start and arrival time) and returns: you are **not** teleported. Duration is `ceil(length ÷ WALK_SPEED)` seconds (default 10 units per second, so crossing the whole city takes about two minutes), no luck, no multiplier. While you walk, the map shows the part already done, the dashed rest, a ring at the destination and `🚶 در راه … — ٪ · … دیگر`; your marker sits at the point of the route the clock has reached. A second walk cannot be started (the database refuses it: a unique index allows one `walking` trip per player per city). Arrival is **lazy**: there are no timers and no background task. The next time *you* open or press anything on a map, a guarded `UPDATE` marks the trip arrived and writes your new position once (until then everybody else already sees you standing at the destination, because positions are worked out from the route and the clock). Restarting the bot loses nothing: route, length and times are saved. |
 | **The casino** | Every city has exactly one, `کازینو` (`L5`-style ID: the next free `L` number). It is a fixed public place on an empty parcel that is marked as a public place for good, so a future land sale can never offer it. Which parcel: a pure function of the saved layout (an empty commercial parcel fronting a main road, away from the other public places, near the middle of town), chosen **once** and saved in `world_places` (`UNIQUE(world, kind)` and `UNIQUE(world, parcel)` make a second casino impossible). **New cities** get it in the same transaction that saves the city. **Existing cities** get it at start-up in one pass (`worldplaces.ensure_all`) or, failing that, the first time their map is opened. The saved layout JSON is never edited and nothing is re-generated: roads, river, bridges, districts, seed, every parcel ID and coordinate and every position stay exactly as they were; the casino is overlaid in memory over the saved layout. Drawn as a small diamond with the label `کازینو` / `Casino`, in the map's own colours. |
 | **Entering** | `🎰 کازینو` opens the casino like any place: far away it shows the road distance and `🚶 رفتن`; while you walk there it shows your progress; only once you **have arrived** does it offer `🎰 ورود به کازینو`. The check is made again on every press (and on every blackjack button), from the saved position, so refreshing or pressing an old button never skips the walk. |
-| **Blackjack** (`casino.py`) | Player against dealer, **no stakes of any kind**: no bet, no entry, no prize, no XP, no item, nothing written outside `casino_games`. One standard 52-card deck, shuffled afresh for every hand with a generator of its own (`random.SystemRandom`, never the global `random`, never seeded by the game; world generation and the stock market are not touched). Two cards each, one dealer card face down; ace = 11 or 1, J/Q/K = 10; two cards worth 21 is a **natural**: if either side has one the hand ends at once (both: push). Buttons `🃏 کارت بگیر` and `✋ بایست`; going over 21 loses; reaching 21 stands automatically. When you stand the dealer reveals the card and **draws until 17 or more, standing on every 17 (soft 17 included)**. Dealer over 21: you win; higher total wins; equal: push. Then `🔁 دست جدید`. No doubling, splitting or insurance. The hand lives in `casino_games` (one row per map session, owner and city stored), so it survives a restart. Every button carries the hand's step number: a state change is `UPDATE … WHERE seq=?` and the number moves on, so a repeated, duplicated or late press matches nothing and changes nothing; another player's press is refused by the owner check before it gets near the game. |
+| **Blackjack** (`casino.py`) | Player against dealer. *(v0.17 had no stakes; since v0.18.1 a hand is played for life cash, see section 17.)* No XP, no item, nothing touches stock money. One standard 52-card deck, shuffled afresh for every hand with a generator of its own (`random.SystemRandom`, never the global `random`, never seeded by the game; world generation and the stock market are not touched). Two cards each, one dealer card face down; ace = 11 or 1, J/Q/K = 10; two cards worth 21 is a **natural**: if either side has one the hand ends at once (both: push). Buttons `🃏 کارت بگیر` and `✋ بایست`; going over 21 loses; reaching 21 stands automatically. When you stand the dealer reveals the card and **draws until 17 or more, standing on every 17 (soft 17 included)**. Dealer over 21: you win; higher total wins; equal: push. Then you pick a chip for the next hand. No doubling, splitting or insurance. The hand lives in `casino_games` (one row per map session, owner and city stored), so it survives a restart. Every button carries the hand's step number: a state change is `UPDATE … WHERE seq=?` and the number moves on, so a repeated, duplicated or late press matches nothing and changes nothing; another player's press is refused by the owner check before it gets near the game. |
 | **The Persian label** | The map's own labels use exactly `نقشه ی` (with a space). The renderer sends every label through one function (`worldmap.fix_label`) that turns the old joined or zero-width-joiner spellings of that word into the exact form, the texts were changed at the source, and tests fail if the old spelling comes back in the map's strings or the renderer. Font, positions, colours and design are unchanged. |
 | **Migration** | Schema 7, additive: `SCHEMA` creates five new tables with `IF NOT EXISTS`; the migration step is a no-op `SELECT 1`. No existing table, row, city layout or player is touched, and a database that never uses `مپ` keeps working untouched. The casino rows are written the first time (or at start-up) and are idempotent. Backups and restores include the new tables like any other. A damaged saved city is reported and never replaced. |
 
 **Settings** (all optional, in `.env`, see `.env.example`): `WALK_SPEED` (map units per second, default 10, range 1–100), `MAP_NEARBY_RADIUS` (road units, default 300, range 20–2000), `MAP_SESSION_HOURS` (default 24). Bad values fall back to the default.
 
-**Not in this version, on purpose:** buying or selling land, building, jobs, vehicles, flights, casino bets or payouts or currencies, travel between cities, a Mini App.
+**Not in this version, on purpose:** buying or selling land, building, jobs, vehicles, flights, casino bets or payouts or currencies (v0.18.1 added cash blackjack, section 17), travel between cities, a Mini App.
 
 **Files.** New: `worldnet.py` (road graph and routing), `worldplaces.py` (the casino overlay and `load_city`), `presence.py` (positions, walks, who is near), `mapui.py` (sessions, ownership checks, screens, buttons), `casino.py` (blackjack), `texts_map.py` (FA/EN strings). Changed: `handlers.py` (`مپ` opens a session; the `mp:` callback and its pre-check; reply hook that remembers the message), `views.py` (caption with your status), `worldmap.py` (casino marker, markers/route overlay, label fix), `worldinspect.py` (panel without the footer lines inside the interactive map), `world.py` (new city gets its casino in the same transaction), `db.py` (schema 7), `config.py` (settings), `app.py` (start-up pass), `docs.py` and `texts.py` (help text, label). Tests: `tests/test_map_ui.py` (keyboard, browsing, pages, ownership of every callback, stale sessions, the label), `tests/test_map_walk.py` (spawn, nearby, routes, timing, restart, no economy side effects), `tests/test_casino.py` (casino in new and old cities, no duplicates, arrival gate, every blackjack rule and callback, the RNG, no side effects); the schema-version assertions in two older tests were moved from 6 to 7.
 
 **Honest limits.** All positions and trips are lazy and simple: there is no collision between players and no real-time movement (the map shows where people are *when you look*). A very crowded spawn area can cover labels (a few are dropped). The pictures were checked here with a stand-in for the Persian shaper; look at the first Persian map in a real chat.
+
+
+## 16. Cash economy, side jobs and social interactions (v0.18)
+
+**What changed for players.** Every player now has a second balance, **💵 پول نقد (life cash)**, counted in dollars and cents, next to the **🪙 پول سهام (stock money)** they already had. Life cash pays for the new side jobs; stock money is still what the stock game uses; the two meet only at the exchange (`صرافی`). Nothing here changes how stocks, levels, XP, skills, rebirths or portfolio value work.
+
+| Word | Opens |
+|---|---|
+| `پول` (also `پول نقد`, `کیف پول`, `wallet`, `cash`) | the wallet: both balances under their own names, the fixed rate, the latest cash transactions |
+| `صرافی` (`currency`, `fx`) | the exchange: pick a direction, pick or type an amount, review, confirm or cancel. Typed shortcuts: `صرافی سهام 250`, `صرافی نقد 5`, `صرافی سهام همه` |
+| `مشاغل` (`jobs`) | the job board: Snapp, McDonald's, City Hall work, the active job, your last jobs |
+| `اسنپ` / `مک دونالد` / `شهرداری` | each job's own screen |
+| `مپ` → `📍 اطراف من` → a player → `👋 سلام` / `🤗 بغل` | greet / ask for a hug (v0.18.1: buttons; the typed `سلام کن` / `بغل کن` commands were removed) |
+
+### Two currencies
+
+| | 💵 Life cash (`پول نقد`) | 🪙 Stock money (`پول سهام`) |
+|---|---|---|
+| Unit stored | integer **cents** (`life_accounts.balance`) | integer 1/100-coin units (`users.cash`, unchanged) |
+| Shown as | `$100.00` | `1,000 🪙` |
+| Starting amount | **$100.00, once per player** | 1,000 🪙 (unchanged) |
+| Earned by | Snapp, McDonald's, City Hall work, the exchange | the stock game, the exchange |
+| Spent on | the Snapp car rental, the exchange | the stock game, the exchange |
+| Portfolio value | not part of it | shares you hold are **not** stock money; the wallet says so and never adds them in |
+
+Every change of life cash is one row of the append-only `life_ledger` (`UNIQUE(user, kind, ref)`: the *ref* is the ride / shift / task / exchange id), written in the same transaction as the balance. That unique key is what makes every payout idempotent, and the ledger always adds up to the balance (a test checks it). A balance can neither go below zero (a `CHECK` in the table, and the code refuses first) nor above $10 trillion (a guard against overflow).
+
+**The $100.** New players get it when their account is created. Existing players get it in migration 8 as a ledger row `('grant','start')`; a second run of the migration, a restart, a second `/start` or a direct retry cannot grant it again. Automated 🤖 traders have no account.
+
+### The exchange (`صرافی`)
+
+**Rate: 1,000 🪙 = $5.00, both directions, no fee, no spread** *(v0.18: $20.00; changed in v0.18.1)*. Written as integers: 2 🪙 = 1 cent, 1 cent = 200 units (`FX_UNITS_PER_CENT`). Converting 🪙 → $ and back returns exactly what you started with.
+
+**Rounding policy: there is none, because nothing ever needs rounding.** Stock money → cash moves **whole coins in multiples of 2** (every 2 🪙 are exactly 1 cent; an odd amount is refused with the step, never rounded). Cash → stock money moves **whole cents** (every cent is exactly 2 🪙). Anything else is *refused*, never rounded: `2.5` coins, `5.255` dollars, `0`, negative numbers, `1e3`, `NaN`, text, numbers past the limit (10¹² coins / cents), and booleans or floats from code. «همه / all» converts every whole coin you have (the fraction of a coin stays) or every cent, trimmed to the limits and to what the cash cap still allows.
+
+Flow: choose a direction → pick a preset (`50 / 250 / 1000 🪙`, `$1 / $5 / $20`, only those you can afford), type an amount, or «all» → **preview** (you give, you get, the rate, both balances before and after, how long the offer lasts) → `✅ تأیید` or `❌ لغو`.
+
+How it is kept safe: the preview is a stored, expiring quote (`fx_quotes`: random id, player, direction, exact amounts, 120 s). Amount buttons only ask for a *preview*. The confirm / cancel buttons carry **only the quote's id**, never an amount or a rate. Confirming flips the quote `open → done` with a guarded `UPDATE`, takes the source currency with a guarded `UPDATE ... WHERE cash >= ?`, writes the ledger row and adds the destination, **all in one transaction**: it all happens or none of it does (a test breaks the middle of it and checks both balances). A second press, a stale or expired preview, somebody else's preview or a made-up id changes nothing and says so. Only the newest preview of a player can be confirmed. If your balance changed after the preview, the confirmation fails cleanly and the preview stays open. Supply bookkeeping follows (`burned` for coins that leave, `minted` for coins that enter) and `check_level` runs like after any trade, so net worth and levels see the new stock balance.
+
+### Economy implications (read this before you open it to a big group)
+
+* **Stock income converts at $5 per 1,000 🪙** (v0.18.1). A day of active stock play pays about 1,000 🪙, i.e. about **$5/day**. Nothing about stock earnings was changed.
+* **The starting $100 is worth 20,000 🪙** at the fixed rate (v0.18.1; 5,000 🪙 at the v0.18 rate): twenty times the 1,000 🪙 a new player starts with. That is what the spec asked for (a fixed two-way rate, no fees, $100 for everybody), so it is implemented as written, but it is the biggest lever in this version: every alt account gets $100 → 5,000 🪙. If alt-farming worries you, the knob is `CASH_START_CENTS` in `config.py` (new players only; the migration grants the same amount to existing players) and, for a stricter fix, a per-day cap on cash → stock exchanges. I did not add either, because neither was asked for.
+* **Side jobs pay about half a stock-day per active hour at most** (calibration below). McDonald's is passive: $12 for an 8-hour shift, so three back-to-back shifts a day are $36 ≈ 1,800 🪙/day if converted, with almost no activity. If that feels too generous, lower `MCD_WAGE_CENTS`.
+* Cash → stock **mints** coins into the stock economy and stock → cash **burns** them; the supply counters (`minted` / `burned`) follow both, so the coin supply stays accounted for.
+
+### Jobs: one framework, three jobs (`work.py`, `workui.py`)
+
+A job task is one row of `work_tasks`: who, which city, which job, its **stage**, the server-computed terms (reward, rental cost), the stage data, and its timestamps (created, started, **due**, finished). Rules that hold for every job:
+
+* **One open task per player, ever** — a partial `UNIQUE` index (`state='open'`), so two overlapping shifts, two rides, or a ride plus a shift are impossible even if two presses race.
+* **Everything lives in the database.** No timer, no background task and no in-memory state decides anything. Arrival and "the shift is due" are evaluated *lazily* from saved trips and the server clock when anybody looks, so a restart changes nothing and nothing is lost.
+* **Every payout goes through one function** that flips the task `open → done` (guarded by its stage) and writes the ledger rows in the same transaction. A repeated or concurrent completion matches nothing and pays nothing.
+* **A button carries only ids** (`jb:<action>:<task id>:<player id>`, municipal offers also the kind and the offer round) and has exactly the pieces the bot drew into it. The player id must be the presser's. Amounts, rewards, distances, tips and times are recomputed from saved state, never read from a button.
+* A cooldown after a finished or given-up task (Snapp 30 s, City Hall 20 s; none for McDonald's) stops free re-rolls. Jobs pay **life cash only** and never touch stock money, XP, levels, skills or the portfolio (a test compares every stock-game table before and after).
+* A task belongs to the city (group) it was started in. From another group the screen says so and offers to give it up (McDonald's shifts excepted).
+
+**🚕 Snapp.** A rental car is yours from the start; every ride shows its rental fee **before** you take it.
+* *Ride*: planned from the saved city: the passenger's pickup and the destination are real parcels / public places connected by roads, at least 60 / 120 road units apart, pickup 120–480 road units from you and the ride 240–900. The same city, driver, position and ride number always give the same ride.
+* *Driving model*: the car is the ordinary v0.17 trip with mode «car» at **2× walking speed** (`CAR_SPEED`, default 20 units/s; walking is 10): time = road length ÷ speed, rounded up, along the saved roads, bridges included; no traffic, no teleport. You drive to the passenger, **pickup is possible only after you have actually arrived** (checked from the saved trip and the clock on every press), then drive to the destination; arrival pays.
+* *Fare* = **$0.22 base + $0.03 per 100 road units** of the ride (integer cents; the distance is rounded to a whole unit, the per-distance part rounds down). *Tip*: 0 to $0.10, 3 rides in 5 on average, **decided by the server** from a hash of the city, the driver and the ride, so repeating the settlement can never re-roll it. *Rental fee*: **$0.20**, charged once when the ride ends and netted from the payout (the base fare is always above the fee, so a ride never costs money). The receipt shows base fare, tip, fee, **net** and the new balance.
+* Cancelling a ride (any time) costs nothing and pays nothing; you stop **on the road where the car is**, not at a place; the cooldown applies. While a ride is running the map's `🚶 رفتن` is refused (the ride owns your one trip). A stop that turns out unreachable cancels the ride for free and says so.
+
+**🍔 McDonald's.** Every city has one (below), at a public location. You walk there (the ordinary v0.17 walk), press *apply*, confirm, and the shift starts: **8 real hours**, saved as `started_at` / `due_at` and judged only by the **server clock**. The status screen shows the wage, the start, the expected end (clock times in `DISPLAY_UTC_OFFSET_MIN`, default Tehran), the time left and whether it was collected. The wage (**$12.00**) can be collected only once the time has passed, **exactly once** (the ledger key is the shift id). No overlapping or duplicate shifts (one open task); the shift **cannot be cancelled** and blocks every other job until collected; it survives restarts; a one-time private message tells you when it is over. The wage works from a private chat too.
+
+**🧹 شهرداری (City Hall work).** Repeatable errands at real places of the city: **رفتگری** (sweeping, a built or empty lot) **$0.10**, **جمع‌آوری زباله** (waste collection, a public place) **$0.12**, **نگهداری فضای سبز** (green-space care, a park parcel) **$0.11**. You are offered one target per kind, each 100–520 road units away; **the reward is on the button before you accept**. You must walk there (ordinary walk) and the task is completable **only while you are standing at the target** (checked on every press), paid **once**, one task at a time. The offers are a pure function of the saved city, you, your position and your *offer round*, which moves on with every accept, so an old screen can never accept a newer offer. No XP, no levels, no stock effect.
+
+**Calibration.** Fitted on the real generated cities and checked by `tests/test_life_jobs.py::test_job_earnings_stay_modest_and_ordered`: per hour of *active* play (road time + about 25 s of reading and tapping per task) **Snapp ≈ $11**, **City Hall ≈ $7–9.5**, **McDonald's $1.50 (passive)** — roughly half a stock-day per active hour at the very most, Snapp never above 1.8× City Hall. Every constant is at the top of the v0.18 block of `config.py`.
+
+### McDonald's as a place (no city was regenerated)
+
+The McDonald's is a second permanent public place, added exactly like the casino: a row of `world_places` says "this empty parcel of this city is, for good, a McDonald's"; the saved layout JSON is never edited. Its ID is the next free `L` number (`L6` after the casino's `L5`); the parcel is a pure function of the saved layout and the parcel the casino took (an empty lot, preferably commercial, fronting a main road, away from other places). New cities get it when they are saved; old cities get it at start-up (`ensure_all`) or the first time somebody loads them. **Every existing city layout, parcel ID, coordinate, place ID, player position and trip is untouched** (tests compare them before and after). A city with no empty parcel left loads normally and just has no McDonald's (the job says so). It is drawn on the map (🍔 icon, label), listed under `🗺️ مکان‌ها`, can be inspected (`مپ L6`), and is never offered as empty land.
+
+### Greetings and hugs (`interact.py`, `interactui.py`)
+
+*v0.18.1: these are glass buttons now; the typed commands `سلام کن` / `بغل کن` were removed (a plain message with those words is just conversation again).* Open `مپ`, press **`📍 اطراف من`**: the players near you (by road distance, nearest first, at most 8) are buttons. Press one → a small card with **`👋 سلام`** and **`🤗 بغل`**.
+
+* **`👋 سلام`** — instant. The group gets a one-line greeting that names (and notifies) both players; the map message stays where it is. 20 s cooldown per sender (read from the table, so it survives restarts).
+* **`🤗 بغل`** — a *request*, never an action. The other player gets a message with `🤗 قبول` / `🙅 نه، ممنون`; the sender gets `↩️ پس گرفتن`. **Only the target can accept or decline, only the sender can take it back** (checked from the saved request, not from the button). It expires after 5 minutes (lazily: the first press or the next request sees it). Repeated, late, expired or forged presses change nothing and say so. A hug needs both players to be **near each other** (road distance ≤ `MAP_NEARBY_RADIUS`, checked when asking *and* when accepting; saying no never needs it; `HUG_NEED_NEAR=0` turns the rule off). Limits against pestering: 60 s between requests, one open request per sender, at most 3 waiting for the same player, and a 10-minute pause for the same pair after a «no».
+* The person buttons carry the player's id but are only honoured when that player is in *your* current nearby list and the screen is the person card of the same session (a forged id, a player who walked away or an old screen gets a short notice and the real list).
+* Nothing here touches money, stocks, levels or any other part of the game.
+
+### Migration (schema 8, additive)
+
+`SCHEMA` creates five new tables with `IF NOT EXISTS` (`life_accounts`, `life_ledger`, `fx_quotes`, `work_tasks`, `interactions`); migration 8 adds `world_trips.mode` (default `'walk'`, so every existing trip stays a walk) and writes one `('grant','start')` ledger row plus a $100 account for every existing human player. Nothing existing is changed or removed: no city, position, stock balance, portfolio, trip or casino record is touched (the tests compare users, stock tables, cities and trips before and after). A database that never uses the new words works exactly as before; reopening it changes nothing. Backups and restores include the new tables like any other.
+
+### Settings (all optional, `.env`; bad values fall back to the default)
+
+`CAR_SPEED` (map units per second of the Snapp car, default 20, range 1–200) · `DISPLAY_UTC_OFFSET_MIN` (minutes added to UTC for the shift clock times, default 210 = Tehran) · `HUG_NEED_NEAR` (`1`/`0`). Every other number (fee, fares, tips, wage, rewards, ranges, cooldowns, the exchange rate and limits, the starting cash, hug timings) is a constant in the v0.18 block of `config.py`.
+
+### Files
+
+New: `cash.py` (accounts, ledger, parsing, the exchange), `work.py` (the job framework and the three jobs), `workui.py` (their screens and `jb:` buttons), `lifeui.py` (wallet and exchange screens), `interact.py` (greetings, hugs), `texts_life.py` (FA/EN strings), tests `test_life_cash.py`, `test_life_jobs.py`, `test_life_flow.py`, `test_life_places.py`, `test_life_social.py`. Changed: `db.py` (tables, migration 8), `config.py`, `core.py` (account at registration), `handlers.py` (words, `cs:` / `jb:` / `ia:` callbacks, group filter, error texts), `presence.py` (trip mode, cancel), `worldplaces.py` / `world.py` / `worldmap.py` (the McDonald's), `mapui.py` (jobs button, no walking away from a ride), `views.py`, `sections.py`, `docs.py`, `texts.py`, `jobs.py` (shift-over notice), and the test files whose expectations the new place and buttons changed (`test_casino`, `test_map_ui`, `test_world_inspect`, `test_exchange`, `test_namespace`, `test_bot` helper).
+
+### Honest limits
+
+Out of scope on purpose and not built: land, construction, businesses, vehicle ownership, travel between cities, and any game other than blackjack (v0.18.1 made blackjack a cash game, section 17). There is no traffic, collision or real-time movement; the car is faster walking and positions are applied when somebody looks. The tests run against a simulated Telegram and a stand-in for the Persian shaper (the one failing test of the suite, `tests/test_share.py::test_persian_is_really_shaped_and_the_font_ships_with_the_bot`, needs the real shaper and passes on a normal install); look at the first Persian screens in a real chat and do the two-account check from section 9 before announcing.
+
+## 17. v0.18.1 — fixes and polish on top of v0.18
+
+Schema **9** (additive). Everything below was asked for in one list; each item says what changed and what to watch.
+
+| # | What | How |
+|---|---|---|
+| 1 | **Interactions are buttons** | `📍 اطراف من` → a person → `👋 سلام` / `🤗 بغل` (section 16). Typed `سلام کن` / `بغل کن` are gone from the parser, the help and the docs. |
+| 2 | **Snapp has a map picture** | Taking or driving a ride shows the city map with the route: **your way to the passenger in blue** (the part already driven is solid), **the passenger's ride to the destination in yellow**, a person pin at the pickup, a flag pin at the destination, and **you as a small car** (pointing the way you drive) instead of the round marker. Other players who are driving show as cars on your map too (`presence.Other.mode`), so a future real pickup of another player just works. Walking to McDonald's or a City Hall site is drawn like every walk with a bag pin at the workplace. `jobviz.py` builds the markers (pure, runs in a worker thread); `worldmap.overlay` draws them. A picture that cannot be drawn is simply not sent: the screen's text and buttons always go out. |
+| 3 | **1,000 🪙 = $5** | `config.FX_UNITS_PER_CENT = 200` is the only number that sets the rate; every text and limit is derived (`fx_coin_step()` = 2: 🪙 → $ moves even amounts, odd ones are refused with the step, never rounded). Existing balances are not touched. |
+| 4 | **Pictures for jobs** | `scenes.py` draws the job board, the Snapp passenger waiting next to the rental car, the McDonald's counter with the **shift's progress bar and the remaining time**, ready-to-collect, and the street workers (sweeping, waste, green space). They are drawn with Pillow from the task's state (no image files, nothing downloaded), so they are always in sync with the text. |
+| 5 | **The rental car is a Pride** | A Snapp ride's car is a **پراید** with a **model year 1380–1395** and a colour, chosen from the saved ride (a pure function of city, driver and ride number, stored in the task data: it never changes during the ride). The year is shown in the text («پراید ۱۳۸۴ (سفید)» / «Pride 1384 (white)»), on the plate in the picture and as a car-shaped marker on the map. No other car model exists anywhere. |
+| 6 | **The casino plays for cash, blackjack only** | See below. |
+| 7 | **«روزانه» resets at 00:00 Tehran time** | The daily bonus is once per *Tehran calendar day* (`config.daily_day`, `DAILY_UTC_OFFSET_MIN`, default 210), not 24 h after the last claim. The streak continues if the last claim was *yesterday*; a missed day resets it. The wait message says «ساعت ۰۰:۰۰ به وقت تهران». The quests' streak snapshot uses the same day. |
+| 8 | **No made-up people in the exchange news** | The six companies no longer have fake CEO names. Headlines, the company card and the earnings night quote **the company itself** («بیانیه‌ی چت‌باکس» / "Chatterbox statement"). The statements were rewritten in a plain middle register: spoken enough to read easily, no street slang, nothing bookish (`texts_exchange.py`, keys `ex.<company>.voice` and `up1/up2/down1/down2`). |
+| 9 | **English digits** | `config.digits_mode()` (env `DIGITS`, default `en`): every template, number formatter, button label and outgoing message goes through `fmt.digits()`, so «۱٬۰۰۰ 🪙» is «1,000 🪙» everywhere, in pictures too. **The Persian numbers are not deleted**: set `DIGITS=fa` and the old look is back. (Names typed by players that contain Persian digits are converted as well.) |
+
+### Blackjack for cash (`casino.py`, `mapui.py`)
+
+* The casino has **one game: blackjack** (nothing else was added). You play with **life cash** (dollars); stock coins, shares, levels and XP are never touched (a test compares every stock table before and after).
+* **Chips**: `$1 · $5 · $10 · $25 · $100` (`config.CASINO_BETS_CENTS`), shown only if you can pay them. Pressing a chip deals the hand and **takes the chip in the same database transaction**; if you cannot pay it, no hand exists and nothing moves.
+* **Pay table**: win or dealer bust **1 to 1**, natural blackjack **3 to 2**, push gives the chip back, a loss or bust pays nothing. Rules of the cards are as in v0.17 (dealer stands on every 17; no doubling, splitting or insurance).
+* **Never twice**: every movement is a `life_ledger` row (`casino_bet` / `casino_win`, ref `<session>:<hand number>`) and `(user, kind, ref)` is unique; every press also carries the game's `seq`, so repeated, late or duplicated presses change nothing. A failure while paying undoes the whole press (tests break the middle of it).
+* **Forgotten hands**: a hand left alone for 30 minutes (`CASINO_IDLE_SECS`), or whose map message expired or was pushed out, is **stood automatically and paid by the same rules** (`casino.sweep`, run by the 5-minute background loop and whenever a player opens a map), so a chip can never disappear with a forgotten message. A balance is never pushed past the cap: a payout that would is cut to the room left.
+* Schema 9 adds `bet`, `hand_no`, `paid` to `casino_games` (defaults 0 / 1 / 0, so every old game row, finished or running, keeps its cards and result; an old running hand is stood without any money moving). The old `🔁 دست جدید` button of a v0.18 message just shows the chips.
+
+### Settings added (`.env`, optional)
+
+`DIGITS` (`en` default; `fa` = old Persian digits) · `DAILY_UTC_OFFSET_MIN` (default 210 = Tehran; the daily bonus resets at local midnight of that offset). The rate, the chips, the blackjack payout and the idle time are constants in `config.py`.
+
+### Consequences you should know about
+
+* **The $100 start grant is now worth 20,000 🪙** at the new rate (it was 5,000 🪙), and job wages are relatively larger than stock income ($5 per ~1,000 🪙 a day). If alt accounts worry you, the knobs are `CASH_START_CENTS` and the job constants in `config.py` — I changed none of them.
+* The daily bonus is stricter about streaks (a streak survives only if you claimed *yesterday*), and a player who claims at 23:59 can claim again at 00:00.
+* An odd number of 🪙 can no longer be exchanged (the step is 2); the screen says so.
+* Blackjack has a house edge like any real table; nothing refunds a loss.
+
+### Files
+
+New: `jobviz.py` (markers for the job pictures), `scenes.py` (scene illustrations), `interactui.py` (messages of the glass-button interactions), tests `test_v0181_daily.py`, `test_v0181_pictures.py`, `test_v0181_texts.py`, `test_casino_cash.py`, `test_digits.py`, `conftest.py` (the older suites run with `DIGITS=fa`; the English default is covered by `test_digits.py`). Changed: `config.py`, `cash.py`, `lifeui.py`, `progress.py`, `quests.py`, `casino.py`, `mapui.py`, `presence.py`, `work.py`, `workui.py`, `worldmap.py`, `handlers.py`, `views.py`, `fmt.py`, `cards.py`, `db.py` (schema 9), `jobs.py` (casino sweep), `interact.py`, `texts*.py`, `docs.py`, `sections.py`, and the older tests whose expectations moved with the above.
+
+### Honest limits
+
+The pictures are drawn with Pillow from scratch (no art files); they were checked here with a stand-in for the Persian shaper, so look at the first few in a real chat. The tests run against a simulated Telegram (the one known failure, `tests/test_share.py::test_persian_is_really_shaped_and_the_font_ships_with_the_bot`, needs the real shaper and passes on a normal install).

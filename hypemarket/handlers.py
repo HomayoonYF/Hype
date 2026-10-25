@@ -14,7 +14,7 @@ from aiogram import Bot, F, Router
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramRetryAfter
 from aiogram.types import BufferedInputFile, CallbackQuery, ChatMemberUpdated, InputMediaPhoto, LabeledPrice, Message, PreCheckoutQuery, User
 
-from . import achievements, adminpanel, analytics, backups, charts, mapui, salary, config as C, core, events, fmt, gate, progress, quests, sections, shop, social, textparse, trading, trust, views, world, worldinspect, worldmap, worldplaces
+from . import achievements, adminpanel, analytics, backups, cash, charts, interact, lifeui, mapui, salary, config as C, core, events, fmt, gate, progress, quests, sections, shop, social, textparse, trading, trust, views, work, workui, world, worldinspect, worldmap, worldplaces
 from .core import GameError
 from .db import Database
 from .texts import ALIASES, SOFT_ARGS, SOFT_EXACT, EXAMPLES, level_title, t
@@ -148,22 +148,31 @@ def plain(text: str, limit: int = 190) -> str:
     return html.unescape(_TAGS.sub("", text))[:limit]
 
 
-MONEY_KW = {"funds": ("need", "have"), "rb_need": ("need", "nw"), "bad_goal": ("lo", "hi")}
+MONEY_KW = {"funds": ("need", "have"), "rb_need": ("need", "nw"), "bad_goal": ("lo", "hi"), "fx_low_stock": ("need", "have")}
+CASH_KW = {"cash_low": ("need", "have")}                        # life cash: whole cents, shown as $
+TIME_ERRORS = ("rug_young", "rug_cooldown", "daily_wait", "job_cooldown", "job_notready", "ia_cooldown")
 
 
 def err_text(lang: str, e: GameError) -> str:
     kw = {}
     money = MONEY_KW.get(e.code, ())
+    dollars = CASH_KW.get(e.code, ())
     for k, v in e.kw.items():
         if k in money:
-            kw[k] = fmt.coins(v, lang)
+            kw[k] = fmt.coins_x(v, lang) if e.code == "fx_low_stock" else fmt.coins(v, lang)
+        elif k in dollars:
+            kw[k] = fmt.usd(v, lang)
         elif k == "ticker":
             kw[k] = fmt.tk(v)
+        elif k == "job":
+            kw[k] = t(lang, f"job.{v}.name")
         elif isinstance(v, int):
             kw[k] = fmt.num(v, lang)
         else:
             kw[k] = fmt.esc(v)
-    if "secs" in e.kw and e.code in ("rug_young", "rug_cooldown", "daily_wait"):
+    if e.code in ("fx_amount", "fx_step"):
+        kw["step"] = fmt.num(C.fx_coin_step(), lang)                              # «a multiple of 2 🪙» (the exchange's coin step at the current rate)
+    if "secs" in e.kw and e.code in TIME_ERRORS:
         kw["time"] = fmt.dur(e.kw["secs"], lang)
     key = "e." + e.code
     from .texts import FA
@@ -202,13 +211,18 @@ def unambiguous(p: textparse.Parsed) -> bool:
     return p.cmd in SOFT_ARGS and (inner >= 2 or (p.section is None and p.cmd in BOT_WORDS))
 
 
-def soft_ok(app: App, p: textparse.Parsed) -> bool:
+def soft_ok(app: App, p: textparse.Parsed, m: Message | None = None) -> bool:
     """Plain-word commands in groups must look unmistakably like commands, so ordinary chat doesn't trigger the bot."""
     a, db = p.args, app.db
     if unambiguous(p):
         return True
     if p.cmd == "map":                                       # «مپ» alone, or «مپ P14»: any other words after it are just chat
         return not a or worldinspect.parse_ref(a) is not None
+    if p.cmd == "fx":                                        # «صرافی» alone, «صرافی سهام»/«صرافی نقد», or with a valid amount: anything else is chat
+        if not a:
+            return True
+        d = lifeui.direction_of(a[0])
+        return d is not None and (len(a) == 1 or (len(a) == 2 and lifeui.parse_amount(d, a[1]) is not None))
     if p.cmd in SOFT_EXACT and p.cmd != "alert":
         return not a
     if p.cmd == "alert":
@@ -294,12 +308,56 @@ async def _told(r: Reply, message_id) -> None:
         log.exception("after-send hook failed")
 
 
+def _finish(r: Reply) -> Reply:
+    """The last look before a reply leaves: the number style (config.digits_mode) also applies to text added after the Reply was made."""
+    r.text, r.toast = fmt.digits(r.text), fmt.digits(r.toast)
+    if r.kb is not None:
+        for row in r.kb.inline_keyboard:
+            for b in row:
+                b.text = fmt.digits(b.text)
+    return r
+
+
+async def _paint(r: Reply) -> None:
+    """Draw the picture a reply asked for (r.pic). A picture that cannot be drawn is dropped: the text and buttons still go out."""
+    if r.pic is None or r.photo:
+        return
+    try:
+        r.photo = await r.pic()
+    except Exception:
+        log.exception("a picture could not be drawn")
+        r.photo = None
+    r.pic = None
+
+
+async def _replace(m, r: Reply, c: Ctx) -> bool:
+    """A reply that must replace a message of the other kind (a photo under a text, or text under a photo): the old message goes and a new one is
+    sent. True when it was handled here; False when the old message cannot be deleted (then the caller edits what it can)."""
+    if c.is_group and not c.app.chat_budget(c.chat.id):                          # no room to say anything in this chat right now: the old message stays as it is
+        return True
+    try:
+        await m.delete()
+    except Exception:
+        return False
+    if r.photo:
+        sent = await _call(m.answer_photo, _photo(r), caption=fit_caption(r.text), reply_markup=r.kb)
+    else:
+        sent = await _call(m.answer, r.text, reply_markup=r.kb)
+    if sent is not None:
+        await _told(r, getattr(sent, "message_id", None))
+    return True
+
+
 async def send(c: Ctx, r: Reply) -> None:
+    _finish(r)
+    await _paint(r)
     if c.cb is not None:
         cb = c.cb
         await _call(cb.answer, r.toast[:200], show_alert=r.alert) if r.toast else await _call(cb.answer)
         m = cb.message
         if not m:
+            return
+        if r.fresh and r.edit and bool(r.photo) != bool(m.photo) and (r.photo or r.text) and await _replace(m, r, c):
             return
         if r.photo and r.edit and m.photo:
             if await _call(m.edit_media, media=InputMediaPhoto(media=_photo(r), caption=fit_caption(r.text)), reply_markup=r.kb) is not None:
@@ -317,7 +375,9 @@ async def send(c: Ctx, r: Reply) -> None:
                 await _told(r, m.message_id)
         elif r.text:
             if not c.is_group or c.app.chat_budget(c.chat.id):
-                await _call(m.answer, r.text, reply_markup=r.kb)
+                sent = await _call(m.answer, r.text, reply_markup=r.kb)
+                if sent is not None:                                                   # v0.18.1: a hug request made with a button remembers the message it lives in
+                    await _told(r, getattr(sent, "message_id", None))
         return
     if c.is_group and not c.app.chat_budget(c.chat.id):
         return
@@ -327,7 +387,9 @@ async def send(c: Ctx, r: Reply) -> None:
         if sent is not None:
             await _told(r, getattr(sent, "message_id", None))
     elif r.text:
-        await _call(m.reply, r.text, reply_markup=r.kb)
+        sent = await _call(m.reply, r.text, reply_markup=r.kb)
+        if sent is not None:
+            await _told(r, getattr(sent, "message_id", None))
 
 
 async def flush_outbox(app: App) -> None:
@@ -435,6 +497,9 @@ async def cb_main_menu(c: Ctx):
     r = views.main_menu(c.lang, c.uid)
     r.edit = True
     return r
+
+
+FX_PROMPTS = {"fx_s2c": "stocks", "fx_c2s": "cash"}        # guided exchange prompts: the word that names the direction in «صرافی <direction> <amount>»
 
 
 def _guided(app: App, uid: int, cmd: str) -> None:
@@ -1482,6 +1547,122 @@ async def h_fire(c: Ctx):
     return Reply(text=f"🔥 {kind}")
 
 
+# =============================== life cash, exchange, jobs, interactions (v0.18) ==================
+@cmd("cash")
+async def h_cash(c: Ctx):
+    """The wallet: life cash and stock money side by side (two separate currencies)."""
+    return lifeui.wallet(c.db, c.lang, c.uid)
+
+
+@cmd("fx")
+async def h_fx(c: Ctx):
+    """The currency exchange. Without arguments: the screen with buttons. «صرافی سهام 250» / «صرافی نقد 5» / «... همه»: straight to the preview."""
+    if not c.args:
+        return lifeui.fx_home(c.db, c.lang, c.uid)
+    d = lifeui.direction_of(c.args[0])
+    if d is None or len(c.args) > 2:
+        return c.usage("fx")
+    if len(c.args) == 1:
+        if not c.is_group:
+            _guided(c.app, c.uid, "fx_" + d)
+        return lifeui.fx_direction(c.db, c.lang, c.uid, d)
+    amt = lifeui.parse_amount(d, c.args[1])
+    if amt is None:
+        raise GameError("fx_amount")
+    q = cash.make_quote(c.db, c.uid, d, None if amt[0] == "all" else amt[1])
+    return lifeui.fx_confirm(c.db, c.lang, c.uid, q)
+
+
+@cbk("cs")
+async def cb_cash(c: Ctx):
+    """cs:w | cs:fx | cs:d:<dir> | cs:a:<dir>:<amount or all> | cs:ok:<quote id> | cs:no:<quote id>, always followed by the player's id.
+    Only `ok` moves anything, and it carries nothing but the id of a stored, expiring quote."""
+    rest = c.args[:-1]
+    sub = rest[0] if rest else "w"
+    arg = rest[1:]
+    if len(arg) != {"w": 0, "fx": 0, "d": 1, "a": 2, "ok": 1, "no": 1}.get(sub, -1):            # exactly the pieces the bot drew into the button: anything else is hand-made
+        return Reply(toast=t(c.lang, "e.bad_usage"))
+    if sub == "w":
+        r = lifeui.wallet(c.db, c.lang, c.uid)
+    elif sub == "fx":
+        r = lifeui.fx_home(c.db, c.lang, c.uid)
+    elif sub == "d" and arg[0] in (cash.S2C, cash.C2S):
+        if not c.is_group:
+            _guided(c.app, c.uid, "fx_" + arg[0])
+        r = lifeui.fx_direction(c.db, c.lang, c.uid, arg[0])
+    elif sub == "a" and len(arg) == 2 and arg[0] in (cash.S2C, cash.C2S):
+        if arg[1] == "all":
+            amount = None
+        elif re.fullmatch(r"\d{1,15}", arg[1]):
+            amount = int(arg[1])
+        else:
+            raise GameError("fx_amount")
+        q = cash.make_quote(c.db, c.uid, arg[0], amount)
+        r = lifeui.fx_confirm(c.db, c.lang, c.uid, q)
+    elif sub == "ok":
+        try:
+            r = lifeui.fx_done(c.lang, c.uid, cash.confirm(c.db, c.uid, arg[0]))
+        except GameError as e:
+            if e.code in ("fx_gone", "fx_done", "fx_expired"):          # the preview is stale: say so and show the exchange again
+                r = lifeui.fx_home(c.db, c.lang, c.uid)
+                r.toast, r.alert = plain(err_text(c.lang, e)), True
+                r.edit, r.fresh = True, True
+                return r
+            raise
+    elif sub == "no":
+        cash.cancel(c.db, c.uid, arg[0])
+        r = lifeui.fx_cancelled(c.lang, c.uid)
+    else:
+        return Reply(toast=t(c.lang, "e.bad_usage"))
+    r.edit = True
+    r.fresh = True                                    # v0.18.1: opened from a job picture, the wallet replaces that message instead of keeping its picture
+    return r
+
+
+@cmd("jobs")
+async def h_jobs(c: Ctx):
+    return await workui.board(c)
+
+
+@cmd("snapp")
+async def h_snapp(c: Ctx):
+    return await workui.snapp(c)
+
+
+@cmd("mcd")
+async def h_mcd(c: Ctx):
+    return await workui.mcd(c)
+
+
+@cmd("muni")
+async def h_muni(c: Ctx):
+    return await workui.muni(c)
+
+
+@cbk("jb")
+async def cb_jobs(c: Ctx):
+    """Every job button (jb:<action>[:...]:<player id>); the player id was checked against the presser, the task against the saved row."""
+    return await workui.handle(c)
+
+
+@cbk("ia")
+async def cb_interact(c: Ctx):
+    """ia:y|n:<request id>:<target id> and ia:c:<request id>:<sender id>. The request, who may answer it and its state are read from the saved row."""
+    rest = c.args[:-1]
+    if len(rest) != 2 or rest[0] not in interact.NEW_STATE or not rest[1].isdigit():
+        return Reply(toast=t(c.lang, "e.bad_usage"))
+    try:
+        city = await workui.city_of(c)
+    except workui.NoCity as e:
+        return Reply(toast=plain(t(c.lang, e.key)), alert=True)
+    if city is None:
+        return Reply(toast=t(c.lang, "e.ia_gone"), alert=True)
+    row, changed = interact.hug_answer(c.db, city, c.chat.id, int(rest[1]), c.uid, rest[0])
+    a, b = core.need_user(c.db, row["from_id"]), core.need_user(c.db, row["to_id"])
+    text = t(c.lang, f"ia.hug.{row['state']}", a=interact.mention(a), b=interact.mention(b), ttl=fmt.dur(C.HUG_TTL, c.lang))
+    return Reply(text=text, edit=True, toast=None if changed else plain(t(c.lang, "ia.late")))
+
+
 # =============================== dispatch =======================================================
 async def run(c: Ctx, fn, *, is_cb: bool) -> None:
     try:
@@ -1556,11 +1737,14 @@ async def handle_message(m: Message, app: App, text: str) -> None:
                     c = Ctx(app=app, bot=app.bot, tg=tg, chat=chat, lang=lang, cmd="admin", args=[text], msg=m, created=created)
                     await run(c, lambda cx: adminpanel.channel_text(app, cx.lang, cx.uid, text), is_cb=False)
                 return
-            p = textparse.parse(f"stocks {pend[0]} {text}", app.botname)       # the plain message is the command's arguments
+            if pend[0] in FX_PROMPTS:                                           # «🪙 → 💵»: the plain message is the amount to exchange
+                p = textparse.parse(f"fx {FX_PROMPTS[pend[0]]} {text}", app.botname)
+            else:
+                p = textparse.parse(f"stocks {pend[0]} {text}", app.botname)   # the plain message is the command's arguments
     if not p or (p.cmd not in HANDLERS and not p.retired):
         return
     soft = group and not p.prefixed and not unambiguous(p)
-    if group and not p.prefixed and not unambiguous(p) and not soft_ok(app, p):
+    if group and not p.prefixed and not unambiguous(p) and not soft_ok(app, p, m):
         return
     banned = core.get_user(app.db, tg.id)
     if banned and banned["banned"]:
@@ -1601,7 +1785,7 @@ async def on_photo(m: Message, app: App) -> None:
     await handle_message(m, app, m.caption)
 
 
-BOUND = {"pf", "cl", "up", "sk", "lg", "rb", "rug", "hp", "qs", "wh", "scp", "scr", "sal", "mn", "sm", "ad", "gate"}
+BOUND = {"pf", "cl", "up", "sk", "lg", "rb", "rug", "hp", "qs", "wh", "scp", "scr", "sal", "mn", "sm", "ad", "gate", "cs", "jb", "ia"}
 
 
 @router.callback_query()

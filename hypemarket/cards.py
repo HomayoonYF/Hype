@@ -59,7 +59,7 @@ def font(size: int, bold: bool = False):
 
 
 def shape(text: str) -> str:
-    text = _EMOJI.sub("", str(text)).strip()
+    text = fmt.digits(_EMOJI.sub("", str(text)).strip())
     return get_display(_RESHAPER.reshape(text)) if _AR.search(text) else text
 
 
