@@ -312,11 +312,6 @@ def test_main_menu_has_stocks_and_help_and_every_button_works(h):
     assert buttons(hub) == ["hp:stock:1", "hp:about:1", "mn:menu:1"]
     for target in ("profile", "daily", "invite", "cash", "jobs"):
         calls = h.press(1, f"mn:go:{target}:1")
-        if target == "jobs":                                                                              # v0.18.1: the job board carries its picture, so the text menu is swapped for a photo
-            from aiogram.methods import DeleteMessage, SendPhoto
-            pic = [c for c in calls if isinstance(c, SendPhoto)][-1]
-            assert any(isinstance(c, DeleteMessage) for c in calls) and pic.caption and buttons(pic)[-1] == "mn:menu:1", target
-            continue
         e = edits(calls)[-1]
         assert e.text and buttons(e)[-1] == "mn:menu:1", target                                          # shown in place, with a way back
     back = edits(h.press(1, "mn:menu:1"))[-1]

@@ -197,7 +197,7 @@ def _type(lang: str, f: dict) -> str:
 def _road(lang: str, f: dict) -> str:
     if f["direct"]:
         return t(lang, "wi.road.direct", road=t(lang, f"map.legend.{f['road']}"))
-    return t(lang, "wi.road.inner", d=fmt.num(f["road_dist"], lang))
+    return t(lang, "wi.road.inner", d=fmt.dist(f["road_dist"], lang))
 
 
 def panel(lang: str, world, layout: dict, target: Target, notes: bool = True) -> str:
@@ -230,7 +230,7 @@ def panel(lang: str, world, layout: dict, target: Target, notes: bool = True) ->
         elif f["landmark"]:
             rows.append(_row(lang, "place", f"{t(lang, 'map.lm.' + f['landmark']['kind'])} <code>{display_id(f['landmark']['id'])}</code>"))
         rows += [_row(lang, "status", status), _row(lang, "road", _road(lang, f)), _row(lang, "where", _where(lang, f)),
-                 _row(lang, "size", t(lang, "wi.size", n=fmt.num(f["area"], lang)))]
+                 _row(lang, "size", t(lang, "wi.size", n=fmt.area(f["area"], lang)))]
         if f["near"]:
             rows.append(_row(lang, "near", _ids(f["near"])))
     if notes:

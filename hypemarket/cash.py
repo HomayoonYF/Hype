@@ -14,16 +14,19 @@ THE LEDGER
     Starting cash: the ledger row ('grant','start') is unique per player, so $100 is paid exactly once however often a player is loaded,
     a map is opened, the bot restarts or the database is migrated. Cash belongs to the Telegram account (the player's id), not to a group.
 
-THE EXCHANGE (the fixed rate, both ways, no fee, no spread)
-        1,000 🪙 = $5.00      <=>      2 🪙 = 1 cent      <=>      1 cent = 2 🪙 = 200 units (config.FX_UNITS_PER_CENT)      (v0.18 had 1,000 🪙 = $20)
+THE EXCHANGE (ONE WAY since v0.18.2: stock money -> life cash. There is no way back.)
+        1,000 🪙 = $5.00      <=>      2 🪙 = 1 cent      <=>      1 cent = 200 units (config.FX_UNITS_PER_CENT)      (v0.18 had 1,000 🪙 = $20; the rate is unchanged since v0.18.1)
     Stock money to cash: whole coins in MULTIPLES OF config.fx_coin_step() (2 at this rate: every 2 🪙 is exactly 1 cent, so there is never a remainder).
-    Cash to stock money: any number of cents (each is exactly 2 🪙 = 200 units). Typed dollars may have up to two decimals.
-    Anything else (a fraction of a cent, an odd number of coins, zero, negative, junk, 1e9, NaN, a number with too many digits) is refused
+    Anything else (a fraction of a coin, an odd number of coins, zero, negative, junk, 1e9, NaN, a number with too many digits) is refused
     with the allowed form; nothing is rounded silently.
+    WHY ONE WAY: cash -> stock money let every extra account turn its free $100 into stock money and pour it into a main account. Now
+    cash can never become stock money: the exchange has no such direction at all (no function, no button, no command, no callback) and a
+    preview of the old kind that is still stored in a database (an open v0.18.x "c2s" quote) is refused when someone tries to confirm it.
+    The ledger keeps the old rows of the time when both ways existed; nothing in it is rewritten.
     Flow: a QUOTE (stored on the server, with an expiry) shows exactly what will move; only the quote's id travels in the confirm button,
     never an amount. Confirming flips the quote open -> done and moves both balances in ONE transaction; a repeated press finds it done.
-    Coins that leave the stock economy are counted as burned, coins that enter it as minted (the supply bookkeeping stays exact), and the
-    player's cached net worth / level is refreshed through the stock game's own function.
+    The coins that leave the stock economy are counted as burned (the supply bookkeeping stays exact), and the player's cached net worth /
+    level is refreshed through the stock game's own function.
 """
 from __future__ import annotations
 
@@ -105,7 +108,6 @@ _DIGITS = str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890
 _SEP = r"[,٬ '\u00a0\u202f]"                 # separators people type between groups of thousands
 _WORDS_ALL = {"all", "max", "همه", "حداکثر", "کامل", "کل"}
 _WHOLE = re.compile(rf"(?:\d{{1,15}}|\d{{1,3}}(?:{_SEP}\d{{3}}){{1,4}})")                 # «250», «1000», «1,000», «۱٬۰۰۰»; «1,00» or «5,25» are NOT numbers (a comma only ever groups thousands)
-_DOLLARS = re.compile(rf"(?:\d{{1,13}}|\d{{1,3}}(?:{_SEP}\d{{3}}){{1,3}})(?:\.(\d{{1,2}}))?")
 
 
 def _clean(token: str) -> str:
@@ -134,27 +136,10 @@ def parse_coins(token) -> int | None:
     return v if 1 <= v <= C.FX_MAX_COINS else None
 
 
-def parse_cents(token) -> int | None:
-    """Dollars typed as «5», «5.25», «$20», «۲۰», «1,000» -> cents (1 to FX_MAX_CENTS), or None. More than two decimals is refused, never rounded."""
-    if not isinstance(token, str):
-        return None
-    s = _clean(token)
-    if s.startswith("$"):
-        s = s[1:].strip()
-    elif s.endswith(("$", "💵")):
-        s = s[:-1].strip()
-    m = _DOLLARS.fullmatch(s)
-    if not m:
-        return None
-    whole = _plain_int(s.split(".")[0])
-    cents = int(whole) * 100 + int((m.group(1) or "0").ljust(2, "0"))
-    return cents if 1 <= cents <= C.FX_MAX_CENTS else None
-
-
 # =====================================================================================================================
 #                                                       the exchange
 # =====================================================================================================================
-S2C, C2S = "s2c", "c2s"
+S2C = "s2c"                                  # stock money -> cash: the ONLY direction of the exchange (a stored "c2s" quote of v0.18.x is refused, see confirm())
 
 
 @dataclass
@@ -162,32 +147,28 @@ class Quote:
     id: str
     uid: int
     direction: str
-    src: int                 # what the player gives: units (s2c) or cents (c2s)
-    dst: int                 # what the player gets:  cents (s2c) or units (c2s)
+    src: int                 # what the player gives: units of stock money
+    dst: int                 # what the player gets:  cents of cash
     expires_at: int
     state: str = "open"
 
     @property
     def coins(self) -> int:
-        """The coin side of the trade as whole coins (always exact: s2c moves a multiple of the coin step, c2s moves a multiple of 200 units)."""
-        return (self.src if self.direction == S2C else self.dst) // C.UNIT
+        """The coin side of the trade as whole coins (always exact: the exchange moves a multiple of the coin step)."""
+        return self.src // C.UNIT
 
     @property
     def units(self) -> int:
-        return self.src if self.direction == S2C else self.dst
+        return self.src
 
     @property
     def cents(self) -> int:
-        return self.dst if self.direction == S2C else self.src
+        return self.dst
 
 
 def units_to_cents(units: int) -> int:
     """Exact value of whole units in cents (only called with multiples of FX_UNITS_PER_CENT)."""
     return units // C.FX_UNITS_PER_CENT
-
-
-def cents_to_units(cents: int) -> int:
-    return cents * C.FX_UNITS_PER_CENT
 
 
 def _align(coins: int) -> int:
@@ -202,59 +183,44 @@ def max_coins(db, uid: int) -> int:
     return _align(max(0, u["cash"]) // C.UNIT)
 
 
-def make_quote(db, uid: int, direction: str, amount: int | None, now: int | None = None) -> Quote:
-    """Prepare an exchange and store it. `amount` is whole coins (a multiple of the coin step) for 's2c' and cents for 'c2s'; None = everything possible
-    (for 's2c' only whole steps move, so a fraction stays; the amount is also kept inside the exchange limit and what the cash cap still allows).
-    Raises GameError: fx_amount (not a positive whole number inside the limits), fx_step (not a multiple of the coin step), fx_nothing («everything» was asked and there is nothing to
-    move), fx_low_stock / cash_low (not enough of the currency being given), cash_cap (the dollars would pass the balance cap)."""
-    if direction not in (S2C, C2S):
-        raise GameError("fx_amount")
+def make_quote(db, uid: int, amount: int | None, now: int | None = None) -> Quote:
+    """Prepare an exchange of STOCK MONEY INTO CASH and store it. `amount` is whole coins (a multiple of the coin step); None = everything possible
+    (only whole steps move, so a fraction stays; the amount is also kept inside the exchange limit and what the cash cap still allows).
+    Raises GameError: fx_amount (not a positive whole number inside the limits), fx_step (not a multiple of the coin step), fx_nothing («everything»
+    was asked and there is nothing to move), fx_low_stock (not enough stock money), cash_cap (the dollars would pass the balance cap)."""
     if amount is not None and (not isinstance(amount, int) or isinstance(amount, bool)):
         raise GameError("fx_amount")                                              # floats, strings, booleans: never converted, never rounded
     now = core.now() if now is None else now
     with db.tx():
         acc = ensure_account(db, uid, now)
         u = core.need_user(db, uid)
-        if direction == S2C:
-            step = C.fx_coin_step()
-            have = max(0, u["cash"]) // C.UNIT                                                      # whole coins (the fraction of a coin stays)
-            room = C.fx_coins_for_cents(max(0, C.CASH_CAP_CENTS - acc["balance"]))                  # coins whose dollars still fit under the cap
-            if amount is None:
-                coins = _align(min(have, C.FX_MAX_COINS, room))
-                if coins < step:
-                    raise GameError("fx_nothing" if have < step else "cash_cap")
-            else:
-                coins = amount
-                if coins < 1 or coins > C.FX_MAX_COINS:
-                    raise GameError("fx_amount")
-                if coins % step:                                                                    # an odd number of coins would be half a cent
-                    low = coins - coins % step
-                    raise GameError("fx_step", step=step, near=low if low >= step else step)
-                if coins > have:
-                    raise GameError("fx_low_stock", need=coins * C.UNIT, have=u["cash"])
-                if coins > room:
-                    raise GameError("cash_cap")
-            src, dst = coins * C.UNIT, units_to_cents(coins * C.UNIT)
+        step = C.fx_coin_step()
+        have = max(0, u["cash"]) // C.UNIT                                                          # whole coins (the fraction of a coin stays)
+        room = C.fx_coins_for_cents(max(0, C.CASH_CAP_CENTS - acc["balance"]))                      # coins whose dollars still fit under the cap
+        if amount is None:
+            coins = _align(min(have, C.FX_MAX_COINS, room))
+            if coins < step:
+                raise GameError("fx_nothing" if have < step else "cash_cap")
         else:
-            if amount is None:
-                cents = min(acc["balance"], C.FX_MAX_CENTS)
-                if cents < 1:
-                    raise GameError("fx_nothing")
-            else:
-                cents = amount
-                if cents < 1 or cents > C.FX_MAX_CENTS:
-                    raise GameError("fx_amount")
-                if cents > acc["balance"]:
-                    raise GameError("cash_low", need=cents, have=acc["balance"])
-            src, dst = cents, cents_to_units(cents)
-        db.x("UPDATE fx_quotes SET state='cancelled' WHERE user_id=? AND state='open'", (uid,))           # only the newest preview can be confirmed
+            coins = amount
+            if coins < 1 or coins > C.FX_MAX_COINS:
+                raise GameError("fx_amount")
+            if coins % step:                                                                        # an odd number of coins would be half a cent
+                low = coins - coins % step
+                raise GameError("fx_step", step=step, near=low if low >= step else step)
+            if coins > have:
+                raise GameError("fx_low_stock", need=coins * C.UNIT, have=u["cash"])
+            if coins > room:
+                raise GameError("cash_cap")
+        src, dst = coins * C.UNIT, units_to_cents(coins * C.UNIT)
+        db.x("UPDATE fx_quotes SET state='cancelled' WHERE user_id=? AND state='open'", (uid,))     # only the newest preview can be confirmed
         db.x("DELETE FROM fx_quotes WHERE created_at<?", (now - 86400,))
         for _ in range(12):
             qid = secrets.token_hex(4)
             try:
                 db.x("INSERT INTO fx_quotes(id,user_id,direction,src,dst,state,created_at,expires_at) VALUES(?,?,?,?,?,'open',?,?)",
-                     (qid, uid, direction, src, dst, now, now + C.FX_QUOTE_TTL))
-                return Quote(qid, uid, direction, src, dst, now + C.FX_QUOTE_TTL)
+                     (qid, uid, S2C, src, dst, now, now + C.FX_QUOTE_TTL))
+                return Quote(qid, uid, S2C, src, dst, now + C.FX_QUOTE_TTL)
             except sqlite3.IntegrityError:
                 continue
     raise RuntimeError("could not create an exchange quote")
@@ -280,8 +246,16 @@ class Receipt:
 
 def confirm(db, uid: int, qid: str, now: int | None = None) -> Receipt:
     """Carry out a stored quote of this player, once. Raises GameError: fx_gone (unknown / not theirs / cancelled), fx_done (already done),
-    fx_expired, or a shortage if the balance changed since the preview; in every error case nothing at all has changed."""
+    fx_expired, fx_oneway (a quote of the removed cash -> stock direction: it is never carried out), or a shortage if the balance changed
+    since the preview; in every error case nothing at all has changed."""
     now = core.now() if now is None else now
+    with db.tx():
+        old_kind = get_quote(db, qid, uid)
+        voided = old_kind is not None and old_kind.direction != S2C
+        if voided:                                                                 # only stock money -> cash exists; an old or forged other-direction row never moves a cent
+            db.x("UPDATE fx_quotes SET state='cancelled' WHERE id=? AND user_id=? AND state='open'", (qid, uid))
+    if voided:
+        raise GameError("fx_oneway")                                               # raised AFTER the transaction, so voiding the stale row is kept
     with db.tx():
         q = get_quote(db, qid, uid)
         if q is None or q.state == "cancelled":
@@ -290,26 +264,18 @@ def confirm(db, uid: int, qid: str, now: int | None = None) -> Receipt:
             raise GameError("fx_done")
         if q.expires_at <= now:
             raise GameError("fx_expired")
-        if db.x("UPDATE fx_quotes SET state='done' WHERE id=? AND user_id=? AND state='open'", (qid, uid)).rowcount != 1:
+        if db.x("UPDATE fx_quotes SET state='done' WHERE id=? AND user_id=? AND state='open' AND direction=?", (qid, uid, S2C)).rowcount != 1:
             raise GameError("fx_done")
         acc = ensure_account(db, uid, now)
         u = core.need_user(db, uid)
         stock_before, cash_before = u["cash"], acc["balance"]
-        if q.direction == S2C:
-            if stock_before < q.src:
-                raise GameError("fx_low_stock", need=q.src, have=stock_before)
-            if db.x("UPDATE users SET cash=cash-? WHERE id=? AND cash>=?", (q.src, uid, q.src)).rowcount != 1:
-                raise GameError("fx_low_stock", need=q.src, have=stock_before)
-            core.burn(db, q.src)                                                   # the coins leave the stock economy
-            if apply(db, uid, q.dst, "fx", q.id, stock=-q.src, note="stock->cash", now=now) is None:
-                raise RuntimeError("exchange applied twice")                      # impossible (the quote is single-use); never pay silently twice
-        else:
-            if cash_before < q.src:
-                raise GameError("cash_low", need=q.src, have=cash_before)
-            if apply(db, uid, -q.src, "fx", q.id, stock=q.dst, note="cash->stock", now=now) is None:
-                raise RuntimeError("exchange applied twice")
-            db.x("UPDATE users SET cash=cash+? WHERE id=?", (q.dst, uid))
-            core.mint(db, q.dst)                                                   # the coins enter the stock economy
+        if stock_before < q.src:
+            raise GameError("fx_low_stock", need=q.src, have=stock_before)
+        if db.x("UPDATE users SET cash=cash-? WHERE id=? AND cash>=?", (q.src, uid, q.src)).rowcount != 1:
+            raise GameError("fx_low_stock", need=q.src, have=stock_before)
+        core.burn(db, q.src)                                                       # the coins leave the stock economy
+        if apply(db, uid, q.dst, "fx", q.id, stock=-q.src, note="stock->cash", now=now) is None:
+            raise RuntimeError("exchange applied twice")                          # impossible (the quote is single-use); never pay silently twice
         core.check_level(db, uid)                                                  # net worth / level follow the new balance, like after any trade
         q.state = "done"
         after_stock = core.need_user(db, uid)["cash"]

@@ -1,12 +1,9 @@
-"""Pictures for the job screens (v0.18.1).
+"""Map pictures for the job screens (v0.18.1, narrowed in v0.18.2).
 
-Two kinds of picture, both drawn on the server and sent as the photo of the job message:
-
-* a MAP of the city with the route when the job is about getting somewhere: a Snapp ride (the way to the passenger in BLUE, the passenger's ride
-  to the destination in YELLOW, a person pin at the pickup, a flag pin at the destination, and the player as a small CAR instead of the round
-  marker), and the walk to McDonald's or to a municipal work site (the walk drawn like every walk, a bag pin at the workplace);
-* a SCENE (scenes.py) when the job is about being somewhere: the board, the Snapp passenger waiting next to the rental Pride, the McDonald's
-  counter with the shift's progress bar, the street workers.
+The only pictures a job screen carries are MAPS of the city with the route, drawn on the server and sent as the photo of the job message: a Snapp ride (the
+way to the passenger in BLUE, the passenger's ride to the destination in YELLOW, a person pin at the pickup, a flag pin at the destination, and the player as a
+small CAR instead of the round marker), and the walk to McDonald's or to a municipal work site (the walk drawn like every walk, a bag pin at the workplace).
+Since v0.18.2 there are no illustrated scenes of a character doing a job: those screens are text (workui.py).
 
 Nothing here touches the database or the clock: every function takes values that were already read (the task, the standing, the city) and is
 pure, so it can run in a worker thread while the bot keeps answering. A picture that cannot be drawn is simply not sent (the screen's text and
@@ -20,7 +17,7 @@ import math
 import threading
 from collections import OrderedDict
 
-from . import fmt, presence, scenes, work, worldinspect, worldmap, worldnet as N
+from . import fmt, presence, work, worldinspect, worldmap, worldnet as N
 from .texts import t
 
 log = logging.getLogger("hypemarket")
@@ -34,11 +31,6 @@ _ROUTES_LOCK = threading.Lock()                       # `_between` runs in worke
 def car_label(lang: str, car: dict) -> str:
     """«پراید 1384 (سفید)» / «Pride 1384 (white)»."""
     return t(lang, "snapp.car", year=fmt.loc(str(int(car["y"])), lang), color=t(lang, "snapp.color." + car["c"]))
-
-
-def plate_year(lang: str, car: dict) -> str:
-    """The model year as the plate in the picture spells it (the bot's number style)."""
-    return fmt.loc(str(int(car["y"])), lang)
 
 
 def car_of_user(db, uid: int) -> str:
@@ -180,13 +172,4 @@ def map_pic(city, lang: str, build):
         if not marks:
             return None
         return await worldmap.render_marked(city.id, city.layout, lang, marks)
-    return draw
-
-
-def scene_pic(kind: str, lang: str, **kw):
-    """An async function that draws a scene in a worker thread. Texts are given the number style of the bot here, so the picture follows it."""
-    kw = {k: (fmt.digits(v) if isinstance(v, str) else v) for k, v in kw.items()}
-
-    async def draw():
-        return await asyncio.to_thread(scenes.scene, kind, lang, **kw)
     return draw

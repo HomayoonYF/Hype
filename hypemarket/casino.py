@@ -1,11 +1,17 @@
 """Blackjack, the casino's one game: player against dealer, played for life cash (v0.18.1; v0.17 had no stakes).
 
-Rules (also shown to players): one standard 52-card deck, freshly shuffled for every hand. Two cards each; one dealer card stays face down.
-An ace counts 11 unless that busts the hand, then 1; J, Q and K count 10. Two cards worth 21 are a natural blackjack: if either side has
-one the hand ends at once (both: push; one: that side wins). Otherwise the player may hit or stand; going over 21 loses at once; reaching
-21 stands automatically. When the player stands the dealer turns the hidden card over and draws until the hand is worth 17 or more: the
-dealer STANDS ON EVERY 17, soft 17 included. Dealer over 21: the player wins; higher total wins; equal totals push. There is no
-doubling, splitting or insurance, and no other game: blackjack is the casino's only game.
+Rules (shown to a player on request, not on every screen): one standard 52-card deck, freshly shuffled for every hand. Two cards each; one
+dealer card stays face down. An ace counts 11 unless that busts the hand, then 1; J, Q and K count 10. Two cards worth 21 are a natural
+blackjack: if either side has one the hand ends at once (both: push; one: that side wins). Otherwise the player may hit or stand; going over 21
+loses at once (the dealer does not play); reaching 21 stands automatically.
+
+THE DEALER'S RULE (v0.18.2, a custom head-to-head rule; standard blackjack's "dealer stands on 17" is gone). When the player stands on a
+total T (21 or less) the dealer turns the hidden card over and then tries to BEAT T: he draws while his total is not higher than T, and stops
+when he is higher (he wins), when he busts (over 21, the player wins), or when he has 21 (nothing can beat 21: equal to a player's 21 it is a
+push). So the dealer keeps drawing on 17 against a 19, and also on an equal total below 21 (a tie is not a win); the only ties left are
+21 against 21 and the two-naturals push. `DEALER_DRAWS_ON_TIE = False` would make him stop on an equal total instead (tie = push), which is a
+much harsher table for the player (see the v0.18.2 notes); it is a code constant, not a setting, and both modes are tested. A dealer who runs
+out of cards (it cannot happen with one deck, a test stacks the worst decks to prove it) simply stops instead of crashing a settlement.
 
 THE MONEY (life cash only, in cents; never the stock coins, shares, levels or items)
     * A hand is played for one CHIP (`config.CASINO_BETS_CENTS`: $1, $5, $10, $25, $100). The chip is taken from the player's life cash when
@@ -38,7 +44,7 @@ from . import cash, config as C, core
 SUITS = "♠♥♦♣"
 RANKS = ("A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K")
 RNG_FACTORY = random.SystemRandom          # one fresh, unseeded generator per shuffle
-DEALER_STANDS_ON = 17
+DEALER_DRAWS_ON_TIE = True          # v0.18.2: the dealer keeps drawing on a total equal to the player's (a tie is not a win), except on 21
 
 WIN_RESULTS = ("player_blackjack", "dealer_bust", "win")
 LOSS_RESULTS = ("dealer_blackjack", "bust", "lose")
@@ -124,10 +130,20 @@ def deal(deck: list) -> Hand:
     return h
 
 
+def dealer_wants_card(dealer, player_total: int) -> bool:
+    """The dealer's one decision (v0.18.2): draw while he has not beaten the player's final total. Never on 21 (nothing beats it), never when
+    higher than the player, and on an equal total only when `DEALER_DRAWS_ON_TIE`."""
+    t = total(dealer)
+    if t >= 21:
+        return False
+    return t < player_total or (DEALER_DRAWS_ON_TIE and t == player_total)
+
+
 def _dealer_plays(h: Hand) -> Hand:
-    while total(h.dealer) < DEALER_STANDS_ON:
+    pt = total(h.player)
+    while h.deck and dealer_wants_card(h.dealer, pt):
         h.dealer.append(h.deck.pop())
-    pt, dt = total(h.player), total(h.dealer)
+    dt = total(h.dealer)
     if dt > 21:
         return _finish(h, "dealer_bust")
     return _finish(h, "win" if pt > dt else "lose" if pt < dt else "push")

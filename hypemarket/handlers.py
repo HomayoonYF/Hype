@@ -218,11 +218,14 @@ def soft_ok(app: App, p: textparse.Parsed, m: Message | None = None) -> bool:
         return True
     if p.cmd == "map":                                       # «مپ» alone, or «مپ P14»: any other words after it are just chat
         return not a or worldinspect.parse_ref(a) is not None
-    if p.cmd == "fx":                                        # «صرافی» alone, «صرافی سهام»/«صرافی نقد», or with a valid amount: anything else is chat
+    if p.cmd == "fx":                                        # «صرافی» alone, «صرافی 250», «صرافی سهام 250», «صرافی همه»; «صرافی نقد ...» gets the one-way answer; anything else is chat
         if not a:
             return True
-        d = lifeui.direction_of(a[0])
-        return d is not None and (len(a) == 1 or (len(a) == 2 and lifeui.parse_amount(d, a[1]) is not None))
+        lead = lifeui.lead_of(a[0])
+        rest = a[1:] if lead else a
+        if lead == "cash":
+            return len(rest) <= 1
+        return not rest or (len(rest) == 1 and lifeui.parse_amount(rest[0]) is not None)
     if p.cmd in SOFT_EXACT and p.cmd != "alert":
         return not a
     if p.cmd == "alert":
@@ -499,7 +502,7 @@ async def cb_main_menu(c: Ctx):
     return r
 
 
-FX_PROMPTS = {"fx_s2c": "stocks", "fx_c2s": "cash"}        # guided exchange prompts: the word that names the direction in «صرافی <direction> <amount>»
+FX_PROMPTS = {"fx_s2c": "stocks"}                          # the guided exchange prompt: the plain message that follows is the amount in «صرافی سهام <amount>» (the only direction there is)
 
 
 def _guided(app: App, uid: int, cmd: str) -> None:
@@ -1556,54 +1559,59 @@ async def h_cash(c: Ctx):
 
 @cmd("fx")
 async def h_fx(c: Ctx):
-    """The currency exchange. Without arguments: the screen with buttons. «صرافی سهام 250» / «صرافی نقد 5» / «... همه»: straight to the preview."""
-    if not c.args:
-        return lifeui.fx_home(c.db, c.lang, c.uid)
-    d = lifeui.direction_of(c.args[0])
-    if d is None or len(c.args) > 2:
+    """The currency exchange, stock money into cash ONLY. Without arguments: the screen with buttons. «صرافی 250» / «صرافی سهام 250» / «صرافی همه»: straight to the
+    preview. A word that names the cash as the thing to give («صرافی نقد 5») is answered with the one-way refusal; nothing else is ever converted."""
+    args = list(c.args)
+    lead = lifeui.lead_of(args[0]) if args else None
+    if lead == "cash":
+        raise GameError("fx_oneway")
+    if lead:
+        args = args[1:]
+    if len(args) > 1:
         return c.usage("fx")
-    if len(c.args) == 1:
+    if not args:
         if not c.is_group:
-            _guided(c.app, c.uid, "fx_" + d)
-        return lifeui.fx_direction(c.db, c.lang, c.uid, d)
-    amt = lifeui.parse_amount(d, c.args[1])
+            _guided(c.app, c.uid, "fx_s2c")
+        return lifeui.fx_home(c.db, c.lang, c.uid)
+    amt = lifeui.parse_amount(args[0])
     if amt is None:
         raise GameError("fx_amount")
-    q = cash.make_quote(c.db, c.uid, d, None if amt[0] == "all" else amt[1])
+    q = cash.make_quote(c.db, c.uid, None if amt[0] == "all" else amt[1])
     return lifeui.fx_confirm(c.db, c.lang, c.uid, q)
 
 
 @cbk("cs")
 async def cb_cash(c: Ctx):
-    """cs:w | cs:fx | cs:d:<dir> | cs:a:<dir>:<amount or all> | cs:ok:<quote id> | cs:no:<quote id>, always followed by the player's id.
-    Only `ok` moves anything, and it carries nothing but the id of a stored, expiring quote."""
+    """cs:w | cs:fx | cs:a:s2c:<amount or all> | cs:ok:<quote id> | cs:no:<quote id>, always followed by the player's id.
+    Only `ok` moves anything, and it carries nothing but the id of a stored, expiring quote. There is no cash -> stock money button: a stale one
+    of v0.18.x (`cs:a:c2s:...`, `cs:d:c2s:...`) is answered with the one-way refusal and changes nothing."""
     rest = c.args[:-1]
     sub = rest[0] if rest else "w"
     arg = rest[1:]
-    if len(arg) != {"w": 0, "fx": 0, "d": 1, "a": 2, "ok": 1, "no": 1}.get(sub, -1):            # exactly the pieces the bot drew into the button: anything else is hand-made
+    if len(arg) != {"w": 0, "fx": 0, "a": 2, "ok": 1, "no": 1, "d": 1}.get(sub, -1):            # exactly the pieces the bot drew into the button: anything else is hand-made
         return Reply(toast=t(c.lang, "e.bad_usage"))
+    if sub in ("a", "d") and arg[0] == "c2s":                                                    # the removed direction (an old button still on someone's screen)
+        raise GameError("fx_oneway")
     if sub == "w":
         r = lifeui.wallet(c.db, c.lang, c.uid)
-    elif sub == "fx":
-        r = lifeui.fx_home(c.db, c.lang, c.uid)
-    elif sub == "d" and arg[0] in (cash.S2C, cash.C2S):
+    elif sub in ("fx", "d"):
         if not c.is_group:
-            _guided(c.app, c.uid, "fx_" + arg[0])
-        r = lifeui.fx_direction(c.db, c.lang, c.uid, arg[0])
-    elif sub == "a" and len(arg) == 2 and arg[0] in (cash.S2C, cash.C2S):
+            _guided(c.app, c.uid, "fx_s2c")
+        r = lifeui.fx_home(c.db, c.lang, c.uid)
+    elif sub == "a" and arg[0] == cash.S2C:
         if arg[1] == "all":
             amount = None
         elif re.fullmatch(r"\d{1,15}", arg[1]):
             amount = int(arg[1])
         else:
             raise GameError("fx_amount")
-        q = cash.make_quote(c.db, c.uid, arg[0], amount)
+        q = cash.make_quote(c.db, c.uid, amount)
         r = lifeui.fx_confirm(c.db, c.lang, c.uid, q)
     elif sub == "ok":
         try:
             r = lifeui.fx_done(c.lang, c.uid, cash.confirm(c.db, c.uid, arg[0]))
         except GameError as e:
-            if e.code in ("fx_gone", "fx_done", "fx_expired"):          # the preview is stale: say so and show the exchange again
+            if e.code in ("fx_gone", "fx_done", "fx_expired", "fx_oneway"):          # the preview is stale: say so and show the exchange again
                 r = lifeui.fx_home(c.db, c.lang, c.uid)
                 r.toast, r.alert = plain(err_text(c.lang, e)), True
                 r.edit, r.fresh = True, True

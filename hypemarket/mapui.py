@@ -127,7 +127,8 @@ def short_name(name, limit: int = 12) -> str:
 
 
 def _dist(d: float, lang: str) -> str:
-    return fmt.num(round(d), lang)
+    """A road distance as the game-world metres / kilometres players are told (config.UNITS_PER_KM): «167 متر»."""
+    return fmt.dist(d, lang)
 
 
 def _eta(d: float) -> int:
@@ -204,7 +205,8 @@ def _status(lang: str, city, st, others) -> str:
     if st.arrived is not None:
         lines.append(t(lang, "mp.arrived", dest=_dest_html(lang, city, st.arrived["dest_id"])))
     if st.trip is not None:
-        lines.append(t(lang, "mp.drive" if st.trip["mode"] == "car" else "mp.walk", dest=_dest_html(lang, city, st.trip["dest_id"]), pct=fmt.loc(_pct(st), lang), eta=fmt.dur(st.eta, lang)))
+        lines.append(t(lang, "mp.drive" if st.trip["mode"] == "car" else "mp.walk", dest=_dest_html(lang, city, st.trip["dest_id"]), pct=fmt.loc(_pct(st), lang), eta=fmt.dur(st.eta, lang),
+                       speed=fmt.kmh(float(st.trip["speed"]), lang)))
     place = st.row["at_place"]
     spot = city.spot(place) if place and st.trip is None else None
     if spot is not None:
@@ -267,7 +269,7 @@ def screen_nearby(lang: str, w, city, sid: str, st, others) -> Screen:
         for o in others:
             lines.append(t(lang, "mp.nb.person", name=fmt.esc(short_name(o.name) or "…"), d=_dist(o.dist, lang)))
     else:
-        lines.append(t(lang, "mp.nb.nobody", r=fmt.num(C.nearby_radius(), lang)))
+        lines.append(t(lang, "mp.nb.nobody", r=fmt.dist(C.nearby_radius(), lang)))
     lines += ["", t(lang, "mp.nb.places")]
     here = st.row["at_place"] if st.trip is None else None
     near = places[:4]
@@ -372,7 +374,7 @@ def screen_object(lang: str, w, city, sid: str, st, ref: str, back: str) -> Scre
         elif st.trip is not None:
             lines.append(t(lang, "mp.obj.busy", dest=_dest_html(lang, city, st.trip["dest_id"])))
         else:
-            lines.append(t(lang, "mp.obj.dist", d=_dist(d, lang), eta=fmt.dur(_eta(d), lang)))
+            lines.append(t(lang, "mp.obj.dist", d=_dist(d, lang), eta=fmt.dur(_eta(d), lang), speed=fmt.kmh(C.walk_speed(), lang)))
         if casino_here:
             lines.append(t(lang, "mp.obj.casino"))
             if not arrived_here:
@@ -391,7 +393,9 @@ def screen_object(lang: str, w, city, sid: str, st, ref: str, back: str) -> Scre
 def screen_trip(lang: str, w, city, sid: str, st, others) -> Screen:
     if st.trip is None:
         return screen_main(lang, w, city, sid, st, others)
-    text = t(lang, "mp.tr.title") + "\n\n" + t(lang, "mp.tr.line", dest=_dest_html(lang, city, st.trip["dest_id"]), pct=fmt.loc(_pct(st), lang), eta=fmt.dur(st.eta, lang))
+    left = float(st.trip["length"]) * (1.0 - st.progress)                      # from the saved trip: what is still to walk, at the speed the trip was saved with
+    text = t(lang, "mp.tr.title") + "\n\n" + t(lang, "mp.tr.line", dest=_dest_html(lang, city, st.trip["dest_id"]), pct=fmt.loc(_pct(st), lang),
+                                                left=fmt.dist(left, lang), speed=fmt.kmh(float(st.trip["speed"]), lang), eta=fmt.dur(st.eta, lang))
     rows = [[(t(lang, "mp.b.refresh_trip"), cd(sid, "tr")), (t(lang, "mp.b.map"), cd(sid, "rf"))]]
     return Screen(text, rows, view="tr")
 
@@ -407,15 +411,20 @@ def _tot(lang: str, hand) -> str:
 
 
 def _chips(lang: str, sid: str, seq: int, balance: int) -> list:
-    """The chip buttons of the table: every chip the player can pay, two to a row (the press carries the game's seq and the chip's value)."""
+    """The chip buttons of the table: every chip the player can pay, three to a row (the press carries the game's seq and the chip's value)."""
     chips = [(t(lang, "bj.b.chip", amount=fmt.usd(b, lang)), cd(sid, "bj", "b", seq, b)) for b in C.CASINO_BETS_CENTS if b <= balance]
     return [chips[i:i + 3] for i in range(0, len(chips), 3)]
 
 
-def screen_lobby(lang: str, sid: str, city, balance: int) -> Screen:
-    text = t(lang, "mp.cas.title") + "\n\n" + t(lang, "mp.cas.lobby", cash=fmt.usd(balance, lang)) + "\n\n" + t(lang, "bj.rules")
-    rows = [[(t(lang, "mp.b.bj"), cd(sid, "bj", "o"))], [(t(lang, "mp.b.exit"), cd(sid, "rf"))]]
-    return Screen(text, rows, view="cas", sel=city.casino_id, picture=False)
+def _pick(lang: str, balance: int) -> str:
+    """«Choose your bet.», or the one line saying the smallest chip is out of reach."""
+    low = min(C.CASINO_BETS_CENTS)
+    return t(lang, "bj.pick") if balance >= low else t(lang, "bj.poor", min=fmt.usd(low, lang))
+
+
+def _bet_rows(lang: str, sid: str, seq: int, balance: int) -> list:
+    """What is offered when no hand is running: the chips, and a way to read the rules or leave."""
+    return _chips(lang, sid, seq, balance) + [[(t(lang, "bj.b.rules"), cd(sid, "bj", "i")), (t(lang, "mp.b.exit"), cd(sid, "rf"))]]
 
 
 def _hand_lines(lang: str, h) -> list:
@@ -427,32 +436,31 @@ def _hand_lines(lang: str, h) -> list:
 
 
 def screen_table(lang: str, sid: str, city, game, balance: int) -> Screen:
-    """The table. `game` is the session's game row, or None before the first hand. A hand in progress shows Hit / Stand; between hands (and
-    before the first) the player picks the chip of the next hand: the chips they cannot pay are not offered."""
-    lines = [t(lang, "bj.title"), ""]
+    """The casino, one screen for every state of the table (v0.18.2: concise, no rules on the screen, no separate lobby):
+    * no hand yet, or the last one finished: the title, the cash balance and the chips (a finished hand shows its result first);
+    * a hand running: the cards, whose move it is, and Hit / Stand only.
+    `game` is the session's game row, or None before the first hand. The chips the player cannot pay are not offered."""
     if game is None:
-        lines += [t(lang, "bj.cash", cash=fmt.usd(balance, lang)), "", t(lang, "bj.pick") if balance >= min(C.CASINO_BETS_CENTS) else t(lang, "bj.poor", min=fmt.usd(min(C.CASINO_BETS_CENTS), lang))]
-        rows = _chips(lang, sid, 0, balance)
-    else:
-        h = casino.hand_of(game)
-        bet = game["bet"]
-        lines += _hand_lines(lang, h)
-        if bet:
-            lines.append(t(lang, "bj.stake", bet=fmt.usd(bet, lang)))
-        lines.append("")
-        if h.over:
-            lines.append(t(lang, "bj.r." + h.result))
-            if bet:
-                net = game["paid"] - bet
-                lines.append(t(lang, "bj.net.win" if net > 0 else "bj.net.push" if net == 0 else "bj.net.lose", amount=fmt.usd(abs(net), lang)))
-            lines += [t(lang, "bj.cash", cash=fmt.usd(balance, lang)), "",
-                      t(lang, "bj.pick") if balance >= min(C.CASINO_BETS_CENTS) else t(lang, "bj.poor", min=fmt.usd(min(C.CASINO_BETS_CENTS), lang))]
-            rows = _chips(lang, sid, game["seq"], balance)
-        else:
-            lines += [t(lang, "bj.go"), "", t(lang, "bj.rules")]
-            rows = [[(t(lang, "mp.b.hit"), cd(sid, "bj", "h", game["seq"])), (t(lang, "mp.b.stand"), cd(sid, "bj", "s", game["seq"]))]]
-    rows.append([(t(lang, "mp.b.exit"), cd(sid, "rf"))])
-    return Screen("\n".join(lines), rows, view="bj", sel=city.casino_id, picture=False)
+        text = "\n".join([t(lang, "mp.cas.title"), t(lang, "bj.game"), "", t(lang, "bj.cash", cash=fmt.usd(balance, lang)), "", _pick(lang, balance)])
+        return Screen(text, _bet_rows(lang, sid, 0, balance), view="bj", sel=city.casino_id, picture=False)
+    h = casino.hand_of(game)
+    bet = game["bet"]
+    lines = [t(lang, "bj.head", bet=fmt.usd(bet, lang)), ""] + _hand_lines(lang, h) + [""]
+    if not h.over:
+        lines.append(t(lang, "bj.turn"))
+        rows = [[(t(lang, "mp.b.hit"), cd(sid, "bj", "h", game["seq"])), (t(lang, "mp.b.stand"), cd(sid, "bj", "s", game["seq"]))]]
+        return Screen("\n".join(lines), rows, view="bj", sel=city.casino_id, picture=False)
+    lines.append(t(lang, "bj.r." + h.result))
+    net = game["paid"] - bet
+    lines.append(t(lang, "bj.net.win" if net > 0 else "bj.net.push" if net == 0 else "bj.net.lose", amount=fmt.usd(abs(net), lang)))
+    lines += [t(lang, "bj.cash", cash=fmt.usd(balance, lang)), "", _pick(lang, balance)]
+    return Screen("\n".join(lines), _bet_rows(lang, sid, game["seq"], balance), view="bj", sel=city.casino_id, picture=False)
+
+
+def screen_rules(lang: str, sid: str, city) -> Screen:
+    """The rules, only when the player asks for them (the button next to the chips); one button back to the table."""
+    text = t(lang, "bj.rules", mins=fmt.num(max(1, C.CASINO_IDLE_SECS // 60), lang))
+    return Screen(text, [[(t(lang, "bj.b.back"), cd(sid, "bj", "o"))]], view="bj", sel=city.casino_id, picture=False)
 
 
 # =====================================================================================================================
@@ -602,13 +610,16 @@ async def handle(c):
             return await show(screen_object(lang, w, city, sid, st, ref, sess["back"]), toast=plain(t(lang, "mp.unreachable")), alert=True)
         if act == "ce":
             cid = city.casino_id
-            if cid is None or sess["sel"] != cid or sess["view"] not in ("obj", "cas"):
+            if cid is None or sess["sel"] != cid or sess["view"] not in ("obj", "cas", "bj"):
                 return _stale(c)
             if st.trip is not None:
                 return _stale(c, "mp.cas.moving")
             if st.row["at_place"] != cid:
                 return _stale(c, "mp.cas.need")                               # refreshing never replaces walking there
-            return await show(screen_lobby(lang, sid, city, cash.balance(c.db, c.uid)))
+            game = casino.get(c.db, sid)
+            if game is not None and (game["user_id"] != c.uid or game["world_id"] != city.id):
+                return _stale(c)
+            return await show(screen_table(lang, sid, city, game, cash.balance(c.db, c.uid)))     # the table itself: the chips, or the hand that was left running
         if act == "bj":
             return await _blackjack(c, w, city, sid, sess, st, others, rest, show)
     except GameError:
@@ -637,6 +648,8 @@ async def _blackjack(c, w, city, sid, sess, st, others, rest, show):
 
     if what in ("o", "n"):                                                     # open the table: the hand in progress, or the chips for the next one ("n" is the old «again» button of v0.18)
         return await table(game)
+    if what == "i":                                                            # the rules, on request (changes nothing)
+        return await show(screen_rules(lang, sid, city))
     seq = _uint(rest[1]) if len(rest) >= 2 else None
     if seq is None:
         return _stale(c)

@@ -1,5 +1,10 @@
 """The job screens (v0.18): the job board and the Snapp, McDonald's and municipal screens, and every `jb:` button under them.
 
+v0.18.2: every screen is TEXT FIRST, in the style of the city map (compact, restrained, no banners). The board is a short list (name, one line, status);
+each job has a dashboard that shows only what the game really tracks: the saved task, the saved trip (progress, distance left, ETA, speed), the saved
+shift times, the saved reward. A picture is sent only where it is a MAP (the Snapp route in blue and yellow, the walk to a workplace); there are no
+illustrations of characters doing a job.
+
 Buttons carry only `jb:<action>[:<task id | kind:round>]:<player id>`. The dispatcher refuses any press whose trailing player id is not the
 presser's (see handlers.BOUND); after that each action re-reads the saved task and the saved trip, so a stale, repeated or hand-made button
 changes nothing and never pays twice (work.py has the guarded updates). All amounts shown are read from the saved task; none comes from a button.
@@ -20,6 +25,7 @@ log = logging.getLogger("hypemarket")
 EMOJI = {"snapp": "🚕", "mcd": "🍔", "muni": "🧹"}
 KIND_EMOJI = {"sweep": "🧹", "waste": "🗑", "green": "🌳"}
 _ID = re.compile(r"^\d{1,12}$")
+DIV = "┄┄┄┄┄┄┄┄┄┄"                                  # the one thin divider of the job screens
 
 
 class NoCity(Exception):
@@ -30,13 +36,9 @@ class NoCity(Exception):
 
 
 def R(c, text: str, rows: list, toast: str | None = None, alert: bool = False, pic=None) -> Reply:
-    """A job screen. `pic` (jobviz.scene_pic / jobviz.map_pic) is the picture the screen shows above its text; `fresh` makes a screen without
-    one replace a message that has one (and the other way round) instead of leaving a stale picture behind."""
+    """A job screen. `pic` (jobviz.map_pic) is the MAP the screen shows above its text, if it has one; `fresh` makes a screen without a picture replace a
+    message that has one (and the other way round) instead of leaving a stale picture behind."""
     return Reply(text=text, kb=kb(rows), edit=c.cb is not None, toast=toast, alert=alert, pic=pic, fresh=True)
-
-
-def _scene(c, kind: str, title: str, sub: str = "", **kw):
-    return jobviz.scene_pic(kind, c.lang, title=title, sub=sub, **kw)
 
 
 def _car_of_receipt(rc: dict) -> dict:
@@ -65,6 +67,16 @@ def _eta(dist: float, speed: float) -> int:
 
 def _pct(st) -> str:
     return fmt.num(round(st.progress * 100), "en")
+
+
+def _left(st) -> float:
+    """Road distance (map units) still ahead on the walk / drive in progress, from the SAVED trip and the clock (0 when standing still)."""
+    return max(0.0, float(st.trip["length"]) * (1.0 - st.progress)) if st.trip is not None else 0.0
+
+
+def _speed(lang: str, st, default: float) -> str:
+    """The speed in km/h: the saved trip's own speed while moving (what the movement really uses), else the configured one."""
+    return fmt.kmh(float(st.trip["speed"]) if st.trip is not None else default, lang)
 
 
 def _place(lang: str, city, ref: str) -> str:
@@ -106,7 +118,36 @@ def _history_lines(db, lang: str, uid: int) -> list:
     return out
 
 
+def _job_status(lang: str, db, uid: int, job: str, task, now: int, in_city: bool) -> str:
+    """One line of real state for the board: the open task of this job, another job in the way, the cooldown, the missing cash, or ready."""
+    from . import cash
+    if task is not None:
+        if task["job"] != job:
+            return t(lang, "job.st.other")
+        if job == work.MCD:
+            if work.shift_state(task, now) == "ready":
+                return t(lang, "job.st.mcd.ready")
+            return t(lang, "job.st.mcd.working", left=fmt.dur(max(0, int(task["due_at"]) - now), lang))
+        if job == work.MUNI:
+            return t(lang, "job.st.muni", kind=t(lang, f"muni.kind.{task['kind']}"))
+        return t(lang, "job.st.active", stage=_stage_text(lang, db, task, now))
+    if not in_city:
+        return t(lang, "job.st.group")
+    left = work.cooldown_left(db, uid, job, now)
+    if left > 0:
+        return t(lang, "job.st.cool", time=fmt.dur(left, lang))
+    if job == work.SNAPP and cash.balance(db, uid) < C.SNAPP_FEE_CENTS:
+        return t(lang, "job.st.poor", need=fmt.usd(C.SNAPP_FEE_CENTS, lang))
+    return t(lang, "job.st.ready")
+
+
+def _entry(lang: str, db, uid: int, job: str, task, now: int, in_city: bool) -> str:
+    desc = t(lang, f"job.desc.{job}", hours=fmt.num(C.MCD_SHIFT_SECONDS // 3600, lang), wage=fmt.usd(C.MCD_WAGE_CENTS, lang))
+    return t(lang, "job.entry", emoji=EMOJI[job], name=t(lang, f"job.{job}.name"), desc=desc, status=_job_status(lang, db, uid, job, task, now, in_city))
+
+
 async def board(c, toast: str | None = None) -> Reply:
+    """«مشاغل»: a compact list, one entry per job (name, what it is, its real status) with a button for each. No picture."""
     from . import cash
     lang, db = c.lang, c.db
     now = core.now()
@@ -119,16 +160,15 @@ async def board(c, toast: str | None = None) -> Reply:
         if rc is not None:                                           # a ride that ended while nobody was looking: show its receipt first
             return _receipt(c, rc)
     task = work.current(db, c.uid)
-    active = t(lang, "job.none") if task is None else t(lang, "job.active", job=_name(lang, task["job"]), stage=_stage_text(lang, db, task, now))
-    lines = [t(lang, "job.board", cash=fmt.usd(cash.balance(db, c.uid), lang), active=active)]
+    entries = "\n\n".join(_entry(lang, db, c.uid, job, task, now, city is not None) for job in work.JOB_IDS)
+    lines = [t(lang, "job.board", cash=fmt.usd(cash.balance(db, c.uid), lang), list=entries)]
     hist = _history_lines(db, lang, c.uid)
     if hist:
-        lines += [""] + hist
+        lines += ["", DIV] + hist
     uid = c.uid
-    rows = [[(t(lang, "job.b.snapp"), f"jb:o:snapp:{uid}"), (t(lang, "job.b.mcd"), f"jb:o:mcd:{uid}")],
-            [(t(lang, "job.b.muni"), f"jb:o:muni:{uid}")],
+    rows = [[(t(lang, "job.b.snapp"), f"jb:o:snapp:{uid}"), (t(lang, "job.b.mcd"), f"jb:o:mcd:{uid}"), (t(lang, "job.b.muni"), f"jb:o:muni:{uid}")],
             [(t(lang, "job.b.wallet"), f"cs:w:{uid}"), (t(lang, "job.b.refresh"), f"jb:h:{uid}")]]
-    return R(c, "\n".join(lines), rows, toast=toast, pic=_scene(c, "board", t(lang, "scene.board.t"), t(lang, "scene.board.s")))
+    return R(c, "\n".join(lines), rows, toast=toast)
 
 
 def _other_city(c, task) -> Reply:
@@ -150,18 +190,18 @@ def _private(c, job: str, cmd: str) -> Reply:
 #                                                        Snapp
 # =====================================================================================================================
 def _terms(lang: str) -> str:
-    return t(lang, "snapp.terms", fee=fmt.usd(C.SNAPP_FEE_CENTS, lang), base=fmt.usd(C.SNAPP_BASE_FARE_CENTS, lang),
-             per=fmt.usd(C.SNAPP_PER_100_CENTS, lang), tipmax=fmt.usd(C.SNAPP_TIP_MAX_CENTS, lang), speed=fmt.loc(f"{C.car_speed() / C.walk_speed():g}", lang))
+    return t(lang, "snapp.terms", fee=fmt.usd(C.SNAPP_FEE_CENTS, lang), base=fmt.usd(C.SNAPP_BASE_FARE_CENTS, lang), per=fmt.usd(C.snapp_per_km_cents(), lang),
+             tipmax=fmt.usd(C.SNAPP_TIP_MAX_CENTS, lang), car_speed=fmt.kmh(C.car_speed(), lang), walk_speed=fmt.kmh(C.walk_speed(), lang))
 
 
 def _receipt(c, rc: dict) -> Reply:
+    """The end of a ride: the payout breakdown, text only."""
     lang = c.lang
     car = _car_of_receipt(rc)
     text = t(lang, "snapp.receipt", pax=t(lang, f"snapp.pax.{rc.get('pax', 0)}"), car=jobviz.car_label(lang, car), fare=fmt.usd(rc["fare"], lang),
              tip=fmt.usd(rc["tip"], lang), fee=fmt.usd(rc["fee"], lang), net=fmt.usd(rc["net"], lang), balance=fmt.usd(rc["balance"], lang))
     rows = [[(t(lang, "snapp.b.next"), f"jb:sr:{c.uid}")], [(t(lang, "job.b.board"), f"jb:h:{c.uid}"), (t(lang, "job.b.wallet"), f"cs:w:{c.uid}")]]
-    pic = _scene(c, "snapp_done", t(lang, "scene.snapp.done.t"), "+" + fmt.usd(rc["net"], lang), car=car["c"], plate_text=jobviz.plate_year(lang, car))
-    return R(c, text, rows, pic=pic)
+    return R(c, text, rows)
 
 
 def _snapp_home(c, city, toast=None, alert=False) -> Reply:
@@ -181,10 +221,12 @@ def _snapp_home(c, city, toast=None, alert=False) -> Reply:
     else:
         rows.append([(t(lang, "snapp.b.request"), f"jb:sr:{c.uid}")])
     rows.append([(t(lang, "job.b.board"), f"jb:h:{c.uid}"), (t(lang, "job.b.wallet"), f"cs:w:{c.uid}")])
-    return R(c, text, rows, toast=toast, alert=alert, pic=_scene(c, "snapp_home", t(lang, "scene.snapp.home.t"), t(lang, "scene.snapp.home.s"), car="white"))
+    return R(c, text, rows, toast=toast, alert=alert)
 
 
 def _snapp_task(c, city, task, toast=None, alert=False) -> Reply:
+    """The dashboard of the open ride. Everything on it is read from the saved task (pickup, destination, fare, fee, car) and the saved trip
+    (progress, distance left, ETA, speed). The picture is always the MAP of the ride: blue to the passenger, yellow to the destination."""
     lang, db, uid = c.lang, c.db, c.uid
     d = work.data_of(task)
     pax = t(lang, f"snapp.pax.{d.get('pax', 0)}")
@@ -197,29 +239,30 @@ def _snapp_task(c, city, task, toast=None, alert=False) -> Reply:
     refresh = (t(lang, "job.b.refresh"), f"jb:o:snapp:{uid}")
     stage = task["stage"]
     pickup, dest = d["pickup"], d["dest"]
+    money = t(lang, "snapp.money", fare=fmt.usd(fare, lang), fee=fmt.usd(fee, lang), net=fmt.usd(fare - fee, lang))
+    speed = _speed(lang, st, C.car_speed())
 
     def route_map(legend: str):
         """The map of the ride: the car, the person pin at the pickup, the flag pin at the destination, blue to the passenger, yellow to the destination."""
         return jobviz.map_pic(city, lang, lambda: jobviz.snapp_marks(lang, city, task, st, car)), "\n\n" + t(lang, legend)
 
+    def moving(key: str, place: str):
+        return t(lang, key, pax=pax, car=carl, speed=speed, place=place, bar=fmt.bar(st.progress), pct=fmt.loc(_pct(st), lang),
+                 left=fmt.dist(_left(st), lang), eta=fmt.dur(st.eta, lang), money=money)
+
     if stage == "assigned":
-        text = t(lang, "snapp.ride", pax=pax, car=carl, pickup=_place(lang, city, pickup), d1=fmt.num(d["d1"], lang), eta1=fmt.dur(_eta(d["d1"], C.car_speed()), lang),
-                 dest=_place(lang, city, dest), d2=fmt.num(d["d2"], lang), fare=fmt.usd(fare, lang), fee=fmt.usd(fee, lang),
-                 net=fmt.usd(fare - fee, lang), tipmax=fmt.usd(C.SNAPP_TIP_MAX_CENTS, lang))
+        text = t(lang, "snapp.ride", pax=pax, car=carl, speed=speed, pickup=_place(lang, city, pickup), d1=fmt.dist(d["d1"], lang),
+                 dest=_place(lang, city, dest), d2=fmt.dist(d["d2"], lang), money=money, tipmax=fmt.usd(C.SNAPP_TIP_MAX_CENTS, lang))
         rows = [[(t(lang, "snapp.b.drive"), f"jb:sd:{tid}:{uid}")], [cancel]]
         pic, legend = route_map("snapp.legend")
         return R(c, text + legend, rows, toast=toast, alert=alert, pic=pic)
     here = st.row["at_place"] if st.trip is None else None
-    car_mode = st.trip is not None and st.trip["mode"] == "car"
     if stage == "to_pickup":
         if here == pickup:
-            text = t(lang, "snapp.atPickup", pax=pax, car=carl, place=_place(lang, city, pickup))
+            text = t(lang, "snapp.atPickup", pax=pax, car=carl, place=_place(lang, city, pickup), money=money)
             rows = [[(t(lang, "snapp.b.pickup"), f"jb:sp:{tid}:{uid}")], [cancel]]
-            pic = _scene(c, "snapp_pickup", t(lang, "scene.snapp.pickup.t"), pax, chip=t(lang, "scene.snapp.pickup.chip"), car=car["c"], plate_text=jobviz.plate_year(lang, car), pax=d.get("pax", 0))
-            return R(c, text, rows, toast=toast, alert=alert, pic=pic)
-        if st.trip is not None:
-            text = t(lang, "snapp.toPickup", pax=pax, car=carl, place=_place(lang, city, pickup), pct=fmt.loc(_pct(st), lang), eta=fmt.dur(st.eta, lang),
-                     mode=t(lang, "snapp.mode.car" if car_mode else "snapp.mode.walk"))
+        elif st.trip is not None:
+            text = moving("snapp.toPickup", _place(lang, city, pickup))
             rows = [[refresh], [cancel]]
         else:
             text = t(lang, "snapp.lost", pax=pax, place=_place(lang, city, pickup))
@@ -228,8 +271,7 @@ def _snapp_task(c, city, task, toast=None, alert=False) -> Reply:
         return R(c, text + legend, rows, toast=toast, alert=alert, pic=pic)
     if stage == "to_dest":
         if st.trip is not None:
-            text = t(lang, "snapp.toDest", pax=pax, car=carl, place=_place(lang, city, dest), pct=fmt.loc(_pct(st), lang), eta=fmt.dur(st.eta, lang),
-                     fare=fmt.usd(fare, lang), fee=fmt.usd(fee, lang), mode=t(lang, "snapp.mode.car" if car_mode else "snapp.mode.walk"))
+            text = moving("snapp.toDest", _place(lang, city, dest))
             rows = [[refresh], [cancel]]
         else:
             text = t(lang, "snapp.lostDest", pax=pax, place=_place(lang, city, dest))
@@ -264,12 +306,15 @@ async def snapp(c, toast=None, alert=False) -> Reply:
 #                                                     McDonald's
 # =====================================================================================================================
 def _shift_block(c, task, now: int) -> str:
+    """The shift dashboard: status, how much of the shift has really passed (from the saved start and due times), wage, times, collected or not."""
     lang = c.lang
     ready = work.shift_state(task, now) == "ready"
+    span = max(1, int(task["due_at"]) - int(task["started_at"]))
+    passed = max(0, min(span, now - int(task["started_at"])))
     return t(lang, "mcd.status", state=t(lang, "mcd.state.ready" if ready else "mcd.state.working"), wage=fmt.usd(task["reward"], lang),
              start=fmt.clock(task["started_at"], lang), end=fmt.clock(task["due_at"], lang),
              left=t(lang, "mcd.left.none") if ready else fmt.dur(task["due_at"] - now, lang),
-             collected=t(lang, "mcd.collected.ready" if ready else "mcd.collected.no"))
+             collected=t(lang, "mcd.collected.ready" if ready else "mcd.collected.no"), bar=fmt.bar(passed / span), elapsed=fmt.dur(passed, lang))
 
 
 def _mcd_task(c, task, toast=None, alert=False) -> Reply:
@@ -277,15 +322,10 @@ def _mcd_task(c, task, toast=None, alert=False) -> Reply:
     text = _shift_block(c, task, now)
     if work.shift_state(task, now) == "ready":
         rows = [[(t(lang, "mcd.b.claim"), f"jb:mc:{task['id']}:{uid}")]]
-        pic = _scene(c, "mcd_ready", t(lang, "scene.mcd.ready.t"), t(lang, "scene.mcd.ready.s"), chip=t(lang, "scene.mcd.ready.chip"))
     else:
         rows = [[(t(lang, "job.b.refresh"), f"jb:o:mcd:{uid}")]]
-        span = max(1, int(task["due_at"]) - int(task["started_at"]))
-        frac = max(0.0, min(1.0, (now - int(task["started_at"])) / span))
-        pic = _scene(c, "mcd_work", t(lang, "scene.mcd.work.t"), t(lang, "scene.mcd.work.s"), chip=t(lang, "scene.mcd.work.chip"), frac=frac,
-                     left_text=t(lang, "scene.mcd.left", left=fmt.dur(max(0, int(task["due_at"]) - now), lang)))
     rows.append([(t(lang, "job.b.board"), f"jb:h:{uid}"), (t(lang, "job.b.wallet"), f"cs:w:{uid}")])
-    return R(c, text, rows, toast=toast, alert=alert, pic=pic)
+    return R(c, text, rows, toast=toast, alert=alert)
 
 
 def _last_shift(c) -> str:
@@ -304,20 +344,18 @@ def _mcd_idle(c, city, st, toast=None, alert=False) -> Reply:
         return R(c, head + "\n\n" + t(lang, "mcd.none"), [[(t(lang, "job.b.board"), f"jb:h:{uid}")]], toast=toast, alert=alert)
     place = _place(lang, city, mid)
     rows = []
-    door = _scene(c, "mcd_door", t(lang, "scene.mcd.door.t"), t(lang, "scene.mcd.door.s", hours=fmt.num(C.MCD_SHIFT_SECONDS // 3600, lang)))
-    walk = jobviz.map_pic(city, lang, lambda: jobviz.walk_marks(lang, city, st, mid))        # the way there, drawn like every walk, with a bag pin at the McDonald's
-    pic = walk
+    pic = jobviz.map_pic(city, lang, lambda: jobviz.walk_marks(lang, city, st, mid))        # the way there, drawn like every walk, with a bag pin at the McDonald's
     if st.trip is None and st.row["at_place"] == mid:
         text = head + "\n\n" + t(lang, "mcd.here", place=place)
         rows.append([(t(lang, "mcd.b.apply"), f"jb:ms:{uid}")])
-        pic = door
+        pic = None                                                                          # standing at the door: there is no route left to draw
     elif st.trip is not None and st.trip["dest_id"] == mid:
-        text = head + "\n\n" + t(lang, "mcd.walking", place=place, pct=fmt.loc(_pct(st), lang), eta=fmt.dur(st.eta, lang))
+        text = head + "\n\n" + t(lang, "mcd.walking", place=place, bar=fmt.bar(st.progress), pct=fmt.loc(_pct(st), lang), left=fmt.dist(_left(st), lang), eta=fmt.dur(st.eta, lang))
         rows.append([(t(lang, "job.b.refresh"), f"jb:o:mcd:{uid}")])
     else:
         spot = city.spot(mid)
         d = city.net.field(st.pos).to(spot.door)
-        text = head + "\n\n" + t(lang, "mcd.far", place=place, d=fmt.num(round(d), lang), eta=fmt.dur(_eta(d, C.walk_speed()), lang))
+        text = head + "\n\n" + t(lang, "mcd.far", place=place, d=fmt.dist(d, lang), eta=fmt.dur(_eta(d, C.walk_speed()), lang), speed=fmt.kmh(C.walk_speed(), lang))
         if st.trip is None:
             rows.append([(t(lang, "mcd.b.go"), f"jb:mg:{uid}")])
         else:
@@ -356,8 +394,7 @@ def _mcd_confirm(c) -> Reply:
     now = core.now()
     text = t(lang, "mcd.confirm", wage=fmt.usd(C.MCD_WAGE_CENTS, lang), hours=fmt.num(C.MCD_SHIFT_SECONDS // 3600, lang),
              start=fmt.clock(now, lang), end=fmt.clock(now + C.MCD_SHIFT_SECONDS, lang))
-    pic = _scene(c, "mcd_door", t(lang, "scene.mcd.door.t"), t(lang, "scene.mcd.door.s", hours=fmt.num(C.MCD_SHIFT_SECONDS // 3600, lang)))
-    return R(c, text, [[(t(lang, "mcd.b.yes"), f"jb:my:{c.uid}"), (t(lang, "mcd.b.no"), f"jb:o:mcd:{c.uid}")]], pic=pic)
+    return R(c, text, [[(t(lang, "mcd.b.yes"), f"jb:my:{c.uid}"), (t(lang, "mcd.b.no"), f"jb:o:mcd:{c.uid}")]])
 
 
 # =====================================================================================================================
@@ -388,10 +425,10 @@ def _muni_home(c, city, st, toast=None, alert=False) -> Reply:
             for o in offers:
                 name = t(lang, f"muni.kind.{o.kind}")
                 text += "\n\n" + t(lang, "muni.offer", emoji=KIND_EMOJI[o.kind], name=name, target=_target_text(lang, city, o.kind, o.spot.id),
-                                   d=fmt.num(round(o.dist), lang), eta=fmt.dur(_eta(o.dist, C.walk_speed()), lang), reward=fmt.usd(o.reward, lang))
+                                   d=fmt.dist(o.dist, lang), eta=fmt.dur(_eta(o.dist, C.walk_speed()), lang), reward=fmt.usd(o.reward, lang))
                 rows.append([(t(lang, "muni.b.accept", emoji=KIND_EMOJI[o.kind], name=name, reward=fmt.usd(o.reward, lang)), f"jb:na:{o.kind}:{o.round}:{uid}")])
     rows.append([(t(lang, "job.b.board"), f"jb:h:{uid}"), (t(lang, "job.b.wallet"), f"cs:w:{uid}")])
-    return R(c, text, rows, toast=toast, alert=alert, pic=_scene(c, "muni_home", t(lang, "scene.muni.home.t"), t(lang, "scene.muni.home.s")))
+    return R(c, text, rows, toast=toast, alert=alert)
 
 
 def _muni_task(c, city, task, toast=None, alert=False) -> Reply:
@@ -405,15 +442,16 @@ def _muni_task(c, city, task, toast=None, alert=False) -> Reply:
     if st.trip is None and st.row["at_place"] == target:
         text = head + "\n\n" + t(lang, "muni.here")
         rows = [[(t(lang, "muni.b.done"), f"jb:nd:{tid}:{uid}")], [cancel]]
-        pic = _scene(c, "muni_" + kind, t(lang, f"muni.kind.{kind}"), fmt.usd(task["reward"], lang), chip=t(lang, "scene.muni.here"))
+        pic = None                                                                          # standing at the site: there is no route left to draw
     elif st.trip is not None:
-        text = head + "\n\n" + t(lang, "muni.wait", dest=_place(lang, city, st.trip["dest_id"]), pct=fmt.loc(_pct(st), lang), eta=fmt.dur(st.eta, lang))
+        text = head + "\n\n" + t(lang, "muni.wait", dest=_place(lang, city, st.trip["dest_id"]), bar=fmt.bar(st.progress), pct=fmt.loc(_pct(st), lang),
+                                  left=fmt.dist(_left(st), lang), eta=fmt.dur(st.eta, lang))
         rows = [[(t(lang, "job.b.refresh"), f"jb:o:muni:{uid}")], [cancel]]
         pic = walk
     else:
         spot = city.spot(target)
         dist = city.net.field(st.pos).to(spot.door) if spot else 0
-        text = head + "\n\n" + t(lang, "muni.far", d=fmt.num(round(dist), lang), eta=fmt.dur(_eta(dist, C.walk_speed()), lang))
+        text = head + "\n\n" + t(lang, "muni.far", d=fmt.dist(dist, lang), eta=fmt.dur(_eta(dist, C.walk_speed()), lang), speed=fmt.kmh(C.walk_speed(), lang))
         rows = [[(t(lang, "muni.b.go"), f"jb:ng:{tid}:{uid}")], [cancel]]
         pic = walk
     return R(c, text, rows, toast=toast, alert=alert, pic=pic)
@@ -492,8 +530,7 @@ async def handle(c) -> Reply:
         if rc is None:
             raise GameError("job_stale")
         text = t(lang, "mcd.claimed", wage=fmt.usd(rc["wage"], lang), balance=fmt.usd(rc["balance"], lang))
-        pic = _scene(c, "mcd_done", t(lang, "scene.mcd.done.t"), "+" + fmt.usd(rc["wage"], lang))
-        return R(c, text, [[(t(lang, "mcd.b.again"), f"jb:o:mcd:{uid}")], [(t(lang, "job.b.board"), f"jb:h:{uid}"), (t(lang, "job.b.wallet"), f"cs:w:{uid}")]], pic=pic)
+        return R(c, text, [[(t(lang, "mcd.b.again"), f"jb:o:mcd:{uid}")], [(t(lang, "job.b.board"), f"jb:h:{uid}"), (t(lang, "job.b.wallet"), f"cs:w:{uid}")]])
     if act == "x":                                                # giving a task up works from anywhere
         tid = _tid(arg[0] if arg else None)
         task = work.get_task(db, tid, uid) if tid is not None else None
@@ -568,6 +605,5 @@ async def handle(c) -> Reply:
             return _muni_task(c, city, task, toast=toast("muni.walk_started") if out.status == "started" else None)
         rc = work.muni_complete(db, city, uid, tid, now)
         text = t(lang, "muni.done", emoji=KIND_EMOJI[rc["kind"]], name=t(lang, f"muni.kind.{rc['kind']}"), reward=fmt.usd(rc["reward"], lang), balance=fmt.usd(rc["balance"], lang))
-        pic = _scene(c, "muni_done", t(lang, "scene.muni.done.t"), "+" + fmt.usd(rc["reward"], lang), muni_kind=rc["kind"])
-        return R(c, text, [[(t(lang, "muni.b.next"), f"jb:o:muni:{uid}")], [(t(lang, "job.b.board"), f"jb:h:{uid}"), (t(lang, "job.b.wallet"), f"cs:w:{uid}")]], pic=pic)
+        return R(c, text, [[(t(lang, "muni.b.next"), f"jb:o:muni:{uid}")], [(t(lang, "job.b.board"), f"jb:h:{uid}"), (t(lang, "job.b.wallet"), f"cs:w:{uid}")]])
     return Reply(toast=toast("job.stale"), alert=True)

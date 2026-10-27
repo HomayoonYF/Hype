@@ -1,7 +1,8 @@
 """v0.18: life cash (a second currency in exact cents), the one-time $100, the ledger, and the currency exchange.
 
-Rules under test: separate balances, exact integer arithmetic, 1,000 🪙 = $5.00 (v0.18.1; v0.18 had $20) in both directions with no fee, stock money moving in multiples of 2 🪙, every confirmed exchange atomic and
-single-use, repeated / stale / expired / foreign confirmations harmless, invalid amounts refused, the stock game's own progression untouched."""
+Rules under test: separate balances, exact integer arithmetic, 1,000 🪙 = $5.00 (v0.18.1; v0.18 had $20) with no fee, stock money moving in multiples of 2 🪙, every confirmed exchange atomic and
+single-use, repeated / stale / expired / foreign confirmations harmless, invalid amounts refused, the stock game's own progression untouched.
+v0.18.2: the exchange is ONE-WAY (stock money -> cash). tests/test_v0182_exchange.py proves that no path turns cash into stock money."""
 import re
 import sqlite3
 
@@ -148,34 +149,21 @@ def test_malformed_coin_amounts_are_refused(text):
     assert cash.parse_coins(text) is None
 
 
-@pytest.mark.parametrize("text,cents", [("5", 500), ("5.25", 525), ("$20", 2000), ("۲۰", 2000), ("0.01", 1), ("5.5", 550), ("1,000", 100_000), ("5٫25", 525)])
-def test_dollar_amounts_are_exact_cents(text, cents):
-    assert cash.parse_cents(text) == cents
-
-
-@pytest.mark.parametrize("text", ["5.255", ".5", "5.", "0", "0.00", "-1", "1e2", "NaN", "inf", "", "x", "99999999999999999", "5$$", "5.2.1", "5,25", "1,00", "$5$", "1,0000.5"])
-def test_fractions_of_a_cent_and_junk_are_refused_never_rounded(text):
-    assert cash.parse_cents(text) is None
-
-
 # ================================================================================================ the exchange
-def test_the_rate_is_exactly_1000_coins_for_5_dollars_in_both_directions(db):
+def test_the_rate_is_exactly_1000_coins_for_5_dollars(db):
     assert C.FX_UNITS_PER_CENT * 500 == 1000 * C.UNIT                                         # 500 cents are worth exactly 1,000 coins
     assert C.fx_coin_step() == 2 and C.fx_cents_for_coins(1000) == 500 and C.fx_coins_for_cents(100) == 200
-    q = cash.make_quote(db, U1, cash.S2C, 1000)
+    q = cash.make_quote(db, U1, 1000)
     assert (q.src, q.dst) == (1000 * C.UNIT, 500)
     r = cash.confirm(db, U1, q.id)
     assert (r.stock_before, r.stock_after, r.cash_before, r.cash_after) == (100_000, 0, 10_000, 10_500)
-    q2 = cash.make_quote(db, U1, cash.C2S, 500)
-    assert (q2.src, q2.dst) == (500, 1000 * C.UNIT)
-    r2 = cash.confirm(db, U1, q2.id)
-    assert (r2.stock_after, r2.cash_after) == (100_000, 10_000)                               # the round trip is exactly lossless: no fee, no spread
-    assert stock(db) == 100_000 and life(db) == 10_000
+    assert stock(db) == 0 and life(db) == 10_500                                              # the coins are gone for good: there is no way back
+    assert fmt.coins_x(1 * 200, "en") == "2 🪙"                                               # one cent is exactly two coins
 
 
 @pytest.mark.parametrize("coins", [2, 4, 6, 50, 250, 998])
 def test_every_even_coin_amount_converts_exactly(db, coins):
-    q = cash.make_quote(db, U1, cash.S2C, coins)
+    q = cash.make_quote(db, U1, coins)
     assert q.dst == coins // 2 and q.src == coins * C.UNIT and q.coins == coins
     r = cash.confirm(db, U1, q.id)
     assert r.cash_after - r.cash_before == coins // 2 and r.stock_before - r.stock_after == coins * C.UNIT
@@ -185,102 +173,73 @@ def test_every_even_coin_amount_converts_exactly(db, coins):
 def test_an_odd_coin_amount_is_refused_never_rounded(db, coins, near):
     s0, c0 = stock(db), life(db)
     with pytest.raises(GameError) as e:
-        cash.make_quote(db, U1, cash.S2C, coins)
+        cash.make_quote(db, U1, coins)
     assert e.value.code == "fx_step" and e.value.kw == {"step": 2, "near": near}               # half a cent would need rounding: the player is told the nearest valid amount
     assert (stock(db), life(db)) == (s0, c0) and db.q1("SELECT COUNT(*) c FROM fx_quotes")["c"] == 0
-
-
-@pytest.mark.parametrize("cents", [1, 2, 3, 99, 100, 1234, 10_000])
-def test_every_cent_amount_converts_exactly(db, cents):
-    q = cash.make_quote(db, U1, cash.C2S, cents)
-    assert q.dst == cents * 200 and q.src == cents and q.coins == cents * 2
-    r = cash.confirm(db, U1, q.id)
-    assert r.cash_before - r.cash_after == cents and r.stock_after - r.stock_before >= cents * 200       # (>=: a big jump in net worth can unlock an achievement that pays coins)
-    assert db.q1("SELECT stock_delta FROM life_ledger WHERE user_id=? AND kind='fx'", (U1,))["stock_delta"] == cents * 200
-    assert fmt.coins_x(1 * 200, "en") == "2 🪙"                                               # one cent is exactly two coins
 
 
 def test_the_whole_balance_options(db):
     with db.tx():
         db.x("UPDATE users SET cash=? WHERE id=?", (123_456, U1))                              # 1,234.56 coins
-    q = cash.make_quote(db, U1, cash.S2C, None)
+    q = cash.make_quote(db, U1, None)
     assert q.coins == 1234 and q.dst == 617                                                   # only WHOLE steps of 2 coins move; the 56 hundredths stay
     cash.confirm(db, U1, q.id)
     assert stock(db) == 56
     with pytest.raises(GameError) as e:
-        cash.make_quote(db, U1, cash.S2C, None)                                                # 0.56 coins left: nothing to convert
+        cash.make_quote(db, U1, None)                                                          # 0.56 coins left: nothing to convert
     assert e.value.code == "fx_nothing"
     with db.tx():
         db.x("UPDATE users SET cash=? WHERE id=?", (123_556, U1))                              # 1,235.56 coins: an odd whole number of coins, so 1,234 move and 1.56 stay
-    q = cash.make_quote(db, U1, cash.S2C, None)
+    q = cash.make_quote(db, U1, None)
     assert q.coins == 1234 and q.dst == 617
     cash.confirm(db, U1, q.id)
     assert stock(db) == 156                                                                    # 1.56 coins: one whole coin is not a whole cent, so nothing more can move
     with pytest.raises(GameError) as e:
-        cash.make_quote(db, U1, cash.S2C, None)
+        cash.make_quote(db, U1, None)
     assert e.value.code == "fx_nothing"
     assert cash.max_coins(db, U1) == 0
-    q = cash.make_quote(db, U1, cash.C2S, None)
-    assert q.src == life(db) and q.dst == life(db) * 200
-    cash.confirm(db, U1, q.id)
-    assert life(db) == 0
-    with pytest.raises(GameError) as e:
-        cash.make_quote(db, U1, cash.C2S, None)
-    assert e.value.code == "fx_nothing"
 
 
 def test_supply_bookkeeping_follows_the_exchange(db):
     m0, b0 = kv(db, "minted"), kv(db, "burned")
-    cash.confirm(db, U1, cash.make_quote(db, U1, cash.S2C, 400).id)
-    assert (kv(db, "minted") - m0, kv(db, "burned") - b0) == (0, 400 * C.UNIT)                 # coins leaving the stock economy are burned...
-    cash.confirm(db, U1, cash.make_quote(db, U1, cash.C2S, 1000).id)
-    assert (kv(db, "minted") - m0, kv(db, "burned") - b0) == (1000 * 200, 400 * C.UNIT)         # ...coins entering it are minted
+    cash.confirm(db, U1, cash.make_quote(db, U1, 400).id)
+    assert (kv(db, "minted") - m0, kv(db, "burned") - b0) == (0, 400 * C.UNIT)                 # coins leaving the stock economy are burned; nothing is ever minted by the exchange
 
 
 @pytest.mark.parametrize("amount", [0, -1, -250, C.FX_MAX_COINS + 1, 10 ** 30, 2.5, 250.0, "250", object(), True, False, float("nan")])
 def test_invalid_exchange_amounts_are_refused_and_nothing_changes(db, amount):
     s0, c0 = stock(db), life(db)
     with pytest.raises(GameError) as e:
-        cash.make_quote(db, U1, cash.S2C, amount)
+        cash.make_quote(db, U1, amount)
     assert e.value.code == "fx_amount"
     assert (stock(db), life(db)) == (s0, c0) and db.q1("SELECT COUNT(*) c FROM fx_quotes")["c"] == 0
 
 
-@pytest.mark.parametrize("amount", [0, -1, C.FX_MAX_CENTS + 1, 10 ** 30, True, 5.5, "500"])
-def test_invalid_cash_amounts_are_refused(db, amount):
-    with pytest.raises(GameError) as e:
-        cash.make_quote(db, U1, cash.C2S, amount)
-    assert e.value.code == "fx_amount"
-    assert life(db) == 10_000 and stock(db) == 100_000
-
-
 def test_you_cannot_exchange_more_than_you_have(db):
     with pytest.raises(GameError) as e:
-        cash.make_quote(db, U1, cash.S2C, 1002)
+        cash.make_quote(db, U1, 1002)
     assert e.value.code == "fx_low_stock" and e.value.kw == {"need": 1002 * C.UNIT, "have": 1000 * C.UNIT}
     with pytest.raises(GameError) as e:
-        cash.make_quote(db, U1, cash.C2S, 10_001)
-    assert e.value.code == "cash_low" and e.value.kw == {"need": 10_001, "have": 10_000}
-    with pytest.raises(GameError) as e:
-        cash.make_quote(db, U1, "sideways", 5)
+        cash.make_quote(db, U1, "sideways")
     assert e.value.code == "fx_amount"
+    assert (stock(db), life(db)) == (100_000, 10_000)
 
 
 def test_the_cash_cap_stops_an_exchange_that_would_pass_it(db):
     db.x("UPDATE life_accounts SET balance=? WHERE user_id=?", (C.CASH_CAP_CENTS - 100, U1))
     with pytest.raises(GameError) as e:
-        cash.make_quote(db, U1, cash.S2C, 202)                                                 # +101 cents would pass the cap
+        cash.make_quote(db, U1, 202)                                                 # +101 cents would pass the cap
     assert e.value.code == "cash_cap"
-    assert cash.make_quote(db, U1, cash.S2C, 200).dst == 100                                   # exactly up to the cap is fine
-    assert cash.make_quote(db, U1, cash.S2C, None).coins == 200                                # «everything» is trimmed to what still fits under the cap
+    assert cash.make_quote(db, U1, 200).dst == 100                                   # exactly up to the cap is fine
+    assert cash.make_quote(db, U1, None).coins == 200                                # «everything» is trimmed to what still fits under the cap
     db.x("UPDATE life_accounts SET balance=? WHERE user_id=?", (C.CASH_CAP_CENTS, U1))
     with pytest.raises(GameError) as e:
-        cash.make_quote(db, U1, cash.S2C, None)
+        cash.make_quote(db, U1, None)
     assert e.value.code == "cash_cap"
 
 
 def test_a_confirmed_exchange_cannot_be_confirmed_twice(db):
-    q = cash.make_quote(db, U1, cash.S2C, 100)
+    q = cash.make_quote(db, U1, 100)
     cash.confirm(db, U1, q.id)
     s1, c1 = stock(db), life(db)
     for _ in range(3):
@@ -291,13 +250,13 @@ def test_a_confirmed_exchange_cannot_be_confirmed_twice(db):
 
 
 def test_a_cancelled_or_replaced_preview_cannot_be_confirmed(db):
-    q = cash.make_quote(db, U1, cash.S2C, 100)
+    q = cash.make_quote(db, U1, 100)
     assert cash.cancel(db, U1, q.id) is True and cash.cancel(db, U1, q.id) is False
     with pytest.raises(GameError) as e:
         cash.confirm(db, U1, q.id)
     assert e.value.code == "fx_gone"
-    q1 = cash.make_quote(db, U1, cash.S2C, 100)
-    q2 = cash.make_quote(db, U1, cash.S2C, 200)                                                # a newer preview replaces the older one
+    q1 = cash.make_quote(db, U1, 100)
+    q2 = cash.make_quote(db, U1, 200)                                                # a newer preview replaces the older one
     with pytest.raises(GameError):
         cash.confirm(db, U1, q1.id)
     assert cash.confirm(db, U1, q2.id).quote.coins == 200
@@ -307,7 +266,7 @@ def test_a_cancelled_or_replaced_preview_cannot_be_confirmed(db):
 def test_an_expired_preview_changes_nothing(db):
     now = [1_700_000_000]
     core.set_clock(lambda: now[0])
-    q = cash.make_quote(db, U1, cash.S2C, 100)
+    q = cash.make_quote(db, U1, 100)
     now[0] += C.FX_QUOTE_TTL - 1
     assert cash.get_quote(db, q.id, U1).expires_at > core.now()
     now[0] += 1
@@ -318,7 +277,7 @@ def test_an_expired_preview_changes_nothing(db):
 
 
 def test_someone_elses_or_an_invented_preview_is_not_found(db):
-    q = cash.make_quote(db, U1, cash.S2C, 100)
+    q = cash.make_quote(db, U1, 100)
     for token in (q.id, "00000000", "zzzz", "", "1' OR 1=1", "../../x", q.id.upper(), q.id + "0", 12345):
         with pytest.raises(GameError) as e:
             cash.confirm(db, U2, token)
@@ -329,7 +288,7 @@ def test_someone_elses_or_an_invented_preview_is_not_found(db):
 
 
 def test_a_balance_that_changed_after_the_preview_makes_the_confirmation_fail_cleanly(db):
-    q = cash.make_quote(db, U1, cash.S2C, 800)
+    q = cash.make_quote(db, U1, 800)
     with db.tx():
         db.x("UPDATE users SET cash=? WHERE id=?", (500 * C.UNIT, U1))                         # the player spent coins in between
     with pytest.raises(GameError) as e:
@@ -337,15 +296,10 @@ def test_a_balance_that_changed_after_the_preview_makes_the_confirmation_fail_cl
     assert e.value.code == "fx_low_stock"
     assert (stock(db), life(db)) == (500 * C.UNIT, 10_000) and len(ledger(db)) == 1             # nothing was deducted or credited...
     assert cash.get_quote(db, q.id, U1).state == "open"                                        # ...and the preview was not burned by the failed attempt
-    q = cash.make_quote(db, U1, cash.C2S, 9_000)
-    cash.apply(db, U1, -5_000, "snapp_fee", "spent")
-    with pytest.raises(GameError) as e:
-        cash.confirm(db, U1, q.id)
-    assert e.value.code == "cash_low" and life(db) == 5_000 and stock(db) == 500 * C.UNIT
 
 
 def test_an_error_inside_the_exchange_rolls_both_balances_back(db, monkeypatch):
-    q = cash.make_quote(db, U1, cash.S2C, 100)
+    q = cash.make_quote(db, U1, 100)
     real = cash.apply
 
     def broken(*a, **k):
@@ -362,8 +316,7 @@ def test_an_error_inside_the_exchange_rolls_both_balances_back(db, monkeypatch):
 def test_exchanging_does_not_touch_the_stock_games_own_progress(db):
     u0 = {k: db.q1("SELECT * FROM users WHERE id=?", (U1,))[k] for k in ("trades", "rebirths", "legacy_pts", "legacy_total", "spent_points", "bonus_points", "rep", "streak", "last_daily")}
     tables = {n: [tuple(r) for r in db.qa(f"SELECT * FROM {n}")] for n in ("stocks", "holdings", "perks", "quests", "achievements")}
-    cash.confirm(db, U1, cash.make_quote(db, U1, cash.S2C, 700).id)
-    cash.confirm(db, U1, cash.make_quote(db, U1, cash.C2S, 500).id)
+    cash.confirm(db, U1, cash.make_quote(db, U1, 700).id)
     u1 = {k: db.q1("SELECT * FROM users WHERE id=?", (U1,))[k] for k in u0}
     assert u1 == u0
     assert {n: [tuple(r) for r in db.qa(f"SELECT * FROM {n}")] for n in tables} == tables
@@ -425,9 +378,8 @@ def test_in_a_group_only_the_bare_word_opens_the_wallet(h):
 def test_the_exchange_end_to_end_with_buttons_and_a_double_press(h):
     start(h, 1)
     home = last(h.say(1, "صرافی"), SendMessage)
-    assert "cs:d:s2c:1" in data_of(home) and "cs:d:c2s:1" in data_of(home) and "۱٬۰۰۰ 🪙 = $۵٫۰۰" in home.text
-    d = last(h.press(1, "cs:d:s2c:1"))
-    assert "cs:a:s2c:250:1" in data_of(d) and "cs:a:s2c:all:1" in data_of(d)
+    assert "cs:a:s2c:250:1" in data_of(home) and "cs:a:s2c:all:1" in data_of(home) and "۱٬۰۰۰ 🪙 = $۵٫۰۰" in home.text
+    assert not [x for x in data_of(home) if "c2s" in x or x.startswith("cs:d:")]                  # one screen, one direction: no direction picker at all
     prev = last(h.press(1, "cs:a:s2c:250:1"))
     assert "۲۵۰ 🪙" in prev.text and "$۱٫۲۵" in prev.text and "۷۵۰ 🪙" in prev.text and "$۱۰۱٫۲۵" in prev.text      # what you give, get, and both balances after
     ok = next(x for x in data_of(prev) if x.startswith("cs:ok:"))
@@ -468,29 +420,27 @@ def test_hand_made_exchange_buttons_do_nothing_harmful(h):
 
 def test_typed_exchange_commands(h):
     start(h, 1)
-    t1 = tb.Harness.texts(h.say(1, "صرافی سهام 250"))
-    assert "تأیید تبدیل" in t1 and "$۱٫۲۵" in t1
-    t2 = tb.Harness.texts(h.say(1, "صرافی نقد 5"))
-    assert "تأیید تبدیل" in t2 and "۱٬۰۰۰ 🪙" in t2
+    for form in ("صرافی 250", "صرافی سهام 250", "currency 250", "currency stocks 250"):
+        t1 = tb.Harness.texts(h.say(1, form))
+        assert "تأیید تبدیل" in t1 and "$۱٫۲۵" in t1, form
     t3 = tb.Harness.texts(h.say(1, "currency stocks all"))
     assert "۱٬۰۰۰ 🪙" in t3 and "$۵٫۰۰" in t3
+    assert "$۵٫۰۰" in tb.Harness.texts(h.say(1, "صرافی همه"))
     odd = tb.Harness.texts(h.say(1, "صرافی سهام 251"))
     assert "مضرب ۲" in odd and "۲۵۰" in odd                                                        # half a cent: refused, with the nearest valid amount
-    for bad in ("صرافی سهام 2.5", "صرافی سهام 0", "صرافی سهام -5", "صرافی نقد 5.255", "صرافی نقد 0", "صرافی سهام 1e9", "صرافی سهام abc", "صرافی سهام 99999999999999999999"):
+    for bad in ("صرافی سهام 2.5", "صرافی سهام 0", "صرافی سهام -5", "صرافی 5.255", "صرافی 0", "صرافی سهام 1e9", "صرافی سهام abc", "صرافی سهام 99999999999999999999"):
         out = tb.Harness.texts(h.say(1, bad))
         assert "این مقدار درست نیست" in out or "کافی نیست" in out, (bad, out)
     assert "کافی نیست" in tb.Harness.texts(h.say(1, "صرافی سهام 1002"))
-    assert "کافی نیست" in tb.Harness.texts(h.say(1, "صرافی نقد 100.01"))
     assert (stock(h.db, 1), life(h.db, 1)) == (100_000, 10_000)                                      # previews never move anything
 
 
 def test_a_private_chat_prompt_takes_the_next_message_as_the_amount(h):
     start(h, 1)
-    h.press(1, "cs:d:c2s:1")
-    out = tb.Harness.texts(h.say(1, "5"))
-    assert "تأیید تبدیل" in out and "$۵٫۰۰" in out
-    h.press(1, "cs:d:s2c:1")
+    h.say(1, "صرافی")                                                                              # opening the exchange in private makes the next plain message the amount
     assert "$۲٫۵۰" in tb.Harness.texts(h.say(1, "۵۰۰")) and life(h.db, 1) == 10_000
+    h.press(1, "cs:fx:1")
+    assert "$۱٫۲۵" in tb.Harness.texts(h.say(1, "250")) and life(h.db, 1) == 10_000
 
 
 def test_group_chat_exchange_words_need_a_valid_form(h):
@@ -498,6 +448,7 @@ def test_group_chat_exchange_words_need_a_valid_form(h):
     start(h, 1)
     assert "صرافی" in tb.Harness.texts(h.say(1, "صرافی", chat=G))
     assert "تأیید تبدیل" in tb.Harness.texts(h.say(1, "صرافی سهام 100", chat=G))
+    assert "تأیید تبدیل" in tb.Harness.texts(h.say(1, "صرافی 100", chat=G))
     assert h.say(1, "صرافی خوبیه ولی گرونه", chat=G) == [] and h.say(1, "صرافی سهام بیشتر از این", chat=G) == []
 
 

@@ -20,7 +20,7 @@ The jobs
       netted from the fare in the same transaction; the player must be able to afford it to start. A ride is planned from the saved city
       (pickup and destination are real parcels / public places reachable by road, the fare is base + per-distance on the road distance
       between them), then driven in two stages: to the pickup (the player must really arrive before they can pick the passenger up) and to
-      the destination (arrival pays out). The car is the ordinary v0.17 trip with mode «car» (config.car_speed(), 2x walking by default).
+      the destination (arrival pays out). The car is the ordinary v0.17 trip with mode «car» (config.car_speed(): 40 km/h by default, walking is 20 km/h; every trip saves its own speed).
     * McDonald's: an 8-hour real-time shift. Applied for at the city's McDonald's (the player must have arrived there); start / due times are
       saved; the wage is collected with a claim that is allowed only once the SERVER clock has passed `due_at`.
     * Municipal tasks (رفتگری، جمع‌آوری زباله، نگهداری فضای سبز): one task at a time, a fixed reward per kind shown before accepting, a target

@@ -101,7 +101,7 @@ def bal(h, uid=A):
 # ================================================================================================ the board
 def test_the_board_lists_the_three_jobs_and_the_cash(h):
     text, datas = screen(h.say(A, "مشاغل", chat=CH))
-    assert "مشاغل" in text and "$۱۰۰٫۰۰" in text and "کاری نداری" in text
+    assert "مشاغل" in text and "$۱۰۰٫۰۰" in text and text.count("وضعیت: 🟢 آماده") == 3                 # a compact list: name, short description, status
     assert datas[:3] == [f"jb:o:snapp:{A}", f"jb:o:mcd:{A}", f"jb:o:muni:{A}"] and f"cs:w:{A}" in datas
     for word in ("jobs", "شغل"):
         assert "مشاغل" in screen(h.say(A, word, chat=CH))[0]
@@ -132,7 +132,7 @@ def test_a_whole_snapp_ride_through_the_buttons(h):
     task = work.current(h.db, A)
     d = work.data_of(task)
     assert task["stage"] == "assigned" and f"jb:sd:{task['id']}:{A}" in datas and f"jb:x:{task['id']}:{A}" in datas
-    assert fmt.usd(task["reward"], "fa") in text and "$۰٫۲۰" in text and str(d["d2"]).translate(str.maketrans("0123456789", "۰۱۲۳۴۵۶۷۸۹")) in text
+    assert fmt.usd(task["reward"], "fa") in text and "$۰٫۲۰" in text and fmt.dist(d["d2"], "fa") in text
     assert bal(h) == 10_000                                                                          # nothing charged yet
     again = press(h, A, f"jb:sr:{A}")                                                                # a second «take a ride» press
     assert alerts(again) and len(h.db.qa("SELECT * FROM work_tasks WHERE user_id=?", (A,))) == 1
@@ -258,7 +258,7 @@ def test_a_ride_started_in_one_group_cannot_be_driven_from_another(h, layout):
 # ================================================================================================ McDonald's, button by button
 def walk_to_mcd(h, uid=A):
     text, datas = screen(h.say(uid, "مک دونالد", chat=CH))
-    assert f"jb:mg:{uid}" in datas and "فاصله داری" in text
+    assert f"jb:mg:{uid}" in datas and "متر" in text and "باید اون‌جا باشی" in text
     press(h, uid, f"jb:mg:{uid}")
     arrive(h, uid)
 

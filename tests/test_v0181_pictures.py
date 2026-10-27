@@ -1,7 +1,7 @@
-"""v0.18.1: the job pictures. The Snapp ride is drawn on the city map (blue to the passenger, yellow to the destination, pins, and the player
-as a car), the rental car is a Pride with a model year, walking to a workplace is drawn like every walk, and the other job screens carry a
-scene (the McDonald's counter with the shift's progress, the street workers, ...). Also the message handling around pictures (a screen of
-the other kind replaces the old message) and the guarantee that a picture that cannot be drawn never costs the player their screen."""
+"""The job MAPS (v0.18.1, kept in v0.18.2). The Snapp ride is drawn on the city map (blue to the passenger, yellow to the destination, pins, and the player
+as a car), the rental car is a Pride with a model year, walking to a workplace is drawn like every walk. v0.18.2 removed the illustrated scenes of a
+character doing a job: only maps are pictures now, every other job screen is text. Also the message handling around pictures (a screen of the other
+kind replaces the old message) and the guarantee that a picture that cannot be drawn never costs the player their screen."""
 import io
 import math
 
@@ -13,7 +13,7 @@ from aiogram.methods import DeleteMessage, EditMessageMedia, SendMessage, SendPh
 import test_bot as tb
 from test_life_flow import (A, B, CH, alerts, arrive, bal, city, data_of, edits, find, h, layout, press, screen, sent, text_of,  # noqa: F401 (fixtures)
                             walk_to_mcd)
-from hypemarket import cash, config as C, core, fmt, handlers, jobviz, mapui, presence, scenes, work, worldmap, worldnet as N
+from hypemarket import cash, config as C, core, fmt, handlers, jobviz, mapui, presence, work, worldmap, worldnet as N
 
 PNG = b"\x89PNG\r\n\x1a\n"
 
@@ -32,8 +32,9 @@ def size_of(png) -> tuple:
     return Image.open(io.BytesIO(png)).size
 
 
-def is_scene(png) -> bool:
-    return size_of(png) == (scenes.W, scenes.H)
+def is_map(png) -> bool:
+    """A city map picture (the renderer's output), as opposed to a hand-drawn scene (there are none any more)."""
+    return png is not None and png.startswith(PNG) and size_of(png)[0] >= 600
 
 
 @pytest.fixture()
@@ -110,7 +111,7 @@ def test_the_receipt_remembers_the_car(h):
     press(h, A, f"jb:sp:{task['id']}:{A}")
     arrive(h, A)
     out = press(h, A, f"jb:o:snapp:{A}")
-    assert photo_of(out) is not None
+    assert photo_of(out) is None                                                                       # the receipt is text since v0.18.2
     rc = work.receipt_of(h.db.q1("SELECT * FROM work_tasks WHERE id=?", (task["id"],)))
     assert rc["car"] == car
     assert "پراید " + fmt.loc(str(car["y"]), "fa") in screen(out)[0]
@@ -181,7 +182,7 @@ def test_a_ride_that_stopped_half_way_still_has_a_picture(h):
     m = marks_of(h)
     assert [leg["color"] for leg in m["legs"]] == ["blue", "yellow"] and near(m["legs"][0]["pts"][0], stand(h).pos)
     out = press(h, A, f"jb:o:snapp:{A}")
-    assert photo_of(out) is not None and not is_scene(photo_of(out))
+    assert is_map(photo_of(out))
 
 
 def test_the_marks_are_pure_and_never_ask_the_database(h):
@@ -259,26 +260,49 @@ def test_other_players_who_drive_are_cars_and_walkers_are_rings(h):
     assert other.mode == "walk" and "vehicle" not in mapui._marks("fa", cty, st, [other], True, db=h.db)["others"][0]
 
 
-# ================================================================================================ every job screen has a picture
-def test_every_snapp_screen_has_a_picture_and_the_caption_fits(h, caps):
+# ================================================================================================ only maps are pictures
+def test_no_job_screen_is_an_illustration_any_more():
+    import importlib.util
+    assert importlib.util.find_spec("hypemarket.scenes") is None                                       # the module of the scenes is gone
+    assert not hasattr(jobviz, "scene_pic") and not hasattr(jobviz, "plate_year")
+    from hypemarket.texts import EN, FA
+    assert not [k for k in list(FA) + list(EN) if k.startswith("scene.")]
+
+
+def test_every_snapp_screen_is_text_except_the_map_of_the_ride(h, caps):
     out = h.say(A, "اسنپ", chat=CH)
-    assert is_scene(photo_of(out)) and photo_of(out).startswith(PNG)                                   # the rental Pride at the Snapp desk
+    assert photo_of(out) is None and "پراید" in text_of(sent(out)[-1])                                 # the Snapp desk: text (terms, balance, one button)
     out = press(h, A, f"jb:sr:{A}")
     task = work.current(h.db, A)
-    assert photo_of(out) is not None and not is_scene(photo_of(out))                                   # the ride on the map
+    assert is_map(photo_of(out))                                                                       # the ride on the map
     caption = screen(out)[0]
     assert "🔵" in caption and "🟡" in caption                                                           # the legend of the two colours
     out = press(h, A, f"jb:sd:{task['id']}:{A}")
-    assert not is_scene(photo_of(out)) and "🔵" in screen(out)[0]
+    assert is_map(photo_of(out)) and "🔵" in screen(out)[0]
     arrive(h, A)
     out = press(h, A, f"jb:o:snapp:{A}")
-    assert is_scene(photo_of(out))                                                                     # the passenger waiting next to the car
+    assert is_map(photo_of(out)) and f"jb:sp:{task['id']}:{A}" in screen(out)[1]                       # at the pickup the map stays (the car at the person pin); no scene of the passenger
     out = press(h, A, f"jb:sp:{task['id']}:{A}")
-    assert not is_scene(photo_of(out)) and "🟡" in screen(out)[0] and "🔵" not in screen(out)[0]      # only the yellow way is left
+    assert is_map(photo_of(out)) and "🟡" in screen(out)[0] and "🔵" not in screen(out)[0]            # only the yellow way is left
     arrive(h, A)
     out = press(h, A, f"jb:o:snapp:{A}")
-    assert is_scene(photo_of(out)) and "سفر تموم شد" in screen(out)[0]                                 # the receipt
+    assert photo_of(out) is None and "سفر تموم شد" in screen(out)[0]                                   # the receipt is text
     assert max(caps) <= 1024
+
+
+def test_the_snapp_dashboard_shows_only_what_is_saved(h):
+    h.say(A, "اسنپ", chat=CH)
+    text, _ = screen(press(h, A, f"jb:sr:{A}"))
+    task = work.current(h.db, A)
+    d = work.data_of(task)
+    assert fmt.usd(task["reward"], "fa") in text and "$۰٫۲۰" in text and fmt.usd(task["reward"] - task["cost"], "fa") in text    # fare, rental, net
+    assert "کیلومتر" in fmt.dist(1800, "fa") and fmt.dist(d["d1"], "fa") in text and fmt.dist(d["d2"], "fa") in text           # distances in metres, like the speed
+    assert fmt.kmh(C.CAR_SPEED_DEFAULT, "fa") in text and "پراید" in text
+    press(h, A, f"jb:sd:{task['id']}:{A}")
+    h.advance(2)
+    text, _ = screen(press(h, A, f"jb:o:snapp:{A}"))
+    st = stand(h)
+    assert "▰" in text and "📏" in text and fmt.dist(float(st.trip["length"]) * (1 - st.progress), "fa") in text and fmt.kmh(C.CAR_SPEED_DEFAULT, "fa") in text   # progress, distance left and ETA come from the saved trip
 
 
 def test_the_pictures_follow_the_language_and_the_digit_style(h, monkeypatch, caps):
@@ -286,64 +310,63 @@ def test_the_pictures_follow_the_language_and_the_digit_style(h, monkeypatch, ca
     h.say(A, "jobs", chat=CH)                                                                          # the group is registered by its first message
     h.db.x("UPDATE groups SET lang='en' WHERE id=?", (CH,))
     out = h.say(A, "jobs", chat=CH)
-    assert is_scene(photo_of(out)) and "Jobs" in text_of(sent(out)[-1]) and "$100.00" in text_of(sent(out)[-1])
+    assert photo_of(out) is None and "Jobs" in text_of(sent(out)[-1]) and "$100.00" in text_of(sent(out)[-1])
     out = press(h, A, f"jb:sr:{A}")
     text = screen(out)[0]
     assert "Pride 13" in text or "Pride 14" in text
-    assert not any(ch in text for ch in "۰۱۲۳۴۵۶۷۸۹٬٫") and "to the passenger" in text
-    assert photo_of(out) is not None
+    assert not any(ch in text for ch in "۰۱۲۳۴۵۶۷۸۹٬٫") and "to the passenger" in text and "40 km/h" in text
+    assert is_map(photo_of(out))
     assert max(caps) <= 1024
 
 
-def test_the_mcdonalds_screens_show_the_counter_and_the_shift_progress(h, caps):
+def test_the_mcdonalds_screens_are_maps_while_walking_and_text_at_the_counter(h, caps):
     out = h.say(A, "مک دونالد", chat=CH)
     far = photo_of(out)
-    assert far is not None and not is_scene(far)                                                       # far away: the walk drawn on the map, like every walk
+    assert is_map(far)                                                                                 # far away: the walk drawn on the map, like every walk
+    assert fmt.kmh(C.walk_speed(), "fa") in text_of(sent(out)[-1])                                                         # the walking speed is stated
     m = jobviz.walk_marks("fa", city(h), stand(h), city(h).mcd_id)
     assert m["stops"][0]["kind"] == "work" and m["legs"][0]["color"] == "mint" and "walked" not in m   # the road you would take, dashed
     out = press(h, A, f"jb:mg:{A}")
-    assert photo_of(out) is not None and not is_scene(photo_of(out))
+    assert is_map(photo_of(out)) and "▱▱▱▱▱▱▱▱▱▱" in screen(out)[0] and "📏" in screen(out)[0]          # a walk that has just begun: the bar is empty, the distance left is real
     h.advance(3)
     m = jobviz.walk_marks("fa", city(h), stand(h), city(h).mcd_id)
     assert m["walked"] and m["route"] and "legs" not in m and m["stops"][0]["kind"] == "work"          # on the way: done and ahead
     arrive(h, A)
     out = h.say(A, "مک دونالد", chat=CH)
-    door = photo_of(out)
-    assert is_scene(door)                                                                              # there: the shop front
+    assert photo_of(out) is None and f"jb:ms:{A}" in data_of(sent(out)[-1])                            # there: no route left to draw, so text and the start button
     out = press(h, A, f"jb:ms:{A}")
-    assert is_scene(photo_of(out)) and "$۱۲٫۰۰" in screen(out)[0]                                      # the confirmation
+    assert photo_of(out) is None and "$۱۲٫۰۰" in screen(out)[0]                                       # the confirmation
     out = press(h, A, f"jb:my:{A}")
-    start = photo_of(out)
     text = screen(out)[0]
-    assert is_scene(start) and "در حال کار" in text and "وضعیت" in text                                # «شیفت مک‌دونالد / وضعیت: در حال کار» now with its picture
+    assert photo_of(out) is None and "در حال کار" in text and "وضعیت" in text and "▱▱▱▱▱▱▱▱▱▱" in text.replace("▰", "▱") and "$۱۲٫۰۰" in text
     h.advance(4 * 3600)
-    half = photo_of(press(h, A, f"jb:o:mcd:{A}"))
-    assert is_scene(half) and half != start                                                            # the bar moved
+    half = screen(press(h, A, f"jb:o:mcd:{A}"))[0]
+    assert "▰▰▰▰▰▱▱▱▱▱" in half and "۴ ساعت" in half.replace("4", "۴") or "4 ساعت" in half   # the bar moved: half of the real shift
     h.advance(4 * 3600)
     task = work.current(h.db, A)
-    ready = photo_of(press(h, A, f"jb:o:mcd:{A}"))
-    assert is_scene(ready) and ready != half
-    done = photo_of(press(h, A, f"jb:mc:{task['id']}:{A}"))
-    assert is_scene(done) and done != ready and bal(h) == 10_000 + C.MCD_WAGE_CENTS
+    ready = screen(press(h, A, f"jb:o:mcd:{A}"))
+    assert "تموم شده" in ready[0] and f"jb:mc:{task['id']}:{A}" in ready[1] and "▰▰▰▰▰▰▰▰▰▰" in ready[0]
+    done = press(h, A, f"jb:mc:{task['id']}:{A}")
+    assert photo_of(done) is None and bal(h) == 10_000 + C.MCD_WAGE_CENTS
     assert max(caps) <= 1024
 
 
-def test_a_private_chat_shows_the_shift_scene_too(h):
+def test_a_private_chat_shows_the_shift_dashboard_too(h):
     walk_to_mcd(h)
     press(h, A, f"jb:ms:{A}")
     press(h, A, f"jb:my:{A}")
     out = h.say(A, "مک دونالد")                                                                         # asked in private: no city is needed to see a shift
-    assert is_scene(photo_of(out)) and "شیفت" in text_of(sent(out)[-1])
+    assert photo_of(out) is None and "شیفت" in text_of(sent(out)[-1])
 
 
-def test_the_municipal_screens_show_the_map_and_the_scene_of_the_work(h, caps):
+def test_the_municipal_screens_are_text_with_the_map_of_the_way(h, caps):
     out = h.say(A, "شهرداری", chat=CH)
-    assert is_scene(photo_of(out))
+    assert photo_of(out) is None
     datas = data_of(sent(out)[-1])
     offer = next(d for d in datas if d.startswith("jb:na:"))
     kind = offer.split(":")[2]
     out = press(h, A, offer)
-    assert photo_of(out) is not None and not is_scene(photo_of(out))                                   # far from the site: the map with the bag pin
+    assert is_map(photo_of(out))                                                                       # far from the site: the map with the bag pin
     task = work.current(h.db, A)
     press(h, A, f"jb:ng:{task['id']}:{A}")
     st = stand(h)
@@ -351,23 +374,27 @@ def test_the_municipal_screens_show_the_map_and_the_scene_of_the_work(h, caps):
     assert m["stops"][0]["kind"] == "work" and (m.get("walked") or m.get("legs") is None)
     arrive(h, A)
     out = press(h, A, f"jb:o:muni:{A}")
-    assert is_scene(photo_of(out))                                                                     # at the site: the workers
+    assert photo_of(out) is None and f"jb:nd:{task['id']}:{A}" in screen(out)[1]                       # at the site: text, no illustration of workers
     out = press(h, A, f"jb:nd:{task['id']}:{A}")
-    assert is_scene(photo_of(out)) and "✅" in screen(out)[0] and kind in ("sweep", "waste", "green")
+    assert photo_of(out) is None and "✅" in screen(out)[0] and kind in ("sweep", "waste", "green")
     assert max(caps) <= 1024
 
 
 def test_the_board_and_the_wallet_do_not_leave_a_wrong_picture_behind(h):
     out = h.say(A, "مشاغل", chat=CH)
-    assert is_scene(photo_of(out))
-    out = press(h, A, f"cs:w:{A}")                                                                     # the wallet is only text: the picture message is replaced
+    assert photo_of(out) is None and "مشاغل" in text_of(sent(out)[-1])
+    h.say(A, "اسنپ", chat=CH)
+    press(h, A, f"jb:sr:{A}")                                                                          # the ride's map message...
+    out = press(h, A, f"cs:w:{A}")                                                                     # ...the wallet is only text: the picture message is replaced
     assert any(isinstance(c, DeleteMessage) for c in out) and sent(out) and photo_of(out) is None
     assert "کیف" in text_of(sent(out)[-1]) or "پول" in text_of(sent(out)[-1])
-    out = h.press(A, f"jb:h:{A}", chat=CH, photo=False)                                                # the board pressed on a text message: a picture message replaces it
-    assert any(isinstance(c, DeleteMessage) for c in out) and is_scene(photo_of(out))
+    out = press(h, A, f"jb:h:{A}")                                                                     # the board pressed on a picture message: the text board replaces it
+    assert any(isinstance(c, DeleteMessage) for c in out) and photo_of(out) is None and "مشاغل" in text_of(sent(out)[-1])
 
 
 def test_when_the_old_message_cannot_be_deleted_the_screen_still_arrives(h, monkeypatch):
+    h.say(A, "اسنپ", chat=CH)
+    press(h, A, f"jb:sr:{A}")
     real = h.session.make_request
 
     async def refuse(bot, method, timeout=None):
@@ -376,51 +403,22 @@ def test_when_the_old_message_cannot_be_deleted_the_screen_still_arrives(h, monk
             raise TelegramBadRequest(method=method, message="Bad Request: message can't be deleted for everyone")
         return await real(bot, method, timeout)
     monkeypatch.setattr(h.session, "make_request", refuse)
-    out = h.press(A, f"jb:h:{A}", chat=CH, photo=False)                                                # photo wanted over a text message
-    assert is_scene(photo_of(out))                                                                     # sent as a new message instead
-    out = press(h, A, f"cs:w:{A}")                                                                     # text wanted over a photo message
+    out = press(h, A, f"cs:w:{A}")                                                                     # text wanted over a picture message
     assert any("EditMessageCaption" in type(c).__name__ for c in out)                                  # the caption carries it
 
 
 def test_a_picture_that_cannot_be_drawn_never_costs_the_screen(h, monkeypatch):
     def boom(*a, **k):
         raise RuntimeError("no fonts")
-    monkeypatch.setattr(scenes, "scene", boom)
-    out = h.say(A, "مشاغل", chat=CH)
-    assert photo_of(out) is None and not any(isinstance(c, SendPhoto) for c in out)
-    assert sent(out) and "مشاغل" in text_of(sent(out)[-1]) and find(data_of(sent(out)[-1]), "jb:o:snapp:")
-    monkeypatch.undo()
     monkeypatch.setattr(worldmap, "overlay", boom)                                                     # the markers fail: the plain city picture (or nothing) but the text is there
     task = ride(h)
     out = press(h, A, f"jb:o:snapp:{A}")
     assert "پراید" in screen(out)[0] and find(data_of((edits(out) or sent(out))[-1]), "jb:sd:")
 
 
-# ================================================================================================ the scenes themselves
-def test_every_scene_renders_in_both_languages_and_is_repeatable():
-    for lang in ("fa", "en"):
-        for kind in scenes.KINDS:
-            png = scenes.scene(kind, lang, title="Title", sub="Sub", chip="Chip", car="red", plate_text="1384", pax=3, frac=0.5, left_text="4h", muni_kind="waste")
-            assert png.startswith(PNG) and size_of(png) == (scenes.W, scenes.H) and len(png) < 900_000, (kind, lang)
-            assert png == scenes.scene(kind, lang, title="Title", sub="Sub", chip="Chip", car="red", plate_text="1384", pax=3, frac=0.5, left_text="4h", muni_kind="waste")
-    with pytest.raises(ValueError):
-        scenes.scene("nonsense", "fa")
-
-
-def test_the_scenes_change_with_the_car_the_passenger_and_the_progress():
-    base = dict(title="T", sub="S", chip="C", car="white", plate_text="1380", pax=0)
-    assert scenes.scene("snapp_pickup", "fa", **base) != scenes.scene("snapp_pickup", "fa", **dict(base, car="red"))
-    assert scenes.scene("snapp_pickup", "fa", **base) != scenes.scene("snapp_pickup", "fa", **dict(base, plate_text="1395"))
-    assert len({scenes.scene("snapp_pickup", "fa", **dict(base, pax=p)) for p in range(8)}) == 8        # every passenger carries something different
-    assert len({scenes.scene("mcd_work", "fa", title="T", frac=f / 4) for f in range(5)}) == 5
-    assert len({scenes.scene("muni_done", "fa", title="T", muni_kind=k) for k in work.MUNI_KINDS}) == 3
-
-
-def test_the_job_scenes_have_a_title_in_both_languages():
+def test_the_car_names_and_colours_exist_in_both_languages():
     from hypemarket.texts import EN, FA
-    for key in [k for k in FA if k.startswith("scene.") or k.startswith("snapp.color.") or k in ("snapp.car", "snapp.legend", "snapp.legend.dest")]:
+    for key in [k for k in FA if k.startswith("snapp.color.") or k in ("snapp.car", "snapp.legend", "snapp.legend.dest")]:
         assert key in EN, key
-    for key in [k for k in EN if k.startswith("scene.")]:
-        assert key in FA, key
     for c in work.CAR_COLORS:
         assert "snapp.color." + c in FA and "snapp.color." + c in EN

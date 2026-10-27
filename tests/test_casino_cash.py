@@ -49,8 +49,8 @@ def test_every_result_has_a_payout_and_every_chip_pays_whole_cents():
 # ============================================================================================== chips
 def test_the_chips_offered_are_the_ones_the_player_can_pay(h, d):
     v, lobby = enter(h, d, A)
-    assert t("fa", "mp.cas.lobby", cash=fmt.usd(100_00, "fa")) in lobby.caption                          # the lobby says how much cash there is
-    chips = d.go(A, lobby, t("fa", "mp.b.bj"))
+    chips = lobby                                                                                       # the entry screen IS the table: title, game, balance, bet prompt, chips
+    assert t("fa", "bj.cash", cash=fmt.usd(100_00, "fa")) in lobby.caption                               # it says how much cash there is
     assert [x for x, _ in chips.buttons][:5] == [chip_label(b) for b in C.CASINO_BETS_CENTS] and t("fa", "bj.pick") in chips.caption
     assert not h.db.q1("SELECT 1 FROM casino_games")                                                    # opening the table deals nothing and charges nothing
     set_cash(h, 7_00)
@@ -75,7 +75,7 @@ def test_stock_coins_cannot_buy_a_chip(h, d):
 
 def test_look_alike_digits_in_a_button_are_refused_not_crashed(h, d, monkeypatch):
     v, lobby = enter(h, d, A)
-    scripted(monkeypatch, ["10♠", "9♥"], ["10♣", "8♦"])
+    scripted(monkeypatch, ["10♠", "9♥"], ["10♣", "8♦"], ["K♠"])
     table_of(d, A, v, lobby)
     row = tuple(row_of(h, v.sid))
     cash0 = cash_of(h)
@@ -87,7 +87,6 @@ def test_look_alike_digits_in_a_button_are_refused_not_crashed(h, d, monkeypatch
 
 def test_a_chip_that_is_not_on_the_table_is_refused(h, d):
     v, lobby = enter(h, d, A)
-    d.go(A, lobby, t("fa", "mp.b.bj"))
     for cents in (1, 50, 99, 101, 150, 20_00, 50_00, 101_00, 1_000_000):
         out = d.press(A, f"mp:{v.sid}:bj:b:0:{cents}", v)
         assert (out.alerts or out.toasts) and not out.edits                                             # refused with a message, the screen is not redrawn
@@ -96,12 +95,16 @@ def test_a_chip_that_is_not_on_the_table_is_refused(h, d):
 
 # ============================================================================================== the money of one hand
 HANDS = [   # name, player, dealer, draws, buttons to press after the deal, result, profit in cents for a $5 bet
-    ("win", ["10♠", "9♥"], ["10♣", "8♦"], [], "s", "win", 5_00),
-    ("dealer busts", ["10♠", "9♥"], ["10♣", "6♦"], ["K♠"], "s", "dealer_bust", 5_00),
-    ("lose", ["10♠", "8♥"], ["10♣", "9♦"], [], "s", "lose", -5_00),
+    ("dealer must draw on 17 against 19 and busts", ["10♠", "9♥"], ["10♣", "7♦"], ["K♠"], "s", "dealer_bust", 5_00),
+    ("dealer draws and busts", ["10♠", "9♥"], ["10♣", "6♦"], ["K♠"], "s", "dealer_bust", 5_00),
+    ("dealer draws once and beats you", ["10♠", "9♥"], ["10♣", "7♦"], ["3♠"], "s", "lose", -5_00),
+    ("dealer draws twice and beats you", ["10♠", "9♥"], ["5♣", "4♦"], ["3♠", "4♥", "4♣"], "s", "lose", -5_00),
+    ("dealer already higher", ["10♠", "8♥"], ["10♣", "9♦"], [], "s", "lose", -5_00),
+    ("dealer draws on an equal total and busts", ["10♠", "K♥"], ["10♣", "Q♦"], ["5♠"], "s", "dealer_bust", 5_00),
+    ("dealer draws on an equal total and beats you", ["10♠", "K♥"], ["10♣", "Q♦"], ["A♠"], "s", "lose", -5_00),
     ("bust", ["10♠", "6♥"], ["10♣", "9♦"], ["K♠"], "h", "bust", -5_00),
-    ("push", ["10♠", "8♥"], ["10♣", "8♦"], [], "s", "push", 0),
-    ("hit to 21 stands by itself", ["10♠", "5♥"], ["10♣", "8♦"], ["6♠"], "h", "win", 5_00),
+    ("21 against 21 is a push", ["10♠", "5♥"], ["10♣", "8♦"], ["6♠", "3♣"], "h", "push", 0),
+    ("hit to 21, dealer busts", ["10♠", "5♥"], ["10♣", "8♦"], ["6♠", "K♣"], "h", "dealer_bust", 5_00),
     ("player blackjack", ["A♠", "K♥"], ["10♠", "9♦"], [], "", "player_blackjack", 7_50),
     ("dealer blackjack", ["10♠", "9♥"], ["A♦", "K♣"], [], "", "dealer_blackjack", -5_00),
     ("both blackjack", ["A♠", "K♥"], ["A♦", "Q♣"], [], "", "push_blackjack", 0),
@@ -125,7 +128,7 @@ def test_a_hand_costs_the_chip_and_pays_by_the_table(h, d, monkeypatch, name, pl
     expect = [("casino_bet", f"{v.sid}:1", -5_00)] + ([("casino_win", f"{v.sid}:1", 5_00 + profit)] if row["paid"] else [])
     assert ledger(h) == expect
     assert h.db.q1("SELECT cash FROM users WHERE id=?", (A,))["cash"] == stock0                         # the stock coins never moved
-    assert t("fa", "bj.stake", bet=fmt.usd(5_00, "fa")) in out.caption
+    assert t("fa", "bj.head", bet=fmt.usd(5_00, "fa")) in out.caption
     line = "bj.net.win" if profit > 0 else "bj.net.lose" if profit < 0 else "bj.net.push"
     assert t("fa", line, amount=fmt.usd(abs(profit), "fa")) in out.caption and t("fa", "bj.cash", cash=fmt.usd(100_00 + profit, "fa")) in out.caption
 
@@ -137,9 +140,9 @@ def test_the_english_table_shows_dollars(h, d, monkeypatch):
     v = walk_to_casino(h, d, B, "en")                                                                   # (a player who joins an English group plays in English)
     o = d.press(B, f"mp:{v.sid}:o:casino", v)
     lobby = d.go(B, o, t("en", "mp.b.enter"))
-    chips = d.go(B, lobby, t("en", "mp.b.bj"))
-    assert "$100.00" in lobby.caption and "$100.00" in chips.caption
-    scripted(monkeypatch, ["10♠", "9♥"], ["10♣", "8♦"])
+    chips = lobby                                                                                       # v0.18.2: entering the casino shows the chips at once
+    assert "$100.00" in chips.caption and "Cash balance" in chips.caption
+    scripted(monkeypatch, ["10♠", "9♥"], ["10♣", "8♦"], ["K♠"])
     out = d.press(B, chip_data(chips, 10_00, "en"), v)
     assert "$10.00" in out.caption
     out = d.press(B, f"mp:{v.sid}:bj:s:{row_of(h, v.sid)['seq']}", v)
@@ -160,7 +163,7 @@ def test_the_next_hand_after_a_loss_to_zero_has_no_chips(h, d, monkeypatch):
 
 def test_hand_numbers_move_on_and_every_hand_has_its_own_ledger_rows(h, d, monkeypatch):
     v, lobby = enter(h, d, A)
-    scripted(monkeypatch, ["10♠", "9♥"], ["10♣", "8♦"])
+    scripted(monkeypatch, ["10♠", "9♥"], ["10♣", "8♦"], ["K♠"])
     out = table_of(d, A, v, lobby, bet=1_00)
     out = d.press(A, f"mp:{v.sid}:bj:s:{row_of(h, v.sid)['seq']}", v)
     scripted(monkeypatch, ["10♠", "8♥"], ["10♣", "9♦"])
@@ -195,7 +198,7 @@ def test_a_failure_while_taking_the_chip_leaves_nothing_behind(h, d, monkeypatch
 
 def test_a_failure_while_paying_undoes_the_whole_press(h, d, monkeypatch):
     v, lobby = enter(h, d, A)
-    scripted(monkeypatch, ["10♠", "9♥"], ["10♣", "8♦"])
+    scripted(monkeypatch, ["10♠", "9♥"], ["10♣", "8♦"], ["K♠"])
     out = table_of(d, A, v, lobby, bet=5_00)
     before = tuple(row_of(h, v.sid))
     real = cash.apply
@@ -222,14 +225,13 @@ def test_a_failure_on_a_natural_undoes_the_deal(h, d, monkeypatch):
             raise RuntimeError("disk on fire")
         return real(db, uid, delta, kind, *a, **k)
     monkeypatch.setattr(cash, "apply", boom)
-    chips = d.go(A, lobby, t("fa", "mp.b.bj"))
-    d.press(A, chip_data(chips, 5_00), v)
+    d.press(A, chip_data(lobby, 5_00), v)
     assert not h.db.q1("SELECT 1 FROM casino_games") and cash_of(h) == 100_00 and not ledger(h)
 
 
 def test_a_hand_is_charged_and_paid_once_however_often_it_is_asked(h, d, monkeypatch):
     v, lobby = enter(h, d, A)
-    scripted(monkeypatch, ["10♠", "9♥"], ["10♣", "8♦"])
+    scripted(monkeypatch, ["10♠", "9♥"], ["10♣", "8♦"], ["K♠"])
     out = table_of(d, A, v, lobby, bet=5_00)
     row = row_of(h, v.sid)
     stand = f"mp:{v.sid}:bj:s:{row['seq']}"
@@ -246,7 +248,7 @@ def test_a_hand_is_charged_and_paid_once_however_often_it_is_asked(h, d, monkeyp
 
 def test_nobody_can_put_a_chip_on_somebody_elses_table(h, d, monkeypatch):
     v, lobby = enter(h, d, A)
-    scripted(monkeypatch, ["10♠", "9♥"], ["10♣", "8♦"])
+    scripted(monkeypatch, ["10♠", "9♥"], ["10♣", "8♦"], ["K♠"])
     out = table_of(d, A, v, lobby)
     d.press(A, f"mp:{v.sid}:bj:s:{row_of(h, v.sid)['seq']}", v)
     d.open(B)
@@ -262,9 +264,9 @@ def test_nobody_can_put_a_chip_on_somebody_elses_table(h, d, monkeypatch):
 
 # ============================================================================================== forgotten hands
 def forgotten_hand(h, d, monkeypatch, bet=5_00):
-    """A running hand (player 19 against a dealer who has 17 and will stand) that the player walks away from."""
+    """A running hand (player 19 against a dealer who has 17 and, under the v0.18.2 rule, must draw: he busts) that the player walks away from."""
     v, lobby = enter(h, d, A)
-    scripted(monkeypatch, ["10♠", "9♥"], ["10♣", "7♦"])
+    scripted(monkeypatch, ["10♠", "9♥"], ["10♣", "7♦"], ["K♠"])
     table_of(d, A, v, lobby, bet=bet)
     assert row_of(h, v.sid)["state"] == "playing"
     return v
@@ -277,7 +279,7 @@ def test_an_idle_hand_is_stood_and_paid_once(h, d, monkeypatch):
     h.advance(120)
     assert casino.sweep(h.db) == 1
     row = row_of(h, v.sid)
-    assert row["state"] == "done" and row["result"] == "win" and row["paid"] == 10_00
+    assert row["state"] == "done" and row["result"] == "dealer_bust" and row["paid"] == 10_00
     assert cash_of(h) == 105_00 and ledger(h) == [("casino_bet", f"{v.sid}:1", -5_00), ("casino_win", f"{v.sid}:1", 10_00)]
     assert casino.sweep(h.db) == 0 and cash_of(h) == 105_00                                              # and never a second time
 
@@ -343,11 +345,11 @@ def test_the_background_loop_runs_the_sweep(h, d, monkeypatch):
 def test_a_payout_never_pushes_the_balance_past_the_cap(h, d, monkeypatch):
     v, lobby = enter(h, d, A)
     monkeypatch.setattr(C, "CASH_CAP_CENTS", 100_00)                                                    # tiny cap: after the $5 chip the room is exactly $5
-    scripted(monkeypatch, ["10♠", "9♥"], ["10♣", "8♦"])
+    scripted(monkeypatch, ["10♠", "9♥"], ["10♣", "8♦"], ["K♠"])
     table_of(d, A, v, lobby, bet=5_00)
     d.press(A, f"mp:{v.sid}:bj:s:{row_of(h, v.sid)['seq']}", v)
     row = row_of(h, v.sid)
-    assert row["result"] == "win" and row["paid"] == 5_00 and cash_of(h) == 100_00                       # a $10 payout, cut to the room that was left
+    assert row["result"] == "dealer_bust" and row["paid"] == 5_00 and cash_of(h) == 100_00                       # a $10 payout, cut to the room that was left
     assert ledger(h)[-1] == ("casino_win", f"{v.sid}:1", 5_00)
 
 
@@ -382,7 +384,7 @@ def test_two_hundred_random_hands_keep_the_books_exact(h):
 # ============================================================================================== what the player sees elsewhere
 def test_the_wallet_names_the_casino_rows(h, d, monkeypatch):
     v, lobby = enter(h, d, A)
-    scripted(monkeypatch, ["10♠", "9♥"], ["10♣", "8♦"])
+    scripted(monkeypatch, ["10♠", "9♥"], ["10♣", "8♦"], ["K♠"])
     table_of(d, A, v, lobby, bet=5_00)
     d.press(A, f"mp:{v.sid}:bj:s:{row_of(h, v.sid)['seq']}", v)
     text = lifeui.wallet(h.db, "fa", A).text
@@ -394,10 +396,10 @@ def test_the_wallet_names_the_casino_rows(h, d, monkeypatch):
 def test_the_texts_no_longer_promise_no_stakes():
     for lang in ("fa", "en"):
         from hypemarket import docs
-        for key in ("mp.obj.casino", "mp.cas.lobby", "bj.rules", "bj.title"):
-            txt = t(lang, key, cash="$1.00")
+        for key in ("mp.obj.casino", "bj.rules", "bj.head", "bj.pick"):
+            txt = t(lang, key, cash="$1.00", mins="30", bet="$1.00")
             assert "بدون شرط" not in txt and "no stakes" not in txt.lower() and "no-stakes" not in txt.lower()
-        assert t(lang, "bj.rules").count("3") >= 1 or "۳" in t(lang, "bj.rules")
+        assert "3" in t(lang, "bj.rules", mins="30") or "۳" in t(lang, "bj.rules", mins="30")
     assert "بدون شرط‌بندی" not in docs.DOCS["map"][0] and "no-stakes" not in docs.DOCS["map"][1]
 
 

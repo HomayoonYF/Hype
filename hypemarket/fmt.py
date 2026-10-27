@@ -126,3 +126,26 @@ def bar(frac: float, width: int = 10) -> str:
     frac = max(0.0, min(1.0, frac))
     full = int(round(frac * width))
     return "▰" * full + "▱" * (width - full)
+
+
+def kmh(units_per_second: float, lang: str) -> str:
+    """A speed (map units per second) as the game-world km/h players are told: «20 km/h» (the unit is written the same way in both languages)."""
+    v = C.to_kmh(units_per_second)
+    s = f"{v:.1f}".rstrip("0").rstrip(".")
+    return f"{LRM}{loc(s, lang)} km/h{LRM}"
+
+
+def area(units2: float, lang: str) -> str:
+    """A parcel's area (square map units) as game-world square metres, on the same scale as dist(): «۸۴۰ متر مربع» / «840 m²»."""
+    m2 = int(round(C.to_square_metres(max(0.0, float(units2)))))
+    return f"{num(m2, lang)} {'متر مربع' if lang == 'fa' else 'm²'}"
+
+
+def dist(units: float, lang: str) -> str:
+    """A road distance (map units) as game-world metres, or kilometres from 1 km up: «۳۳۳ متر» / «1.2 کیلومتر» (the same scale kmh() uses)."""
+    m = max(0.0, C.to_metres(float(units)))
+    if m < 995:
+        return f"{loc(str(int(round(m))), lang)} {'متر' if lang == 'fa' else 'm'}"
+    s = f"{m / 1000:.1f}".rstrip("0").rstrip(".")
+    return f"{loc(s, lang)} {'کیلومتر' if lang == 'fa' else 'km'}"
+

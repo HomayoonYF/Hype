@@ -270,10 +270,9 @@ def chip_data(out, bet, lang="fa"):
 
 
 def table_of(d, uid, v, lobby, bet=1_00):
-    """Open the table from the lobby and put down the chip `bet`: the hand is dealt and its screen returned."""
-    chips = d.go(uid, lobby, t("fa", "mp.b.bj"))
-    chips.sid, chips.mid = v.sid, v.mid
-    tb_ = d.press(uid, chip_data(chips, bet), v)
+    """Put down the chip `bet` on the entry screen (v0.18.2: entering the casino shows the chips at once): the hand is dealt and its screen returned."""
+    lobby.sid, lobby.mid = v.sid, v.mid
+    tb_ = d.press(uid, chip_data(lobby, bet), v)
     tb_.sid, tb_.mid = v.sid, v.mid
     return tb_
 
@@ -294,13 +293,18 @@ def scripted(monkeypatch, player, dealer, draws=()):
     monkeypatch.setattr(casino, "shuffled", lambda rng=None: [c for c in casino.new_deck() if c not in order] + list(reversed(order)))   # the next card is the LAST one
 
 
-def test_arriving_opens_the_door_and_the_lobby(h, d):
+def test_arriving_opens_the_door_and_the_entry_screen(h, d):
     v, lobby = enter(h, d, A)
-    assert t("fa", "mp.cas.title") in lobby.caption and t("fa", "bj.rules") in lobby.caption
-    assert t("fa", "mp.b.bj") in [x for x, _ in lobby.buttons] and t("fa", "mp.b.exit") in [x for x, _ in lobby.buttons]
-    assert h.db.q1("SELECT COUNT(*) c FROM casino_games")["c"] == 0                                    # nothing is dealt until the table is opened
+    lines = lobby.caption.split("\n")
+    assert lines[0] == t("fa", "mp.cas.title") and lines[1] == t("fa", "bj.game") == "♠️ بلک‌جک"            # «کازینو», then the game
+    assert t("fa", "bj.cash", cash=fmt.usd(100_00, "fa")) in lines and t("fa", "bj.pick") == lines[-1] == "مبلغ شرطت رو انتخاب کن."
+    assert "قانون" not in lobby.caption and "بلک‌جک ۳ به ۲" not in lobby.caption and "۱۷" not in lobby.caption   # no tutorial on the entry screen
+    labels = [x for x, _ in lobby.buttons]
+    assert labels[:5] == [chip_label(b) for b in C.CASINO_BETS_CENTS]                                  # the valid bets, as buttons
+    assert labels[5:] == [t("fa", "bj.b.rules"), t("fa", "mp.b.exit")]
+    assert h.db.q1("SELECT COUNT(*) c FROM casino_games")["c"] == 0                                    # nothing is dealt until a chip is chosen
     s = h.db.q1("SELECT * FROM map_sessions WHERE sid=?", (v.sid,))
-    assert s["view"] == "cas" and s["sel"] == "l5"
+    assert s["view"] == "bj" and s["sel"] == "l5"
     back = d.go(A, lobby, t("fa", "mp.b.exit"))
     assert t("fa", "mp.b.near") in [x for x, _ in back.buttons]                                        # «leave» goes back to the map
     assert not h.db.q1("SELECT 1 FROM casino_games")
@@ -354,10 +358,10 @@ def test_naturals_end_the_hand_at_once(player, dealer, result):
 
 
 def test_three_card_21_is_not_a_natural():
-    hh = hand(["7♠", "7♥"], ["10♠", "7♦"], draws=["7♦"][:0] + ["7♣"])
+    hh = hand(["7♠", "7♥"], ["10♠", "7♦"], draws=["7♣", "K♦"])
     hh = casino.hit(hh)
     assert casino.total(hh.player) == 21 and not casino.is_blackjack(hh.player)
-    assert hh.over and hh.result == "win"                                                              # 21 stands by itself; dealer holds 17
+    assert hh.over and hh.result == "dealer_bust" and hh.dealer == ["10♠", "7♦", "K♦"]                  # 21 stands by itself; the dealer on 17 must draw against it and busts
 
 
 def test_hit_then_bust_loses_immediately_and_reveals_the_hand():
@@ -367,30 +371,31 @@ def test_hit_then_bust_loses_immediately_and_reveals_the_hand():
     assert hh.over and hh.result == "bust" and casino.total(hh.player) == 26 and len(hh.dealer) == 2   # the dealer never draws against a bust
 
 
-def test_dealer_draws_to_seventeen_and_stands_on_every_seventeen():
-    hh = hand(["10♠", "9♥"], ["5♠", "6♦"], draws=["4♣", "5♥"])                                         # 11 -> 15 -> 20
+def test_the_dealer_tries_to_beat_the_player_instead_of_standing_on_17():
+    hh = hand(["10♠", "9♥"], ["10♦", "7♦"], draws=["3♣"])                                              # 19 against 17: the dealer must draw (v0.18.2)
     casino.stand(hh)
-    assert hh.dealer == ["5♠", "6♦", "4♣", "5♥"] and hh.over and hh.result == "lose"                    # 19 against 20
-    hh = hand(["10♠", "7♥"], ["A♠", "6♦"], draws=["9♣"])                                               # soft 17: stands
+    assert hh.dealer == ["10♦", "7♦", "3♣"] and hh.result == "lose"                                    # 20 beats 19
+    hh = hand(["10♠", "9♥"], ["A♠", "6♦"], draws=["3♣"])                                               # soft 17 draws too
     casino.stand(hh)
-    assert hh.dealer == ["A♠", "6♦"] and hh.result == "push"
-    hh = hand(["10♠", "8♥"], ["10♠", "7♦"], draws=["2♣"])                                              # hard 17: stands
+    assert hh.dealer == ["A♠", "6♦", "3♣"] and casino.total(hh.dealer) == 20 and hh.result == "lose"
+    hh = hand(["10♠", "7♥"], ["10♠", "8♦"])                                                            # 17 against 18: already ahead, no card
     casino.stand(hh)
-    assert len(hh.dealer) == 2 and hh.result == "win"
-    hh = hand(["10♠", "8♥"], ["10♦", "6♦"], draws=["A♣"])                                              # 16 draws an ace: 17 and stands
-    casino.stand(hh)
-    assert hh.dealer == ["10♦", "6♦", "A♣"] and casino.total(hh.dealer) == 17 and hh.result == "win"
+    assert len(hh.dealer) == 2 and hh.result == "lose"
 
 
 def test_results_win_lose_push_and_dealer_bust():
     for player, dealer, draws, expect in [
-        (["10♠", "9♥"], ["10♦", "7♦"], [], "win"),
+        (["10♠", "9♥"], ["10♦", "7♦"], ["K♣"], "dealer_bust"),                                          # the only way to beat this dealer: he goes over
         (["10♠", "7♥"], ["10♦", "9♦"], [], "lose"),
-        (["10♠", "8♥"], ["10♦", "8♦"], [], "push"),
+        (["10♠", "8♥"], ["10♦", "8♦"], ["K♣"], "dealer_bust"),                                          # an equal 18 is not a win for him: he draws, and busts
         (["10♠", "8♥"], ["10♦", "6♦"], ["K♣"], "dealer_bust"),
+        (["7♠", "7♥", "7♣"], ["10♦", "8♦"], ["3♣"], "push"),                                            # 21 against 21: nothing beats it
     ]:
-        hh = hand(player, dealer, draws)
-        casino.stand(hh)
+        hh = hand(player[:2], dealer, draws=(["7♣"] if len(player) == 3 else []) + draws)
+        if len(player) == 3:
+            casino.hit(hh)
+        else:
+            casino.stand(hh)
         assert hh.over and hh.result == expect, (player, dealer, hh.result)
         assert casino.outcome(hh.result) == {"win": "win", "dealer_bust": "win", "lose": "lose", "push": "push"}[expect]
 
@@ -467,7 +472,7 @@ def test_playing_a_hand_through_the_buttons(h, d, monkeypatch):
     assert "10♠ 5♥" in table.caption and "9♣" in table.caption and "7♦" not in table.caption and "🎴" in table.caption   # the second dealer card is hidden
     labels = [x for x, _ in table.buttons]
     assert t("fa", "mp.b.hit") in labels and t("fa", "mp.b.stand") in labels and chip_label(1_00) not in labels      # no new chips while a hand is being played
-    assert t("fa", "bj.stake", bet=fmt.usd(1_00, "fa")) in table.caption                              # the bet of this hand is shown
+    assert t("fa", "bj.head", bet=fmt.usd(1_00, "fa")) in table.caption and t("fa", "bj.turn") in table.caption     # the bet of this hand and whose move it is
     assert cash_of(h) == 99_00                                                                          # and the chip is already off the player's cash
     hit = d.go(A, table, t("fa", "mp.b.hit"))
     hit.sid, hit.mid = v.sid, v.mid
@@ -493,7 +498,7 @@ def test_every_screen_of_the_table_fits_telegram_in_both_languages(h, d):
         v = walk_to_casino(h, d, uid, lang)
         o = d.press(uid, f"mp:{v.sid}:o:casino", v)
         lobby = d.go(uid, o, t(lang, "mp.b.enter"))
-        chips = d.go(uid, lobby, t(lang, "mp.b.bj"))                                                      # the table before the first hand: the chips
+        chips = lobby                                                                                     # the entry screen: title, balance and the chips
         assert len(lobby.caption) <= 1024 and len(chips.caption) <= 1024
         assert [x for x, _ in chips.buttons][:5] == [chip_label(b, lang) for b in C.CASINO_BETS_CENTS]   # $1 $5 $10 $25 $100 (the new player has $100)
         table = d.press(uid, chip_data(chips, 1_00, lang), v)
@@ -554,7 +559,7 @@ def test_one_player_with_two_map_messages_has_two_separate_tables(h, d, monkeypa
 
 def test_repeated_and_stale_button_presses_are_applied_once(h, d, monkeypatch):
     v, lobby = enter(h, d, A)
-    scripted(monkeypatch, ["2♠", "3♥"], ["9♣", "7♦"], draws=["4♥", "5♠", "6♣", "K♠"])
+    scripted(monkeypatch, ["2♠", "3♥"], ["2♣", "3♦"], draws=["4♥", "5♠", "6♣", "K♠"])               # 9 after the hit; the dealer holds 5, so he must draw (5♠ -> 10)
     table = table_of(d, A, v, lobby)
     hit = [dd for x, dd in table.buttons if x == t("fa", "mp.b.hit")][0]
     stand = [dd for x, dd in table.buttons if x == t("fa", "mp.b.stand")][0]
@@ -566,7 +571,7 @@ def test_repeated_and_stale_button_presses_are_applied_once(h, d, monkeypatch):
     assert "4♥" in first.caption and t("fa", "bj.stale") in second.toasts[-1] and "5♠" not in second.caption
     assert "4♥" in second.caption                                                                      # the stale press shows the real state, it does not guess
     old_stand = d.press(A, stand, v)                                                                   # the stand button of the first screen: its seq is gone
-    assert t("fa", "bj.stale") in old_stand.toasts[-1] and json.loads(h.db.q1("SELECT dealer FROM casino_games WHERE sid=?", (v.sid,))["dealer"]) == ["9♣", "7♦"]
+    assert t("fa", "bj.stale") in old_stand.toasts[-1] and json.loads(h.db.q1("SELECT dealer FROM casino_games WHERE sid=?", (v.sid,))["dealer"]) == ["2♣", "3♦"]
     row = h.db.q1("SELECT * FROM casino_games WHERE sid=?", (v.sid,))
     now_stand = [dd for x, dd in mapkit.buttons_of(first.edit) and [(a, b) for a, b in first.buttons] if x == t("fa", "mp.b.stand")][0]
     done = d.press(A, now_stand, v)
@@ -710,8 +715,8 @@ def test_the_casino_is_blackjack_only_and_stakes_life_cash_only(h, d):
     cols = {r["name"] for r in h.db.qa("PRAGMA table_info(casino_games)")}
     assert cols == {"sid", "world_id", "user_id", "deck", "player", "dealer", "state", "result", "seq", "created_at", "updated_at", "bet", "hand_no", "paid"}
     v, lobby = enter(h, d, A)
-    games = [x for x, _ in lobby.buttons if x != t("fa", "mp.b.exit")]
-    assert games == [t("fa", "mp.b.bj")]                                                               # the lobby offers one game: blackjack
+    others = [x for x, _ in lobby.buttons if not x.startswith("💵")]
+    assert others == [t("fa", "bj.b.rules"), t("fa", "mp.b.exit")]                                     # the entry offers chips, the rules and the door: blackjack is the one game
     table = table_of(d, A, v, lobby)
     for screen in (lobby, table):
         for label, data in screen.buttons:

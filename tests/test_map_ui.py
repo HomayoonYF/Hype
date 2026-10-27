@@ -380,7 +380,14 @@ def test_the_renderer_draws_exactly_that_label_and_normalizes_any_source(monkeyp
 
 
 def test_no_map_rendering_source_contains_the_old_spelling():
+    """The renderer and every string it DRAWS into the picture keep the plain-space «نقشه ی» (the shaper renders the half-space form badly in a PNG).
+    Real Telegram text (captions, errors, help) uses the standard «نقشه‌ی» since v0.18.2, so only the drawn strings are checked."""
     import pathlib
-    for name in ("worldmap.py", "texts_map.py", "texts_world.py", "docs.py"):
-        src = (pathlib.Path(worldmap.__file__).parent / name).read_text(encoding="utf-8")
-        assert "نقشهی" not in src and "نقشه‌ی" not in src, name
+    from hypemarket.texts import EN, FA
+    src = (pathlib.Path(worldmap.__file__).parent / "worldmap.py").read_text(encoding="utf-8")
+    assert "نقشهی" not in src and "نقشه‌ی" not in src
+    drawn = [k for k in FA if k.startswith(("map.lm.", "map.zone.", "map.legend.")) or k in ("map.title", "map.subtitle")]
+    assert len(drawn) > 10
+    for table in (FA, EN):
+        for k in drawn:
+            assert "نقشهی" not in table.get(k, "") and "نقشه‌ی" not in table.get(k, ""), k

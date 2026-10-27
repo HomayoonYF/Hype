@@ -287,9 +287,39 @@ def _env_num(name: str, default: float, lo: float, hi: float) -> float:
     return min(hi, max(lo, v))
 
 
+# THE GAME-WORLD SCALE (v0.18.2). The map is measured in "map units"; players are told distances in metres / kilometres and speeds in km/h. ONE conversion ties
+# them together, and nothing else converts: UNITS_PER_KM map units are one kilometre of the game world. The speeds players are told are the game-world values
+# WALK_KMH_DEFAULT = 20 km/h and CAR_KMH_DEFAULT = 40 km/h (the rental Pride); at this scale they are exactly 10 and 20 map units a second, which is what trips were
+# always planned with, so saved trips, durations and ETAs are unchanged. Travel time = road length / speed in map units and seconds, as before; the km/h, metres
+# and minutes on screen are derived from the same numbers (fmt.kmh, fmt.dist), so a screen can never say one thing while the movement does another.
+UNITS_PER_KM = 1800.0
+WALK_KMH_DEFAULT = 20.0
+CAR_KMH_DEFAULT = 40.0
+
+
+def kmh_to_units(kmh: float) -> float:
+    """A game-world speed in km/h as map units per second."""
+    return kmh * UNITS_PER_KM / 3600.0
+
+
+def to_kmh(units_per_second: float) -> float:
+    """A speed in map units per second as game-world km/h."""
+    return units_per_second * 3600.0 / UNITS_PER_KM
+
+
+def to_metres(units: float) -> float:
+    """A distance in map units as game-world metres."""
+    return units * 1000.0 / UNITS_PER_KM
+
+
+def to_square_metres(units2: float) -> float:
+    """An area in square map units as game-world square metres."""
+    return units2 * (1000.0 / UNITS_PER_KM) ** 2
+
+
 def walk_speed() -> float:
-    """Map units a player walks per second (WALK_SPEED, default 10: the 1360-unit-wide city is crossed in about two minutes)."""
-    return _env_num("WALK_SPEED", 10.0, 1.0, 100.0)
+    """Map units a player walks per second: 10 = 20 km/h (WALK_SPEED in .env overrides it; the screens then show the matching km/h). The 1360-unit-wide city is crossed in about two minutes."""
+    return _env_num("WALK_SPEED", kmh_to_units(WALK_KMH_DEFAULT), 1.0, 100.0)
 
 
 def nearby_radius() -> float:
@@ -323,17 +353,16 @@ FX_UNITS_PER_CENT = 200                    # THE RATE (v0.18.1): 1,000 🪙 (= 1
                                            # (v0.18 had 50 units per cent: 1,000 🪙 = $20.00). Only this number sets the rate; texts and limits are derived from it.
 FX_QUOTE_TTL = 120                         # seconds a confirmation screen stays valid
 FX_MAX_COINS = 10 ** 12                    # most coins one exchange may move (so typed junk like 99999999999999999999 is refused)
-FX_MAX_CENTS = 10 ** 12                    # ...and most cents
 
 # Side jobs. Every number that balances them is HERE and nowhere else (cents unless the name says otherwise).
 # CALIBRATION (see README §16 and tests/test_life_jobs.py::test_job_earnings_stay_modest_and_ordered): the stock game pays about 1,000 🪙 a day
 # of active play = $5 a day at the fixed exchange rate (v0.18 had $20). These values were fitted on the real generated cities (12 seeds) so that, per hour of
 # ACTIVE play, Snapp pays about $10, municipal work about $7 and McDonald's about $1.50 (passive: you only start and collect), i.e. an hour of side
 # work is worth roughly half a day of stock income, Snapp never exceeds ~1.6x municipal work, and nothing is "instant wealth".
-CAR_SPEED_DEFAULT = 20.0                   # map units per second in the rental car (walking is 10, so the car is 2x); env CAR_SPEED
+CAR_SPEED_DEFAULT = kmh_to_units(CAR_KMH_DEFAULT)        # map units per second in the rental Pride = 40 km/h = 20 units/s (walking is 20 km/h); env CAR_SPEED
 SNAPP_FEE_CENTS = 20                       # rental fee of the car, charged ONCE per completed ride, out of the payout (nothing is charged for an abandoned ride)
 SNAPP_BASE_FARE_CENTS = 22                 # fare = base + per-100-units of ROAD distance of the ride (pickup to destination); base MUST exceed the fee
-SNAPP_PER_100_CENTS = 3
+SNAPP_PER_100_CENTS = 3                    # ...3 cents per 100 map units of road = 54 cents per kilometre (snapp_per_km_cents(); the fare is computed in map units and rounds down to a cent)
 SNAPP_TIP_MAX_CENTS = 10                   # a tip is 0..this, decided by the server from the saved ride (never from anything the player sends)
 SNAPP_TIP_ODDS = (3, 5)                    # a tip happens in 3 of 5 rides on average (about 3 cents a ride: roughly 15% of the income)
 SNAPP_PICKUP_RANGE = (120.0, 480.0)        # road distance from the player to the passenger
@@ -359,6 +388,11 @@ HUG_NEED_NEAR = True                       # a hug needs both players near each 
 def car_speed() -> float:
     """Map units per second of the rental car (CAR_SPEED, default 20, range 1-200)."""
     return _env_num("CAR_SPEED", CAR_SPEED_DEFAULT, 1.0, 200.0)
+
+
+def snapp_per_km_cents() -> int:
+    """The per-distance part of a Snapp fare as cents per game-world kilometre (what the terms screen shows): SNAPP_PER_100_CENTS per 100 map units."""
+    return int(round(SNAPP_PER_100_CENTS * UNITS_PER_KM / 100.0))
 
 
 def display_utc_offset() -> int:
