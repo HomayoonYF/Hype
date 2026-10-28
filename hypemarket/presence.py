@@ -1,6 +1,7 @@
 """Where the players of a city are, how they walk, and who is near whom (v0.17).
 
-Everything a player's marker shows comes from three tables: `world_players` (one row per player per city: the last place they stood still),
+Everything a player's marker shows comes from three tables: `world_players` (one row per player per city: the last place they stood still; since v0.19 only the
+row of the character's CURRENT city is ever read, the rows an older version wrote in other cities are kept but dormant: see character.py),
 `world_trips` (a walk: the saved route, its length, the walking speed it was planned with, when it started and when it ends) and the saved
 city itself. Nothing is stored about «where the walker is right now»: that is worked out from the route and the clock whenever somebody looks.
 
@@ -12,8 +13,9 @@ city itself. Nothing is stored about «where the walker is right now»: that is 
   Arrival is applied lazily by `settle` (the next time that player acts, or anybody looks at the saved row), in one transaction that also
   marks the trip arrived and writes the destination into the player's row. No timers, no background task; a restart loses nothing.
 * One walk at a time per player per city: a partial UNIQUE index on (world, player) WHERE state = 'walking'.
-* Nearby: other players of the SAME city whose road distance to you is at most the configured radius (straight lines are only used to skip
-  the obviously far ones: a road is never shorter than the straight line).
+* Nearby: the finished characters whose CURRENT city is this one (a character is present in exactly one city, whatever group they type in, so an old row in
+  another city can never show up as a second copy) and whose road distance to you is at most the configured radius (straight lines are only used to skip
+  the obviously far ones: a road is never shorter than the straight line). They are named by their first name.
 No function here touches money, stocks, XP or anything outside the five map tables.
 """
 from __future__ import annotations
@@ -252,13 +254,15 @@ class Other:
 
 
 def nearby(db, city, uid: int, pos, now: int | None = None, radius: float | None = None, limit: int | None = None) -> list:
-    """Initialized players of THIS city within `radius` road units of `pos`, nearest first (ties: lower Telegram ID)."""
+    """Finished characters whose current city is THIS city, within `radius` road units of `pos`, nearest first (ties: lower Telegram ID). A player who has no
+    finished character, or whose character lives in another city, is never listed here, however many old rows they have in this one."""
     now = core.now() if now is None else now
     radius = C.nearby_radius() if radius is None else radius
     limit = C.MAP_MAX_OTHERS if limit is None else limit
     trips = {r["user_id"]: r for r in db.qa("SELECT * FROM world_trips WHERE world_id=? AND state='walking'", (city.id,))}
     cand = []
-    for r in db.qa("SELECT p.user_id, p.x, p.y, u.name, u.username, u.badge, u.id FROM world_players p JOIN users u ON u.id=p.user_id "
+    for r in db.qa("SELECT p.user_id, p.x, p.y, c.first_name FROM world_players p JOIN users u ON u.id=p.user_id "
+                   "JOIN characters c ON c.user_id=p.user_id AND c.current_world_id=p.world_id AND c.setup_state='done' "
                    "WHERE p.world_id=? AND p.user_id<>? AND u.banned=0 AND u.bot=0", (city.id, uid)):
         here = (r["x"], r["y"])
         tr = trips.get(r["user_id"])
@@ -278,7 +282,7 @@ def nearby(db, city, uid: int, pos, now: int | None = None, radius: float | None
         if d <= radius:
             tr = trips.get(r["user_id"])
             mode = tr["mode"] if tr is not None and walking and tr["mode"] else "walk"
-            out.append(Other(r["user_id"], core.display_name(r, with_badge=False), here, d, walking, mode,
+            out.append(Other(r["user_id"], r["first_name"], here, d, walking, mode,
                              trip_heading(tr, now) if mode == "car" else 0.0))
     out.sort(key=lambda o: (o.dist, o.uid))
     return out[:limit]

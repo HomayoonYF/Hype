@@ -9,8 +9,9 @@ import copy
 import pytest
 
 import test_bot as tb
+import charkit
 import mapkit
-from hypemarket import config as C, core, docs, interact, presence, texts, world, worldmap, worldplaces
+from hypemarket import character, config as C, core, docs, interact, presence, texts, world, worldmap, worldplaces
 from hypemarket.core import GameError
 from hypemarket.db import Database
 from aiogram.methods import AnswerCallbackQuery, EditMessageText, SendMessage
@@ -36,6 +37,8 @@ class Env:
             core.ensure_user(self.db, u, f"u{u}", f"User{u}", lang="fa")
             self.db.x("INSERT OR IGNORE INTO group_members(group_id,user_id,last_seen) VALUES(?,?,?)", (CH, u, T0))
         w, _ = world.save_world(self.db, CH, copy.deepcopy(layout))
+        for u in (A, B, X, Y):
+            charkit.complete(self.db, u, world_id=w["id"])                              # v0.19: people near each other are finished characters of this city
         self.city = worldplaces.load_city(self.db, w)
 
     def adv(self, s):
@@ -316,9 +319,10 @@ def h(layout):
     worldmap.cache_clear()
     worldplaces.cache_clear()
     hh = tb.Harness()
-    world.save_world(hh.db, CH, copy.deepcopy(layout))
+    w, _ = world.save_world(hh.db, CH, copy.deepcopy(layout))
     for u in (A, B, X):
         hh.say(u, "شروع")
+        character.assign_world(hh.db, u, w["id"])                                     # (v0.19: the city comes with the character's first life-game entry)
         hh.say(u, "سلام به همه", chat=CH, name=f"User{u}")
         hh.db.x("INSERT OR IGNORE INTO group_members(group_id,user_id,last_seen) VALUES(?,?,?)", (CH, u, T0))      # (the bot records members in batches; the test does it at once)
     return hh

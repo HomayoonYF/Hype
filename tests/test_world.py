@@ -16,7 +16,7 @@ import pytest
 from aiogram.methods import AnswerCallbackQuery, EditMessageText, SendMessage, SendPhoto
 from PIL import Image
 
-from hypemarket import cards, core, db as dbmod, docs, handlers, sections, social, textparse, views, world, worldgeom as G, worldmap
+from hypemarket import character, cards, core, db as dbmod, docs, handlers, sections, social, textparse, views, world, worldgeom as G, worldmap
 from hypemarket.db import SCHEMA_VERSION, Database
 from hypemarket.texts import ALIASES, EN, FA
 
@@ -528,12 +528,20 @@ def test_the_picture_follows_the_groups_language(h):
     assert h.db.q1("SELECT COUNT(*) c FROM worlds")["c"] == 1                                       # one city, two languages
 
 
-def test_each_group_gets_its_own_city(h):
+def test_a_player_has_one_city_whatever_group_they_type_in(h):
     a = photos(h.say(1, "مپ", chat=CH1))[0]
     b = photos(h.say(1, "مپ", chat=CH2))[0]
+    assert world.get_world(h.db, CH2) is None and h.db.q1("SELECT COUNT(*) c FROM worlds")["c"] == 1            # the second group did not get a city for this player
+    assert mapkit.same_city(a.photo.data, b.photo.data) and a.caption == b.caption
+
+
+def test_every_player_gets_the_city_of_the_group_of_their_first_life_game_entry(h):
+    a = photos(h.say(1, "مپ", chat=CH1))[0]
+    b = photos(h.say(2, "مپ", chat=CH2))[0]
     wa, wb = world.get_world(h.db, CH1), world.get_world(h.db, CH2)
     assert wa["id"] != wb["id"] and a.photo.data != b.photo.data and a.caption != b.caption
     assert h.db.q1("SELECT COUNT(*) c FROM worlds")["c"] == 2
+    assert character.get(h.db, 1)["current_world_id"] == wa["id"] and character.get(h.db, 2)["current_world_id"] == wb["id"]
 
 
 def test_private_chat_explains_and_creates_nothing(h):

@@ -151,6 +151,76 @@ CREATE TABLE IF NOT EXISTS interactions(
 );
 CREATE UNIQUE INDEX IF NOT EXISTS ux_hug_pending ON interactions(from_id, to_id) WHERE kind='hug' AND state='pending';
 CREATE INDEX IF NOT EXISTS ix_inter_from ON interactions(from_id, kind, created_at);
+
+-- v0.19: the permanent character. Identity (characters), the citizen-ID counter (citizen_seq), the genes and the visible traits (character_genes /
+-- character_traits) and the character's own XP (character_xp / character_xp_log) are separate tables on purpose; nothing in here touches the stock game.
+CREATE TABLE IF NOT EXISTS citizen_seq(id INTEGER PRIMARY KEY CHECK(id = 1), next_id INTEGER NOT NULL CHECK(next_id >= 0));
+INSERT OR IGNORE INTO citizen_seq(id, next_id) VALUES(1, 0);
+CREATE TABLE IF NOT EXISTS characters(
+  user_id INTEGER PRIMARY KEY,
+  citizen_id INTEGER NOT NULL UNIQUE CHECK(citizen_id >= 0),
+  first_name TEXT NOT NULL DEFAULT '', last_name TEXT NOT NULL DEFAULT '',
+  gender TEXT CHECK(gender IS NULL OR gender IN ('male','female')),
+  setup_state TEXT NOT NULL DEFAULT 'first' CHECK(setup_state IN ('first','last','gender','done')),
+  age_started_at INTEGER,
+  birth_world_id INTEGER, current_world_id INTEGER,
+  origin TEXT NOT NULL DEFAULT 'new' CHECK(origin IN ('new','legacy')),
+  birth_basis TEXT NOT NULL DEFAULT 'spawn' CHECK(birth_basis IN ('spawn','legacy_presence','legacy_evidence','legacy_current')),
+  created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+  CHECK((birth_world_id IS NULL) = (current_world_id IS NULL)),
+  CHECK(setup_state = 'first' OR first_name <> ''),
+  CHECK(setup_state IN ('first','last') OR last_name <> ''),
+  CHECK(setup_state <> 'done' OR (gender IS NOT NULL AND age_started_at IS NOT NULL)),
+  CHECK(setup_state = 'done' OR age_started_at IS NULL)
+);
+CREATE INDEX IF NOT EXISTS ix_char_world ON characters(current_world_id);
+CREATE TRIGGER IF NOT EXISTS trg_char_insert BEFORE INSERT ON characters
+BEGIN
+  SELECT RAISE(ABORT, 'character: unknown user') WHERE NOT EXISTS(SELECT 1 FROM users WHERE id = NEW.user_id);
+  SELECT RAISE(ABORT, 'character: bots have none') WHERE EXISTS(SELECT 1 FROM users WHERE id = NEW.user_id AND bot = 1);
+  SELECT RAISE(ABORT, 'character: unknown world') WHERE (NEW.birth_world_id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM worlds WHERE id = NEW.birth_world_id))
+                                                      OR (NEW.current_world_id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM worlds WHERE id = NEW.current_world_id));
+END;
+CREATE TRIGGER IF NOT EXISTS trg_char_update BEFORE UPDATE ON characters
+BEGIN
+  SELECT RAISE(ABORT, 'character: immutable field') WHERE NEW.user_id IS NOT OLD.user_id OR NEW.citizen_id IS NOT OLD.citizen_id
+                                                         OR NEW.created_at IS NOT OLD.created_at OR NEW.origin IS NOT OLD.origin
+                                                         OR (OLD.birth_world_id IS NOT NULL AND (NEW.birth_world_id IS NOT OLD.birth_world_id OR NEW.birth_basis IS NOT OLD.birth_basis))
+                                                         OR (OLD.age_started_at IS NOT NULL AND NEW.age_started_at IS NOT OLD.age_started_at)
+                                                         OR (OLD.setup_state = 'done' AND (NEW.setup_state <> 'done' OR NEW.first_name IS NOT OLD.first_name
+                                                                                          OR NEW.last_name IS NOT OLD.last_name OR NEW.gender IS NOT OLD.gender));
+  SELECT RAISE(ABORT, 'character: a city once set is never cleared') WHERE OLD.current_world_id IS NOT NULL AND NEW.current_world_id IS NULL;
+  SELECT RAISE(ABORT, 'character: unknown world') WHERE NEW.current_world_id IS NOT NULL AND NEW.current_world_id IS NOT OLD.current_world_id
+                                                       AND NOT EXISTS(SELECT 1 FROM worlds WHERE id = NEW.current_world_id);
+END;
+CREATE TRIGGER IF NOT EXISTS trg_char_nodelete BEFORE DELETE ON characters
+BEGIN
+  SELECT RAISE(ABORT, 'character: a citizen id is never reused');
+END;
+CREATE TABLE IF NOT EXISTS character_genes(
+  user_id INTEGER NOT NULL, trait TEXT NOT NULL, allele1 TEXT NOT NULL, allele2 TEXT NOT NULL, PRIMARY KEY(user_id, trait)
+);
+CREATE TABLE IF NOT EXISTS character_traits(
+  user_id INTEGER NOT NULL, trait TEXT NOT NULL, code TEXT NOT NULL, PRIMARY KEY(user_id, trait)
+);
+CREATE TRIGGER IF NOT EXISTS trg_genes_insert BEFORE INSERT ON character_genes
+BEGIN SELECT RAISE(ABORT, 'genes: no such character') WHERE NOT EXISTS(SELECT 1 FROM characters WHERE user_id = NEW.user_id); END;
+CREATE TRIGGER IF NOT EXISTS trg_genes_update BEFORE UPDATE ON character_genes BEGIN SELECT RAISE(ABORT, 'genes are saved once'); END;
+CREATE TRIGGER IF NOT EXISTS trg_genes_delete BEFORE DELETE ON character_genes BEGIN SELECT RAISE(ABORT, 'genes are saved once'); END;
+CREATE TRIGGER IF NOT EXISTS trg_traits_insert BEFORE INSERT ON character_traits
+BEGIN SELECT RAISE(ABORT, 'traits: no such character') WHERE NOT EXISTS(SELECT 1 FROM characters WHERE user_id = NEW.user_id); END;
+CREATE TRIGGER IF NOT EXISTS trg_traits_update BEFORE UPDATE ON character_traits BEGIN SELECT RAISE(ABORT, 'traits are saved once'); END;
+CREATE TRIGGER IF NOT EXISTS trg_traits_delete BEFORE DELETE ON character_traits BEGIN SELECT RAISE(ABORT, 'traits are saved once'); END;
+CREATE TABLE IF NOT EXISTS character_xp(
+  user_id INTEGER PRIMARY KEY, xp INTEGER NOT NULL DEFAULT 0 CHECK(xp >= 0), updated_at INTEGER NOT NULL
+);
+CREATE TRIGGER IF NOT EXISTS trg_xp_only_up BEFORE UPDATE ON character_xp WHEN NEW.xp < OLD.xp
+BEGIN SELECT RAISE(ABORT, 'character xp only goes up'); END;
+CREATE TABLE IF NOT EXISTS character_xp_log(
+  id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, source TEXT NOT NULL, ref TEXT NOT NULL,
+  delta INTEGER NOT NULL CHECK(delta >= 0), xp_after INTEGER NOT NULL CHECK(xp_after >= 0), created_at INTEGER NOT NULL,
+  UNIQUE(user_id, source, ref)
+);
 """
 
 
@@ -199,7 +269,35 @@ def _migrate_5(conn) -> None:
     conn.execute("DROP TABLE IF EXISTS shorts")
 
 
-SCHEMA_VERSION = 9
+class _RawDb:
+    """The three calls character.py needs, on the bare connection of a migration (which already runs inside its own transaction)."""
+    def __init__(self, conn):
+        self.conn = conn
+
+    def x(self, sql, args=()):
+        return self.conn.execute(sql, args)
+
+    def q1(self, sql, args=()):
+        return self.conn.execute(sql, args).fetchone()
+
+    def qa(self, sql, args=()):
+        return self.conn.execute(sql, args).fetchall()
+
+    @contextmanager
+    def tx(self):
+        yield self
+
+
+def _migrate_10(conn) -> None:
+    """v0.19: every existing human player with saved world activity gets a PENDING character (names and gender are still to be chosen by the player on their next
+    life-game entry): a citizen ID from the sequence (0, 1, 2, ... in ascending Telegram user ID), stable traits, 0 character XP, and a birthplace and current city
+    reconstructed from the old rows by the documented rule (character.legacy_choice). Only NEW rows are written (characters, genes, traits, xp, the counter): no
+    existing table, row, balance, ledger entry, city, position, trip, task or casino game is changed or removed, and running it again creates nothing."""
+    from . import character
+    character.migrate_legacy(_RawDb(conn))
+
+
+SCHEMA_VERSION = 10
 # version -> SQL (or a function taking the connection) upgrading a database FROM version-1.
 # New tables need no entry: SCHEMA creates them with IF NOT EXISTS.
 MIGRATIONS: dict = {
@@ -215,6 +313,7 @@ MIGRATIONS: dict = {
     7: "SELECT 1;",                          # v0.17: world_places / world_players / world_trips / map_sessions / casino_games are new tables from SCHEMA; no existing table or row changes
     8: _migrate_8,                           # v0.18: life cash + exchange + jobs + interactions tables (from SCHEMA), world_trips.mode, and the one-time $100 grant to existing players
     9: _migrate_9,                           # v0.18.1: casino_games.bet / hand_no / paid (blackjack for life cash); nothing existing changes
+    10: _migrate_10,                         # v0.19: characters (tables from SCHEMA) and a pending character for every player with saved world activity; nothing existing changes
 }
 
 

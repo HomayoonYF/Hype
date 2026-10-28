@@ -1,4 +1,4 @@
-"""World Interaction v1: inspect any location of a group's city  (`مپ P14`, `مپ L2`, `مپ D3`).
+"""World Interaction v1: inspect any location of the player's city  (`مپ P14`, `مپ L2`, `مپ D3`).
 
 This module only READS a saved layout. It never writes to the database and never touches the layout it is given: the same layout and
 the same ID always give the same answer, whatever the language, the picture size, the colours or the restart in between.

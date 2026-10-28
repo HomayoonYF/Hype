@@ -15,7 +15,7 @@ import logging
 import math
 import re
 
-from . import config as C, core, fmt, jobviz, mapui, presence, work, world, worldinspect, worldplaces
+from . import character, characterui, config as C, core, fmt, jobviz, mapui, presence, work, world, worldinspect, worldplaces
 from .core import GameError
 from .texts import t
 from .views import Reply, kb
@@ -29,10 +29,23 @@ DIV = "┄┄┄┄┄┄┄┄┄┄"                                  # the on
 
 
 class NoCity(Exception):
-    """The group's city could not be loaded (damaged or still failing to generate)."""
+    """The player's city could not be loaded (damaged or still failing to generate), or the player cannot enter it yet."""
     def __init__(self, key: str):
         super().__init__(key)
         self.key = key
+
+    def reply(self, c) -> Reply:
+        return Reply(text=t(c.lang, self.key))
+
+
+class NeedCharacter(NoCity):
+    """The player's character is not finished: no job works until it is (v0.19). Answered with the button that opens the private set-up chat."""
+    def __init__(self, ch):
+        super().__init__("char.need")
+        self.ch = ch
+
+    def reply(self, c) -> Reply:
+        return characterui.need_reply(c, self.ch)
 
 
 def R(c, text: str, rows: list, toast: str | None = None, alert: bool = False, pic=None) -> Reply:
@@ -50,14 +63,20 @@ def _car_of_receipt(rc: dict) -> dict:
 
 
 async def city_of(c):
-    """The chat's city (created on first use, exactly like «مپ»), or None in a private chat."""
+    """The player's CHARACTER's city (v0.19: the same one whatever group this is; a brand-new character gets this group's city, once, exactly like «مپ»), or None
+    in a private chat. NeedCharacter when the character is not finished: jobs are part of the life in the city and wait for it."""
     if not c.is_group:
         return None
+    ch = character.ensure_profile(c.db, c.uid)
+    if ch is None:
+        return None
     try:
-        w, _created = await world.aensure_world(c.db, c.chat.id)
+        w, _created = await world.aworld_for(c.db, c.uid, c.chat.id)
+        if not character.is_done(character.get(c.db, c.uid)):
+            raise NeedCharacter(ch)
         return await worldplaces.aload_city(c.db, w)
     except world.WorldError as e:
-        log.error("jobs: city of chat %s unavailable: %s", c.chat.id, e.code)
+        log.error("jobs: the city of user %s (chat %s) is unavailable: %s", c.uid, c.chat.id, e.code)
         raise NoCity("map.failed" if e.code == "generation_failed" else "map.corrupt")
 
 
@@ -154,7 +173,7 @@ async def board(c, toast: str | None = None) -> Reply:
     try:
         city = await city_of(c)
     except NoCity as e:
-        return Reply(text=t(lang, e.key))
+        return e.reply(c)
     if city is not None:
         rc = work.sync(db, city, c.uid, now)
         if rc is not None:                                           # a ride that ended while nobody was looking: show its receipt first
@@ -286,7 +305,7 @@ async def snapp(c, toast=None, alert=False) -> Reply:
     try:
         city = await city_of(c)
     except NoCity as e:
-        return Reply(text=t(lang, e.key))
+        return e.reply(c)
     if city is None:
         return _private(c, work.SNAPP, "اسنپ" if lang == "fa" else "snapp")
     rc = work.sync(db, city, c.uid)
@@ -374,7 +393,7 @@ async def mcd(c, toast=None, alert=False) -> Reply:
     try:
         city = await city_of(c)
     except NoCity as e:
-        return Reply(text=t(lang, e.key))
+        return e.reply(c)
     if city is None:
         return _private(c, work.MCD, "مک دونالد" if lang == "fa" else "mcdonalds")
     rc = work.sync(db, city, c.uid)
@@ -462,7 +481,7 @@ async def muni(c, toast=None, alert=False) -> Reply:
     try:
         city = await city_of(c)
     except NoCity as e:
-        return Reply(text=t(lang, e.key))
+        return e.reply(c)
     if city is None:
         return _private(c, work.MUNI, "شهرداری" if lang == "fa" else "municipal")
     rc = work.sync(db, city, c.uid)
@@ -523,7 +542,7 @@ async def handle(c) -> Reply:
     try:
         city = await city_of(c)
     except NoCity as e:
-        return Reply(toast=toast(e.key), alert=True)
+        return e.reply(c) if isinstance(e, NeedCharacter) else Reply(toast=toast(e.key), alert=True)
     if act == "mc":                                               # claiming a wage needs no city (it works in a private chat too)
         tid = _tid(arg[0] if arg else None)
         rc = work.mcd_claim(db, uid, tid, now) if tid is not None else None

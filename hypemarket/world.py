@@ -943,6 +943,41 @@ async def aensure_world(db: Database, chat_id: int) -> tuple:
             _locks.pop(chat_id, None)
 
 
+_char_locks: dict = {}
+
+
+async def aworld_for(db: Database, uid: int, chat_id: int) -> tuple:
+    """The saved city of player `uid`'s CHARACTER, as (world row, created). v0.19: the city of a character is decided by the character, never by the Telegram
+    group the player is typing in.
+
+    * The character already has a current city: that city is returned, whatever `chat_id` is. Nothing is created, moved or merged, and a row that is gone raises
+      WorldError('corrupt') (it is never silently replaced by another city).
+    * The character has none yet (a brand-new one, at its first life-game entry): the city of this group is used, built first if the group has none, and saved as
+      BOTH the birthplace and the current city, once. From then on every group gives the same answer. One player never builds two cities at once.
+    Raises GameError('char_none') when the player has no character profile (create it with character.ensure_profile first)."""
+    from . import character
+    ch = character.get(db, uid)
+    if ch is None:
+        raise core.GameError("char_none")
+    if ch["current_world_id"] is None:
+        lock = _char_locks.setdefault(uid, asyncio.Lock())
+        try:
+            async with lock:
+                ch = character.get(db, uid)
+                if ch["current_world_id"] is None:                      # (a concurrent call of the same player may have assigned it while we waited)
+                    w, created = await aensure_world(db, chat_id)
+                    character.assign_world(db, uid, w["id"])
+                    return character.current_world(db, uid), created
+        finally:
+            if not lock.locked():
+                _char_locks.pop(uid, None)
+    row = character.current_world(db, uid)
+    if row is None:
+        log.error("the city %s of character %s is missing", ch["current_world_id"], uid)
+        raise WorldError("corrupt")
+    return row, False
+
+
 async def aload_layout(world) -> dict:
     """`load_layout` in a worker thread (parsing and checking a whole city is pure work)."""
     return await asyncio.to_thread(load_layout, world)

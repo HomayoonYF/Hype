@@ -14,7 +14,7 @@ from aiogram import Bot, F, Router
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramRetryAfter
 from aiogram.types import BufferedInputFile, CallbackQuery, ChatMemberUpdated, InputMediaPhoto, LabeledPrice, Message, PreCheckoutQuery, User
 
-from . import achievements, adminpanel, analytics, backups, cash, charts, interact, lifeui, mapui, salary, config as C, core, events, fmt, gate, progress, quests, sections, shop, social, textparse, trading, trust, views, work, workui, world, worldinspect, worldmap, worldplaces
+from . import achievements, adminpanel, analytics, backups, cash, character, characterui, charts, interact, lifeui, mapui, salary, config as C, core, events, fmt, gate, progress, quests, sections, shop, social, textparse, trading, trust, views, work, workui, world, worldinspect, worldmap, worldplaces
 from .core import GameError
 from .db import Database
 from .texts import ALIASES, SOFT_ARGS, SOFT_EXACT, EXAMPLES, level_title, t
@@ -445,6 +445,12 @@ async def h_start(c: Ctx):
     u = core.need_user(c.db, c.uid)
     welcome = c.reply(t(c.lang, "welcome", name=fmt.esc(core.display_name(u, False)), brand=t(c.lang, "brand"), cash=fmt.coins(u["cash"], c.lang)))
     m = STOCK_PAYLOAD.match(c.args[0]) if c.args else None
+    if not c.is_group and not m:                          # v0.19: «/start char» (the button of the group message) and any later plain /start show the character set-up step the player is at
+        char_link = bool(c.args) and c.args[0] == "char"
+        ch = character.ensure_profile(c.db, c.uid) if char_link else character.get(c.db, c.uid)
+        if ch is not None and (char_link or not character.is_done(ch)):
+            step = characterui.screen(c.lang, ch, c.uid)
+            return step if char_link and not c.created else [welcome, step]
     if m and ticker_exists(c.db, m.group(1)):             # opened from a shared stock card: show that stock
         s = core.need_stock(c.db, m.group(1), active=False)
         card = views.stock_card(c.db, c.lang, s, None if c.is_group else c.uid)
@@ -1030,10 +1036,12 @@ async def h_grouprank(c: Ctx):
 
 @cmd("map")
 async def h_map(c: Ctx):
-    """The group's city (World Engine v1), now interactive (v0.17). One city per chat, generated once and then always the same saved layout;
+    """The player's city (World Engine v1), interactive since v0.17. v0.19: it is the city of the player's CHARACTER, the same one in every group; a group only
+    decides the city of a brand-new character (its first life-game entry), once. Every city is generated once and then always the same saved layout;
     every `مپ` opens a map session (owner-locked buttons, your marker, the people near you, walking, the casino: see mapui).
-    `مپ <ID>` (World Interaction v1) opens the same screen on one parcel, public place or district of THAT group's saved city. Looking
-    never changes the city; the only things written are the player's own position row (once), a session row and, on «go», a trip."""
+    `مپ <ID>` (World Interaction v1) opens the same screen on one parcel, public place or district of THAT saved city. Looking
+    never changes the city; the only things written are the player's own position row (once), a session row and, on «go», a trip.
+    A player whose character is not finished is sent to the private set-up chat first (characterui)."""
     if not c.is_group:
         return Reply(text=t(c.lang, "map.private"))
     ref = None
@@ -1043,11 +1051,16 @@ async def h_map(c: Ctx):
             if c.soft:
                 raise Ignore
             return Reply(text=t(c.lang, "wi.bad"))
+    ch = character.ensure_profile(c.db, c.uid)                           # v0.19: one permanent character per player, created once
+    if ch is None:
+        raise Ignore
     try:
-        w, created = await world.aensure_world(c.db, c.chat.id)
+        w, created = await world.aworld_for(c.db, c.uid, c.chat.id)      # the CHARACTER's city, whatever group this is (a brand-new character: this group's city, once)
+        if not character.is_done(character.get(c.db, c.uid)):
+            return characterui.need_reply(c, ch)
         city = await worldplaces.aload_city(c.db, w)
     except world.WorldError as e:
-        log.error("map of chat %s unavailable: %s", c.chat.id, e.code)
+        log.error("map of user %s in chat %s unavailable: %s", c.uid, c.chat.id, e.code)
         return Reply(text=t(c.lang, "map.failed" if e.code == "generation_failed" else "map.corrupt"))
     if created:
         log.info("world %s created for chat %s (seed %s)", w["id"], c.chat.id, w["seed"])
@@ -1058,6 +1071,20 @@ async def h_map(c: Ctx):
     except Exception:                                                     # drawing failed: the saved city stays exactly as it is
         log.exception("map of world %s failed", w["id"])
         return Reply(text=t(c.lang, "map.failed"))
+
+
+@cmd("charname")
+async def h_charname(c: Ctx):
+    """The plain private message that answers the character set-up (synthesised by handle_message: nobody can type this command)."""
+    if c.is_group:
+        raise Ignore
+    return characterui.handle_name(c, c.args[0] if c.args else "")
+
+
+@cbk("cr")
+async def cb_char(c: Ctx):
+    """cr:<action>[:<arg>]:<player id>: the character set-up buttons (private chat); the player id was checked against the presser."""
+    return characterui.handle_button(c)
 
 
 @cbk("mp")
@@ -1749,6 +1776,10 @@ async def handle_message(m: Message, app: App, text: str) -> None:
                 p = textparse.parse(f"fx {FX_PROMPTS[pend[0]]} {text}", app.botname)
             else:
                 p = textparse.parse(f"stocks {pend[0]} {text}", app.botname)   # the plain message is the command's arguments
+    if chat.type == "private" and (p is None or p.cmd == "stocks_unknown"):
+        ch = character.get(app.db, tg.id)
+        if ch is not None and ch["setup_state"] in ("first", "last"):     # v0.19: a plain private message answers the character set-up (never in a group)
+            p = textparse.Parsed("charname", [text], True)
     if not p or (p.cmd not in HANDLERS and not p.retired):
         return
     soft = group and not p.prefixed and not unambiguous(p)
@@ -1793,7 +1824,7 @@ async def on_photo(m: Message, app: App) -> None:
     await handle_message(m, app, m.caption)
 
 
-BOUND = {"pf", "cl", "up", "sk", "lg", "rb", "rug", "hp", "qs", "wh", "scp", "scr", "sal", "mn", "sm", "ad", "gate", "cs", "jb", "ia"}
+BOUND = {"pf", "cl", "up", "sk", "lg", "rb", "rug", "hp", "qs", "wh", "scp", "scr", "sal", "mn", "sm", "ad", "gate", "cs", "jb", "ia", "cr"}
 
 
 @router.callback_query()

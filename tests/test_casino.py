@@ -755,11 +755,11 @@ def test_schema_7_is_added_to_an_old_database_without_touching_its_data(tmp_path
     db.x("PRAGMA user_version=6")
     db.close()
     d2 = Database(path)
-    assert d2.q1("PRAGMA user_version")[0] == SCHEMA_VERSION == 9 and 7 in MIGRATIONS and 8 in MIGRATIONS and 9 in MIGRATIONS
+    assert d2.q1("PRAGMA user_version")[0] == SCHEMA_VERSION == 10 and 7 in MIGRATIONS and 8 in MIGRATIONS and 9 in MIGRATIONS and 10 in MIGRATIONS
     for tbl in ("world_places", "world_players", "world_trips", "map_sessions", "casino_games"):
         assert d2.q1("SELECT COUNT(*) c FROM " + tbl)["c"] == 0
     assert [tuple(r) for r in d2.qa("SELECT * FROM users")] == before_users and d2.q1("SELECT layout FROM worlds")["layout"] == layout
-    assert Database(path).q1("PRAGMA user_version")[0] == 9                                            # reopening is a no-op
+    assert Database(path).q1("PRAGMA user_version")[0] == 10                                           # reopening is a no-op
     assert worldplaces.ensure_all(d2) == 1                                                             # and the old city now gets its casino
 
 

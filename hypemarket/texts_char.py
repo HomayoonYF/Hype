@@ -1,0 +1,46 @@
+"""Strings of the character set-up (v0.19). Merged into texts.FA / texts.EN.
+These are IN-GAME character names, never real identities, and the texts say so."""
+
+FA_CHAR = {
+    "char.need": "🪪 قبل از ورود به شهر باید شخصیتت رو بسازی.\nساختنش توی چت خصوصی با ربات انجام می‌شه و چند ثانیه بیشتر طول نمی‌کشه.",
+    "char.need.resume": "🪪 ساخت شخصیتت هنوز تموم نشده.\nتوی چت خصوصی با ربات ادامه‌ش بده؛ هر چی تا الان نوشتی ذخیره شده.",
+    "char.b.start": "🪪 ساخت شخصیت",
+    "char.b.resume": "🪪 ادامه‌ی ساخت شخصیت",
+    "char.b.rename": "✏️ تغییر نام",
+    "char.b.male": "👨 مرد",
+    "char.b.female": "👩 زن",
+    "char.cb.need": "اول شخصیتت رو بساز؛ توی چت خصوصی با ربات.",
+    "char.private": "ساخت شخصیت توی چت خصوصی با ربات انجام می‌شه.",
+    "char.s.first": "🪪 <b>ساخت شخصیت</b>\nاین نام فقط برای شخصیت توی بازیه و هویت واقعی تو نیست.\n\nنام شخصیتت رو بنویس (فارسی یا لاتین، {min} تا {max} حرف).",
+    "char.s.last": "🪪 <b>ساخت شخصیت</b>\nنام: <b>{first}</b>\n\nنام خانوادگی شخصیتت رو بنویس.",
+    "char.s.gender": "🪪 <b>ساخت شخصیت</b>\n<b>{first} {last}</b>\n\nجنسیت شخصیتت رو انتخاب کن. بعد از تأیید دیگه عوض نمی‌شه.",
+    "char.s.done": "✅ شخصیتت ساخته شد.\n\n🪪 <b>{first} {last}</b>\nکد شهروندی: <b>{cid}</b>\nسن: <b>{age}</b> سال\n\nحالا توی گروه «مپ» رو بزن.",
+    "char.s.exists": "🪪 شخصیتت از قبل ساخته شده.\n\n<b>{first} {last}</b>\nکد شهروندی: <b>{cid}</b>\nسن: <b>{age}</b> سال",
+    "e.char_name": "❌ این نام قابل قبول نیست. فقط حرف فارسی یا لاتین ({min} تا {max} حرف)، بدون عدد، علامت و ایموجی؛ فارسی و لاتین رو توی یک نام قاطی نکن.",
+    "e.char_state": "این مرحله دیگه فعال نیست. ادامه‌ی ساخت شخصیت رو از پیام بعدی انجام بده.",
+    "e.char_gender": "این گزینه معتبر نیست؛ مرد یا زن رو انتخاب کن.",
+    "e.char_none": "اول باید شخصیتت رو بسازی.",
+    "e.char_world": "شهر شخصیتت پیدا نشد. به ادمین خبر بده.",
+}
+
+EN_CHAR = {
+    "char.need": "🪪 You need a character before you can enter the city.\nIt is made in a private chat with the bot and takes a few seconds.",
+    "char.need.resume": "🪪 Your character is not finished yet.\nContinue in a private chat with the bot; everything you have entered so far is saved.",
+    "char.b.start": "🪪 Create character",
+    "char.b.resume": "🪪 Continue creating character",
+    "char.b.rename": "✏️ Change name",
+    "char.b.male": "👨 Male",
+    "char.b.female": "👩 Female",
+    "char.cb.need": "Create your character first, in a private chat with the bot.",
+    "char.private": "Character creation happens in a private chat with the bot.",
+    "char.s.first": "🪪 <b>Create your character</b>\nThis name is only for your character in the game, not your real identity.\n\nType your character's first name (Persian or Latin letters, {min} to {max} characters).",
+    "char.s.last": "🪪 <b>Create your character</b>\nFirst name: <b>{first}</b>\n\nType your character's last name.",
+    "char.s.gender": "🪪 <b>Create your character</b>\n<b>{first} {last}</b>\n\nChoose your character's gender. It cannot be changed after you confirm.",
+    "char.s.done": "✅ Your character is ready.\n\n🪪 <b>{first} {last}</b>\nCitizen ID: <b>{cid}</b>\nAge: <b>{age}</b>\n\nNow type «map» in the group.",
+    "char.s.exists": "🪪 Your character already exists.\n\n<b>{first} {last}</b>\nCitizen ID: <b>{cid}</b>\nAge: <b>{age}</b>",
+    "e.char_name": "❌ That name is not acceptable. Persian or Latin letters only ({min} to {max} characters), no digits, symbols or emoji; do not mix the two alphabets in one name.",
+    "e.char_state": "That step is no longer active. Continue creating your character from the next message.",
+    "e.char_gender": "That option is not valid; choose male or female.",
+    "e.char_none": "You need to create your character first.",
+    "e.char_world": "Your character's city was not found. Tell the admin.",
+}

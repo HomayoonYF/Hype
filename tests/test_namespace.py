@@ -477,7 +477,7 @@ def test_no_duplicate_handlers_or_callback_prefixes():
 
 
 def test_the_database_schema_did_not_change():
-    assert dbmod.SCHEMA_VERSION == 9 and sorted(dbmod.MIGRATIONS) == [2, 3, 4, 5, 6, 7, 8, 9]     # v0.17 added version 7 (five new tables for the map), v0.18 version 8 (life cash, jobs, interactions), v0.18.1 version 9 (casino stakes: three columns); 2-7 are as they were
+    assert dbmod.SCHEMA_VERSION == 10 and sorted(dbmod.MIGRATIONS) == [2, 3, 4, 5, 6, 7, 8, 9, 10]     # v0.19 added version 10 (the permanent character: new tables and a pending character for every player with saved world activity); v0.17 added version 7 (five new tables for the map), v0.18 version 8 (life cash, jobs, interactions), v0.18.1 version 9 (casino stakes: three columns); 2-7 are as they were
 
 
 def test_every_new_text_key_exists_in_both_languages():

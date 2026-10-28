@@ -349,6 +349,17 @@ CASINO_BLACKJACK_NUM, CASINO_BLACKJACK_DEN = 3, 2           # a natural blackjac
 CASINO_IDLE_SECS = 1800                                     # a hand nobody has touched for 30 minutes is stood (played out) by the bot and paid as usual
 
 
+# --- the character (v0.19) -----------------------------------------------------------------------------------------------------------
+# One permanent character per Telegram user: a citizen ID (zero-based, sequential, never reused), a name, a gender, an age that follows the
+# game calendar, a birthplace and one authoritative current city. Everything the game balances about characters is here; the rules are in
+# character.py / gamecal.py / traits.py / charxp.py.
+CHAR_NAME_MIN = 2                          # letters, per name (first name and last name each)
+CHAR_NAME_MAX = 20                         # ...and at most this many characters (spaces, hyphens and half-spaces count)
+CHARACTER_START_AGE = 15                   # every finished character begins at this age
+GAME_YEAR_DAYS = 4                         # one game year = this many REAL days (the accelerated game calendar, gamecal.py)
+CHAR_XP_LEVEL_STEP = 100                   # character XP: level n starts at CHAR_XP_LEVEL_STEP * (n-1)^2 XP (charxp.py); stock XP is a different thing
+
+
 FX_UNITS_PER_CENT = 200                    # THE RATE (v0.18.1): 1,000 🪙 (= 100,000 units) = $5.00 (= 500 cents)  ->  200 units per cent, 2 🪙 per cent
                                            # (v0.18 had 50 units per cent: 1,000 🪙 = $20.00). Only this number sets the rate; texts and limits are derived from it.
 FX_QUOTE_TTL = 120                         # seconds a confirmation screen stays valid

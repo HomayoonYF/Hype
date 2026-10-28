@@ -8,7 +8,7 @@ import pytest
 
 import mapkit
 import test_bot as tb
-from hypemarket import config as C, core, fmt, presence as P, world, worldgeom as G, worldmap, worldnet as N, worldplaces
+from hypemarket import character, config as C, core, fmt, presence as P, world, worldgeom as G, worldmap, worldnet as N, worldplaces
 from hypemarket.db import Database
 from hypemarket.texts import t
 
@@ -119,18 +119,18 @@ def test_spawn_spots_are_never_on_a_bridge_or_in_the_water(h):
             assert not c.net.segs[c.net.snap(p).seg].bridge
 
 
-def test_a_players_row_per_city_is_unique_and_cities_do_not_mix(h, d):
+def test_a_players_row_is_unique_and_another_group_adds_none(h, d):
     world.save_world(h.db, CH2, world.build(5))
     d.open(A)
-    mapkit.Driver(h, CH2).open(A)
+    mapkit.Driver(h, CH2).open(A)                                                                     # the same player, typing in another group
     rows = h.db.qa("SELECT * FROM world_players WHERE user_id=? ORDER BY world_id", (A,))
-    assert len(rows) == 2 and rows[0]["world_id"] != rows[1]["world_id"]                              # one row in each city
+    assert len(rows) == 1 and rows[0]["world_id"] == city(h).id                                       # one row, in their own city only
     import sqlite3
     with pytest.raises(sqlite3.IntegrityError):
         h.db.x("INSERT INTO world_players(world_id,user_id,x,y,spawn_x,spawn_y,created_at,updated_at) VALUES(?,?,0,0,0,0,0,0)", (rows[0]["world_id"], A))
     mine = h.db.q1("SELECT * FROM world_players WHERE world_id=? AND user_id=?", (city(h).id, A))
     assert tuple(P.ensure_player(h.db, city(h), A)) == tuple(mine)                                    # asking again returns the same row
-    assert h.db.q1("SELECT COUNT(*) c FROM world_players WHERE user_id=?", (A,))["c"] == 2
+    assert h.db.q1("SELECT COUNT(*) c FROM world_players WHERE user_id=?", (A,))["c"] == 1
 
 
 def test_positions_survive_a_restart(tmp_path):
@@ -207,14 +207,17 @@ def test_players_of_another_city_are_never_shown(h, d):
     world.save_world(h.db, CH2, world.build(5))
     d2 = mapkit.Driver(h, CH2)
     d.open(A)
-    d2.open(B)
+    d2.open(B)                                                                                        # B's first life-game entry was in the other group: B lives in the other city
     c1, c2 = city(h), city(h, CH2)
+    assert character.get(h.db, B)["current_world_id"] == c2.id
     h.db.x("UPDATE world_players SET x=?, y=? WHERE world_id=? AND user_id=?", (*P.stand(h.db, c1, A).pos, c2.id, B))      # B stands where A stands, in the other city
     assert P.nearby(h.db, c1, A, P.stand(h.db, c1, A).pos) == []
     assert P.nearby(h.db, c2, B, P.stand(h.db, c2, B).pos) == []
-    h.db.x("UPDATE world_players SET x=?, y=? WHERE world_id=? AND user_id=?", (*P.stand(h.db, c1, A).pos, c1.id, A))
-    d.open(B)                                                                                         # now B is a member of A's city too
+    # B moves to A's city (a future «travel» feature would do this; no such feature exists in v0.19, so the test writes the authoritative column directly)
+    h.db.x("UPDATE characters SET current_world_id=? WHERE user_id=?", (c1.id, B))
+    d.open(B)                                                                                         # B's presence in A's city is created by their next action there
     assert [o.uid for o in P.nearby(h.db, c1, A, P.stand(h.db, c1, A).pos, radius=1e6)] == [B]
+    assert P.nearby(h.db, c2, B, P.stand(h.db, c2, B).pos) == []                                      # and the old row in the other city is dormant: nobody there sees B
 
 
 def test_banned_players_and_uninitialized_players_are_not_markers(h, d):

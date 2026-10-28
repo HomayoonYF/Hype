@@ -1,12 +1,13 @@
 """The interactive city map (v0.17): the message under `مپ`, its buttons, and who may press them.
 
-One `مپ` makes one MAP SESSION: a row of `map_sessions` that remembers who opened it (Telegram user ID), in which group / city, and which
-message it lives in. Every button of that message carries only the session's random ID (`mp:<sid>:<action>[:<arg>]`, never a user ID);
+One `مپ` makes one MAP SESSION: a row of `map_sessions` that remembers who opened it (Telegram user ID), which city it shows (`world_id`: since v0.19 the city
+of the player's CHARACTER, which can have been first created for another group), in which group (`chat_id`) and in which message it lives. Every button of that message carries only the session's random ID (`mp:<sid>:<action>[:<arg>]`, never a user ID);
 what a press may do is decided on the server, from the row, BEFORE anything is read or changed (see `authorize`):
 
     1. the session exists            4. the message the button sits on is the session's message
     2. the presser is its owner      5. it has not expired
     3. the chat is the session's chat
+    (then, in `handle`: the session's city is still the presser's character's current city)
 
 Anyone else gets a short alert and nothing happens: no edit, no registration, no state change. Then the action itself is checked against the
 session's current screen and the player's current state (a «go» only from the screen of that place, «enter» only when the player has
@@ -24,7 +25,7 @@ import re
 import secrets
 import sqlite3
 
-from . import casino, cash, config as C, core, fmt, interactui, jobviz, presence, views, work, world, worldgeom as G, worldinspect, worldmap, worldnet as N, worldplaces
+from . import casino, cash, character, config as C, core, fmt, interactui, jobviz, presence, views, work, world, worldgeom as G, worldinspect, worldmap, worldnet as N, worldplaces
 from .core import GameError
 from .texts import t
 from .views import Reply, kb
@@ -32,7 +33,7 @@ from .views import Reply, kb
 log = logging.getLogger("hypemarket")
 
 ICONS = {"city_hall": "🏛", "hospital": "🏥", "school": "🏫", "station": "🚉", "casino": "🎰", "mcdonalds": "🍔"}
-DENY = {"gone": "mp.expired", "expired": "mp.expired", "owner": "mp.not_yours", "chat": "mp.stale", "message": "mp.stale"}
+DENY = {"gone": "mp.expired", "expired": "mp.expired", "owner": "mp.not_yours", "chat": "mp.stale", "message": "mp.stale", "world": "mp.stale"}
 _SID = re.compile(r"^[0-9a-f]{8}$")
 _TAGS = re.compile(r"<[^>]+>")
 
@@ -525,9 +526,14 @@ async def handle(c):
     sess, why = authorize(c.db, sid, c.uid, c.chat.id, msg.message_id)
     if why:
         return _deny(c, why)
+    # v0.19: the session is bound to a city, and that city must still be the CHARACTER's current city. Which group the message lives in is the session's `chat_id`
+    # (checked above); where the city was first created (`worlds.chat_id`) does not matter any more. A session of another city (a stale one) acts on nothing.
+    ch = character.get(c.db, c.uid)
+    if not character.is_done(ch) or ch["current_world_id"] != sess["world_id"]:
+        return _deny(c, "world")
     w = c.db.q1("SELECT * FROM worlds WHERE id=?", (sess["world_id"],))
-    if w is None or w["chat_id"] != c.chat.id:
-        return _deny(c, "chat")
+    if w is None:
+        return _deny(c, "world")
     try:
         city = await worldplaces.aload_city(c.db, w)
     except world.WorldError:

@@ -7,3 +7,27 @@ covered by tests/test_digits.py, which flips the switch per test (monkeypatch), 
 import os
 
 os.environ.setdefault("DIGITS", "fa")
+
+
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _every_player_has_a_finished_character(request, monkeypatch):
+    """v0.19: the life game needs a finished character. The long-standing suites are about everything AFTER that (the map, jobs, the casino, ...), so a player who
+    sends anything through the real handlers gets a finished character at once (charkit.complete); the city is still assigned the real way, by the first `مپ`.
+    The v0.19 suites (test_v019_*) turn this off and drive the real set-up themselves."""
+    if request.module.__name__.startswith("test_v019"):
+        yield
+        return
+    import charkit
+    from hypemarket import handlers
+    real = handlers._prepare
+
+    def prepared(app, tg, chat, referrer=None):
+        out = real(app, tg, chat, referrer)
+        if not tg.is_bot:
+            charkit.complete(app.db, tg.id)
+        return out
+    monkeypatch.setattr(handlers, "_prepare", prepared)
+    yield

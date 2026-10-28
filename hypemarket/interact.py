@@ -9,8 +9,9 @@ A GREETING is instant and needs no answer: one player says hello to another in t
 A HUG is a REQUEST and nothing happens without the other player's consent. The request is a row (kind 'hug', state 'pending') with an expiry,
 shown with buttons that only the TARGET can use to accept or decline (and only the sender to take it back). The state moves with guarded
 `UPDATE ... WHERE state='pending'`, so a repeated, late or duplicated press matches nothing; expiry is lazy (a press, or the next request,
-finds the row past `expires_at` and marks it expired). Hugs need the two players to be near each other in the group's city (config.hug_need_near(),
-on by default; the nearness is the v0.17 road distance, checked when asking AND when accepting). Cooldowns, one pending request per sender,
+finds the row past `expires_at` and marks it expired). Hugs need the two players to be near each other in the city they both live in (config.hug_need_near(),
+on by default; the nearness is the v0.17 road distance, checked when asking AND when accepting). v0.19: a city is shared by the players of many groups, and the
+message of a greeting or a hug request is posted in the group of the player who sends it, so both need the other player to be in THAT group too (`shares_chat`). Cooldowns, one pending request per sender,
 a cap on pending requests per target and a pause after a «no» keep it from being used to pester someone.
 
 Nothing here touches money, stocks, levels or any other part of the game: these are social messages and nothing else.
@@ -20,7 +21,7 @@ from __future__ import annotations
 import html
 import sqlite3
 
-from . import config as C, core, presence
+from . import character, config as C, core, presence
 from .core import GameError
 
 MAX_INCOMING = 3                     # pending hug requests one player can have waiting at the same time
@@ -35,10 +36,18 @@ def mention(u) -> str:
 # =====================================================================================================================
 #                                                       who is the target
 # =====================================================================================================================
-def target(db, uid: int, to) -> object:
+def shares_chat(db, chat_id: int, uid: int, now: int | None = None) -> bool:
+    """Is player `uid` known to be in group `chat_id`: seen chatting there (`group_members`) or holding a live map message there? A greeting or a hug request is
+    a message in ONE group, so it only makes sense for somebody who can see that group."""
+    now = core.now() if now is None else now
+    return (db.q1("SELECT 1 FROM group_members WHERE group_id=? AND user_id=?", (chat_id, uid)) is not None
+            or db.q1("SELECT 1 FROM map_sessions WHERE chat_id=? AND user_id=? AND expires_at>?", (chat_id, uid, now)) is not None)
+
+
+def target(db, uid: int, to, chat_id: int | None = None) -> object:
     """The row of the player `to` (picked from the «اطراف من» list of the map: a Telegram user id), or a GameError: ia_self (yourself),
-    ia_unknown (not a player of the game, a bot, or banned). Whether they are really near is the caller's job (the map checks the list it
-    just drew; hugs check the road distance again)."""
+    ia_unknown (not a player of the game, a bot, or banned), ia_elsewhere (when `chat_id` is given: not a member of that group). Whether they are really near is
+    the caller's job (the map checks the list it just drew; hugs check the road distance again)."""
     if not isinstance(to, int) or isinstance(to, bool):
         raise GameError("ia_unknown")
     if to == uid:
@@ -46,6 +55,8 @@ def target(db, uid: int, to) -> object:
     u = core.get_user(db, to)
     if u is None or u["bot"] or u["banned"]:
         raise GameError("ia_unknown")
+    if chat_id is not None and not shares_chat(db, chat_id, to):
+        raise GameError("ia_elsewhere")
     return u
 
 
@@ -86,8 +97,10 @@ def _expire_due(db, now: int, uid: int | None = None) -> None:
 
 
 def near(db, city, a: int, b: int, now: int) -> bool:
-    """Are players `a` and `b` within the map's nearby radius of each other (road distance) in this city? Players who never opened the map
-    are put at their fixed spawn spot first, exactly as opening the map would."""
+    """Are players `a` and `b` within the map's nearby radius of each other (road distance) in this city? Both must be finished characters whose current city
+    this is (a character is present in one city only); players who never opened the map are put at their fixed spawn spot first, exactly as opening the map would."""
+    if not (character.in_world(db, a, city.id) and character.in_world(db, b, city.id)):
+        return False
     sa, sb = presence.stand(db, city, a, now), presence.stand(db, city, b, now)
     return city.net.field(sa.pos, cutoff=C.nearby_radius()).to_point(sb.pos) <= C.nearby_radius()
 

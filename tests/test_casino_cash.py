@@ -417,14 +417,14 @@ def test_schema_9_adds_the_money_columns_and_keeps_every_old_game(tmp_path):
     db.x("PRAGMA user_version=8")
     db.close()
     d2 = Database(path)
-    assert d2.q1("PRAGMA user_version")[0] == 9
+    assert d2.q1("PRAGMA user_version")[0] == 10                                                           # (v0.19 then added schema 10)
     cols = [r["name"] for r in d2.qa("PRAGMA table_info(casino_games)")]
     assert cols[-3:] == ["bet", "hand_no", "paid"]
     rows = {r["sid"]: r for r in d2.qa("SELECT * FROM casino_games")}
     assert rows["old1"]["state"] == "playing" and rows["old1"]["seq"] == 4 and rows["old1"]["player"] == '["10♠","9♥"]'
     assert rows["old2"]["result"] == "lose" and rows["old2"]["seq"] == 7
     assert all(r["bet"] == 0 and r["hand_no"] == 1 and r["paid"] == 0 for r in rows.values())             # old hands had nothing at risk
-    assert Database(path).q1("PRAGMA user_version")[0] == 9                                              # reopening changes nothing
+    assert Database(path).q1("PRAGMA user_version")[0] == 10                                             # reopening changes nothing
     # an old hand that is left behind is stood without any money moving; the old table then deals the next hand for a chip
     ledger0 = d2.q1("SELECT COUNT(*) c FROM life_ledger")["c"]
     assert casino.sweep(d2, 10 ** 9) == 1 and d2.q1("SELECT state FROM casino_games WHERE sid='old1'")["state"] == "done"

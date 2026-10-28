@@ -242,16 +242,18 @@ def test_the_map_blocks_walking_away_from_a_ride_and_offers_the_job_board(h):
     assert not other.sent and not other.edits                                                          # B cannot open A's board from A's map
 
 
-def test_a_ride_started_in_one_group_cannot_be_driven_from_another(h, layout):
+def test_a_ride_started_in_one_group_is_driven_from_another(h, layout):
     world.save_world(h.db, CH2, world.build(42))
     h.say(A, "اسنپ", chat=CH)
     press(h, A, f"jb:sr:{A}")
     tid = work.current(h.db, A)["id"]
-    text, datas = screen(h.say(A, "اسنپ", chat=CH2))
-    assert "شهر یه گروه دیگه" in text and f"jb:x:{tid}:{A}" in datas
+    text, datas = screen(h.say(A, "اسنپ", chat=CH2))                                                  # v0.19: one character, one city: the same ride in every group
+    assert "یه شهر دیگه" not in text and f"jb:sd:{tid}:{A}" in datas
     out = press(h, A, f"jb:sd:{tid}:{A}", chat=CH2)
-    assert alerts(out) and presence.walking_trip(h.db, city(h).id, A) is None
-    text, datas = screen(press(h, A, f"jb:x:{tid}:{A}", chat=CH2))                                   # but it can be given up from anywhere
+    assert not alerts(out) and presence.walking_trip(h.db, city(h).id, A)["mode"] == "car"           # the car moves in the character's own city
+    assert h.db.q1("SELECT COUNT(*) c FROM world_trips WHERE user_id=?", (A,))["c"] == 1
+    assert world.get_world(h.db, CH2)["id"] != city(h).id and h.db.q1("SELECT COUNT(*) c FROM world_players WHERE user_id=?", (A,))["c"] == 1
+    text, datas = screen(press(h, A, f"jb:x:{tid}:{A}", chat=CH2))                                   # and it can be given up from anywhere
     assert work.current(h.db, A) is None
 
 

@@ -116,8 +116,8 @@ def test_ids_are_scoped_to_their_world(h):
     assert A == A0 and B == B0 and A["seed"] != B["seed"]
     for ident in ("p5", "l1", "d2"):                                                           # the same local ID exists in both cities...
         assert WI.resolve(A, ident) and WI.resolve(B, ident)
-    a = photos(h.say(1, "مپ L1", chat=CH1))[0]
-    b = photos(h.say(1, "مپ L1", chat=CH2))[0]
+    a = photos(h.say(1, "مپ L1", chat=CH1))[0]                                                 # player 1 lives in the first group's city, player 2 in the second's
+    b = photos(h.say(2, "مپ L1", chat=CH2))[0]
     wa, wb = world.get_world(h.db, CH1), world.get_world(h.db, CH2)
     assert wa["name_fa"] in a.caption and wb["name_fa"] in b.caption and a.caption != b.caption      # ...but each answer is its own city's
     fa = WI.facts(A, WI.resolve(A, "l1"))
@@ -126,16 +126,20 @@ def test_ids_are_scoped_to_their_world(h):
     assert WI._n(fa["at"][0], "fa") in a.caption and f"<code>{fa['near'][0].upper()}</code>" in a.caption
     assert WI._n(fb["at"][0], "fa") in b.caption and f"<code>{fb['near'][0].upper()}</code>" in b.caption
     assert a.photo.data == mapkit.shown(h, CH1, 1, "fa", WI.highlight(A, WI.resolve(A, "l1")))         # and each picture is drawn from its own geometry
-    assert b.photo.data == mapkit.shown(h, CH2, 1, "fa", WI.highlight(B, WI.resolve(B, "l1")))      # (plus its permanent places and the viewer's markers)
+    assert b.photo.data == mapkit.shown(h, CH2, 2, "fa", WI.highlight(B, WI.resolve(B, "l1")))      # (plus its permanent places and the viewer's markers)
+    # the same player in the OTHER group still inspects their own city: the group never changes which city answers
+    again = photos(h.say(1, "مپ L1", chat=CH2))[0]
+    assert wa["name_fa"] in again.caption and wb["name_fa"] not in again.caption
     na, nb = len(A["parcels"]), len(B["parcels"])
     assert na != nb                                                                              # (these two cities differ in size, so one ID exists in only one)
-    small, big = (CH1, CH2) if na < nb else (CH2, CH1)
-    calls = h.say(1, f"مپ P{max(na, nb)}", chat=small)
+    small, big = (1, 2) if na < nb else (2, 1)
+    chat_of = {1: CH1, 2: CH2}
+    calls = h.say(small, f"مپ P{max(na, nb)}", chat=chat_of[small])
     assert not photos(calls) and "پیدا نشد" in h.texts(calls)
-    assert photos(h.say(1, f"مپ P{max(na, nb)}", chat=big))
-    # a group that never opened its map has no city to inspect yet: asking creates its own, never borrows another's
+    assert photos(h.say(big, f"مپ P{max(na, nb)}", chat=chat_of[big]))
+    # a player who is new in a group that never opened its map gets that group's own city, never another's
     before = h.db.q1("SELECT COUNT(*) c FROM worlds")["c"]
-    c = photos(h.say(1, "مپ L1", chat=-100888))
+    c = photos(h.say(3, "مپ L1", chat=-100888))
     assert len(c) == 1 and h.db.q1("SELECT COUNT(*) c FROM worlds")["c"] == before + 1
     wc = world.get_world(h.db, -100888)
     assert wc["seed"] not in (wa["seed"], wb["seed"]) and wc["name_fa"] in c[0].caption

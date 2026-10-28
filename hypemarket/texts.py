@@ -373,11 +373,11 @@ FA: dict[str, str] = {
     "help.cat_adminnote": "🔒 ویژه‌ی ادمین‌های ربات",
     "cat.start": "شروع", "cat.trade": "معامله", "cat.own": "سهام خودت", "cat.income": "درآمد", "cat.company": "شرکت", "cat.social": "گروه و رتبه", "cat.progress": "پیشرفت",
     "cat.live": "بازار زنده", "cat.safety": "اعتماد و گزارش", "cat.groupadmin": "ادمین گروه", "cat.botadmin": "ادمین ربات", "cat.city": "شهر",
-    "map.caption": "🗺 <b>{name}</b> — شهر گروه شما\n\nاین نقشه‌ی شروع دنیای این گروهه؛ هر گروه فقط یک شهر داره و این نقشه همیشه همینه.\n🏘 مسکونی · 🏬 تجاری · 🏭 صنعتی · 🏛 عمومی · 🌳 پارک\n⬜ زمین خالی: {vacant} قطعه از {parcels} قطعه برای آینده‌ی شهر\n\nℹ️ خرید زمین و ساخت‌وساز هنوز فعال نیست.",
-    "map.private": "🗺 نقشه مال گروهه! هر گروه تلگرامی شهر خودش رو داره. ربات رو به گروهت اضافه کن و همون‌جا بنویس «مپ».",
-    "map.corrupt": "⚠️ نقشه‌ی ذخیره‌شده‌ی این گروه خراب شده و قابل نمایش نیست. به ادمین ربات خبر بده؛ شهر دست‌نخورده می‌مونه.",
+    "map.caption": "🗺 <b>{name}</b> — شهر تو\n\nاین نقشه‌ی شروع شهر توئه؛ هر شخصیت فقط توی یک شهر زندگی می‌کنه و این نقشه همیشه همینه، از هر گروهی که «مپ» بزنی.\n🏘 مسکونی · 🏬 تجاری · 🏭 صنعتی · 🏛 عمومی · 🌳 پارک\n⬜ زمین خالی: {vacant} قطعه از {parcels} قطعه برای آینده‌ی شهر\n\nℹ️ خرید زمین و ساخت‌وساز هنوز فعال نیست.",
+    "map.private": "🗺 نقشه توی گروه باز می‌شه. ربات رو به گروهت اضافه کن و همون‌جا بنویس «مپ»؛ شهر شخصیتت از هر گروهی همونه.",
+    "map.corrupt": "⚠️ نقشه‌ی ذخیره‌شده‌ی شهر تو خراب شده و قابل نمایش نیست. به ادمین ربات خبر بده؛ شهر دست‌نخورده می‌مونه.",
     "map.failed": "⚠️ ساخت شهر این بار جواب نداد. چند لحظه بعد دوباره «مپ» رو بزن.",
-    "map.title": "🗺 {name}", "map.subtitle": "شهر گروه · نقشه ی شروع · ساخت‌وساز هنوز فعال نیست",
+    "map.title": "🗺 {name}", "map.subtitle": "شهر شما · نقشه ی شروع · ساخت‌وساز هنوز فعال نیست",
     "map.zone.residential": "مسکونی", "map.zone.commercial": "تجاری", "map.zone.industrial": "صنعتی", "map.zone.civic": "عمومی", "map.zone.park": "پارک",
     "map.legend.vacant": "زمین خالی", "map.legend.landmark": "مکان عمومی", "map.legend.main": "خیابان اصلی", "map.legend.street": "کوچه و خیابان",
     "map.legend.building": "ساختمان", "map.legend.park": "پارک و فضای سبز",
@@ -751,11 +751,11 @@ EN: dict[str, str] = {
     "help.cat_adminnote": "🔒 Bot admins only",
     "cat.start": "Start", "cat.trade": "Trading", "cat.own": "Your stock", "cat.income": "Income", "cat.company": "Company", "cat.social": "Groups and ranks", "cat.progress": "Progress",
     "cat.live": "Live market", "cat.safety": "Trust and reports", "cat.groupadmin": "Group admin", "cat.botadmin": "Bot admin", "cat.city": "City",
-    "map.caption": "🗺 <b>{name}</b> — your group's city\n\nThis is the starting map of this group's world; every group has exactly one city and this map stays the same.\n🏘 Residential · 🏬 Commercial · 🏭 Industrial · 🏛 Civic · 🌳 Parks\n⬜ Undeveloped land: {vacant} of {parcels} parcels, waiting for the city's future\n\nℹ️ Buying land and building are not available yet.",
-    "map.private": "🗺 Maps belong to groups! Every Telegram group has its own city. Add the bot to your group and send «map» there.",
-    "map.corrupt": "⚠️ This group's saved map is damaged and can't be shown. Tell the bot admin; the city itself is left untouched.",
+    "map.caption": "🗺 <b>{name}</b> — your city\n\nThis is the starting map of your city; every character lives in exactly one city and this map stays the same, whichever group you send «map» from.\n🏘 Residential · 🏬 Commercial · 🏭 Industrial · 🏛 Civic · 🌳 Parks\n⬜ Undeveloped land: {vacant} of {parcels} parcels, waiting for the city's future\n\nℹ️ Buying land and building are not available yet.",
+    "map.private": "🗺 The map opens in a group. Add the bot to your group and send «map» there; your character's city is the same from every group.",
+    "map.corrupt": "⚠️ The saved map of your city is damaged and can't be shown. Tell the bot admin; the city itself is left untouched.",
     "map.failed": "⚠️ Building the city didn't work this time. Send «map» again in a moment.",
-    "map.title": "🗺 {name}", "map.subtitle": "Group city · starting map · building is not available yet",
+    "map.title": "🗺 {name}", "map.subtitle": "Your city · starting map · building is not available yet",
     "map.zone.residential": "Residential", "map.zone.commercial": "Commercial", "map.zone.industrial": "Industrial", "map.zone.civic": "Civic", "map.zone.park": "Park",
     "map.legend.vacant": "Empty lot", "map.legend.landmark": "Public place", "map.legend.main": "Main road", "map.legend.street": "Street",
     "map.legend.building": "Building", "map.legend.park": "Park",
@@ -899,6 +899,7 @@ from .texts_admin import EN_ADMIN, FA_ADMIN  # noqa: E402  (the admin panel and 
 from .texts_world import EN_WORLD, FA_WORLD  # noqa: E402  (inspecting parcels, public places and districts)
 from .texts_map import EN_MAP, FA_MAP  # noqa: E402  (the interactive map, walking, the casino)
 from .texts_life import EN_LIFE, FA_LIFE  # noqa: E402  (life cash, the currency exchange, jobs, greetings and hugs)
+from .texts_char import EN_CHAR, FA_CHAR  # noqa: E402  (v0.19: the character set-up)
 
 FA.update(FA_EX)
 EN.update(EN_EX)
@@ -912,6 +913,8 @@ FA.update(FA_MAP)
 EN.update(EN_MAP)
 FA.update(FA_LIFE)
 EN.update(EN_LIFE)
+FA.update(FA_CHAR)
+EN.update(EN_CHAR)
 FA["cat.life"], EN["cat.life"] = "پول و کار", "Money and jobs"
 
 STR = {"fa": FA, "en": EN}

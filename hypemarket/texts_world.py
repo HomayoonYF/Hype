@@ -21,7 +21,7 @@ FA_WORLD = {
     "wi.foot": "ℹ️ این فقط اطلاعاته؛ خرید زمین و ساخت‌وساز هنوز فعال نیست.",
     "wi.back": "🗺 نقشه‌ی کامل: «مپ»",
     # --- errors
-    "wi.unknown": "❌ شناسه‌ی <b>{id}</b> توی شهر این گروه پیدا نشد.\nشناسه‌ی مکان‌های عمومی زیر نقشه‌ی «مپ» نوشته شده؛ مثلاً <code>مپ {example}</code>",
+    "wi.unknown": "❌ شناسه‌ی <b>{id}</b> توی شهر تو پیدا نشد.\nشناسه‌ی مکان‌های عمومی زیر نقشه‌ی «مپ» نوشته شده؛ مثلاً <code>مپ {example}</code>",
     "wi.bad": "🔎 این شناسه درست نیست. قطعه مثل <code>مپ P14</code>، مکان عمومی مثل <code>مپ L1</code> و منطقه مثل <code>مپ D2</code>.\nبرای نقشه‌ی کامل فقط «مپ» بنویس.",
     # --- the hint under the plain map
     "map.hint": "🔎 جزئیات هر قطعه یا مکان: «مپ شناسه»، مثلاً <code>مپ {example}</code>\n📍 {places}",
@@ -46,7 +46,7 @@ EN_WORLD = {
     "wi.lots": "{n} (empty {vacant} · built {built})", "wi.green": "{n} parcels",
     "wi.foot": "ℹ️ Information only: buying land and building are not available yet.",
     "wi.back": "🗺 Full map: “map”",
-    "wi.unknown": "❌ ID <b>{id}</b> was not found in this group's city.\nThe public places' IDs are listed under the «map» picture; for example <code>map {example}</code>",
+    "wi.unknown": "❌ ID <b>{id}</b> was not found in your city.\nThe public places' IDs are listed under the «map» picture; for example <code>map {example}</code>",
     "wi.bad": "🔎 That is not a valid ID. A parcel looks like <code>map P14</code>, a public place like <code>map L1</code> and a district like <code>map D2</code>.\nFor the full map just send “map”.",
     "map.hint": "🔎 Details of any parcel or place: “map ID”, for example <code>map {example}</code>\n📍 {places}",
 }
