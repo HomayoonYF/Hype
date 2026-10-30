@@ -12,7 +12,7 @@ import pytest
 
 import mapkit
 import test_bot as tb
-from hypemarket import cards, casino, config as C, core, fmt, presence as P, world, worldgeom as G, worldinspect as WI, worldmap, worldplaces
+from hypemarket import cards, casino, config as C, core, fmt, mapui, presence as P, world, worldgeom as G, worldinspect as WI, worldmap, worldplaces
 from hypemarket.db import SCHEMA_VERSION, Database, MIGRATIONS
 from hypemarket.texts import t
 
@@ -253,6 +253,11 @@ def walk_to_casino(h, d, uid, lang="fa"):
     return v
 
 
+def cl(*cards) -> str:
+    """The cards of a hand as the table shows them (v0.20): each on its own right-to-left line, the card isolated."""
+    return "\n".join(mapui._card_line("fa", c) for c in cards)
+
+
 def enter(h, d, uid):
     v = walk_to_casino(h, d, uid)
     o = d.press(uid, f"mp:{v.sid}:o:casino", v)
@@ -297,7 +302,7 @@ def test_arriving_opens_the_door_and_the_entry_screen(h, d):
     v, lobby = enter(h, d, A)
     lines = lobby.caption.split("\n")
     assert lines[0] == t("fa", "mp.cas.title") and lines[1] == t("fa", "bj.game") == "♠️ بلک‌جک"            # «کازینو», then the game
-    assert t("fa", "bj.cash", cash=fmt.usd(100_00, "fa")) in lines and t("fa", "bj.pick") == lines[-1] == "مبلغ شرطت رو انتخاب کن."
+    assert t("fa", "bj.cash", cash=mapui._money("fa", 100_00)) in lines and t("fa", "bj.pick") == lines[-1] == "مبلغ شرطت رو انتخاب کن."
     assert "قانون" not in lobby.caption and "بلک‌جک ۳ به ۲" not in lobby.caption and "۱۷" not in lobby.caption   # no tutorial on the entry screen
     labels = [x for x, _ in lobby.buttons]
     assert labels[:5] == [chip_label(b) for b in C.CASINO_BETS_CENTS]                                  # the valid bets, as buttons
@@ -469,17 +474,17 @@ def test_playing_a_hand_through_the_buttons(h, d, monkeypatch):
     v, lobby = enter(h, d, A)
     scripted(monkeypatch, ["10♠", "5♥"], ["9♣", "7♦"], draws=["4♥", "K♠"])
     table = table_of(d, A, v, lobby)
-    assert "10♠ 5♥" in table.caption and "9♣" in table.caption and "7♦" not in table.caption and "🎴" in table.caption   # the second dealer card is hidden
+    assert cl("10♠", "5♥") in table.caption and "9♣" in table.caption and "7♦" not in table.caption and "🎴" in table.caption   # the second dealer card is hidden
     labels = [x for x, _ in table.buttons]
     assert t("fa", "mp.b.hit") in labels and t("fa", "mp.b.stand") in labels and chip_label(1_00) not in labels      # no new chips while a hand is being played
-    assert t("fa", "bj.head", bet=fmt.usd(1_00, "fa")) in table.caption and t("fa", "bj.turn") in table.caption     # the bet of this hand and whose move it is
+    assert t("fa", "bj.head", bet=mapui._money("fa", 1_00)) in table.caption and t("fa", "bj.turn") in table.caption     # the bet of this hand and whose move it is
     assert cash_of(h) == 99_00                                                                          # and the chip is already off the player's cash
     hit = d.go(A, table, t("fa", "mp.b.hit"))
     hit.sid, hit.mid = v.sid, v.mid
-    assert "10♠ 5♥ 4♥" in hit.caption and fmt.num(19, "fa") in hit.caption and "7♦" not in hit.caption
+    assert cl("10♠", "5♥", "4♥") in hit.caption and fmt.num(19, "fa") in hit.caption and "7♦" not in hit.caption
     stand = d.go(A, hit, t("fa", "mp.b.stand"))
-    assert "9♣ 7♦ K♠" in stand.caption and fmt.num(26, "fa") in stand.caption and fmt.num(19, "fa") in stand.caption     # dealer reveals 16, draws the king and busts on 26
-    assert t("fa", "bj.r.dealer_bust") in stand.caption and t("fa", "bj.net.win", amount=fmt.usd(1_00, "fa")) in stand.caption
+    assert cl("9♣", "7♦", "K♠") in stand.caption and fmt.num(26, "fa") in stand.caption and fmt.num(19, "fa") in stand.caption     # dealer reveals 16, draws the king and busts on 26
+    assert t("fa", "bj.r.dealer_bust") in stand.caption and t("fa", "bj.net.win", amount=mapui._money("fa", 1_00, "+")) in stand.caption
     assert chip_label(1_00) in [x for x, _ in stand.buttons] and t("fa", "mp.b.hit") not in [x for x, _ in stand.buttons]
     assert cash_of(h) == 101_00                                                                         # bet $1 back plus $1: net +$1
     row = h.db.q1("SELECT * FROM casino_games WHERE sid=?", (v.sid,))
@@ -532,7 +537,7 @@ def test_each_players_table_is_their_own(h, d, monkeypatch):
     ta = table_of(d, A, va, la)
     scripted(monkeypatch, ["8♠", "8♥"], ["10♣", "6♦"], draws=["3♥"])
     tbl = table_of(d, B, vb, lb)
-    assert "10♠ 5♥" in ta.caption and "8♠ 8♥" in tbl.caption
+    assert cl("10♠", "5♥") in ta.caption and cl("8♠", "8♥") in tbl.caption
     ra, rb = h.db.q1("SELECT * FROM casino_games WHERE sid=?", (va.sid,)), h.db.q1("SELECT * FROM casino_games WHERE sid=?", (vb.sid,))
     assert (ra["user_id"], rb["user_id"]) == (A, B) and ra["sid"] != rb["sid"]
     d.go(A, ta, t("fa", "mp.b.hit"))
@@ -554,7 +559,7 @@ def test_one_player_with_two_map_messages_has_two_separate_tables(h, d, monkeypa
     t1 = table_of(d, A, v1, l1)
     scripted(monkeypatch, ["8♠", "3♥"], ["10♣", "6♦"])
     t2 = table_of(d, A, v2, l2)
-    assert "10♠ 5♥" in t1.caption and "8♠ 3♥" in t2.caption and h.db.q1("SELECT COUNT(*) c FROM casino_games")["c"] == 2
+    assert cl("10♠", "5♥") in t1.caption and cl("8♠", "3♥") in t2.caption and h.db.q1("SELECT COUNT(*) c FROM casino_games")["c"] == 2
 
 
 def test_repeated_and_stale_button_presses_are_applied_once(h, d, monkeypatch):
@@ -586,7 +591,7 @@ def test_repeated_and_stale_button_presses_are_applied_once(h, d, monkeypatch):
     a1 = d.press(A, new, v)
     a2 = d.press(A, new, v)                                                                            # «chip» pressed twice: one new hand, one bet
     assert h.db.q1("SELECT seq FROM casino_games WHERE sid=?", (v.sid,))["seq"] == row["seq"] + 1
-    assert "10♠ 7♥" in a1.caption and t("fa", "bj.stale") in a2.toasts[-1]
+    assert cl("10♠", "7♥") in a1.caption and t("fa", "bj.stale") in a2.toasts[-1]
     assert cash_of(h) == before - 5_00
 
 
@@ -600,11 +605,11 @@ def test_a_new_hand_cannot_be_dealt_over_a_hand_in_progress(h, d, monkeypatch):
         out = d.press(A, forged, v)
         assert t("fa", "bj.stale") in out.toasts[-1]
     out = d.press(A, f"mp:{v.sid}:bj:n:{row['seq']}", v)                                               # the old «again» button of v0.18: only shows the table
-    assert "10♠ 5♥" in out.caption
+    assert cl("10♠", "5♥") in out.caption
     assert tuple(h.db.q1("SELECT * FROM casino_games WHERE sid=?", (v.sid,))) == tuple(row)
     assert cash_of(h) == cash0 and h.db.q1("SELECT COUNT(*) c FROM life_ledger")["c"] == ledger0     # not one cent moved
     again = d.press(A, f"mp:{v.sid}:bj:o", v)                                                          # opening the table again resumes the same hand
-    assert "10♠ 5♥" in again.caption and tuple(h.db.q1("SELECT * FROM casino_games WHERE sid=?", (v.sid,))) == tuple(row)
+    assert cl("10♠", "5♥") in again.caption and tuple(h.db.q1("SELECT * FROM casino_games WHERE sid=?", (v.sid,))) == tuple(row)
 
 
 def test_garbage_in_blackjack_buttons_fails_safely(h, d):
@@ -663,9 +668,9 @@ def test_blackjack_games_survive_a_restart(tmp_path, monkeypatch):
     assert tuple(db2.q1("SELECT * FROM casino_games WHERE sid=?", (sid,))) == saved                    # the hand, the deck and the seq: exactly as left
     stand = [dd for x, dd in hit.buttons if x == t("fa", "mp.b.stand")][0]
     out = mapkit.Out(h2.press(A, stand, chat=CH, mid=mid, photo=True))
-    assert out.edits and not out.alerts and "K♠" in out.caption and "10♠ 5♥ 4♥" in out.caption         # the next press carries on the same hand
+    assert out.edits and not out.alerts and "K♠" in out.caption and cl("10♠", "5♥", "4♥") in out.caption         # the next press carries on the same hand
     resume = mapkit.Out(h2.press(A, f"mp:{sid}:bj:o", chat=CH, mid=mid, photo=True))
-    assert "10♠ 5♥ 4♥" in resume.caption                                                               # reopening shows the finished hand, no new deal
+    assert cl("10♠", "5♥", "4♥") in resume.caption                                                               # reopening shows the finished hand, no new deal
 
 
 def test_expired_sessions_cannot_touch_a_table(h, d, monkeypatch):
@@ -755,11 +760,11 @@ def test_schema_7_is_added_to_an_old_database_without_touching_its_data(tmp_path
     db.x("PRAGMA user_version=6")
     db.close()
     d2 = Database(path)
-    assert d2.q1("PRAGMA user_version")[0] == SCHEMA_VERSION == 10 and 7 in MIGRATIONS and 8 in MIGRATIONS and 9 in MIGRATIONS and 10 in MIGRATIONS
+    assert d2.q1("PRAGMA user_version")[0] == SCHEMA_VERSION == 11 and 7 in MIGRATIONS and 8 in MIGRATIONS and 9 in MIGRATIONS and 10 in MIGRATIONS and 11 in MIGRATIONS
     for tbl in ("world_places", "world_players", "world_trips", "map_sessions", "casino_games"):
         assert d2.q1("SELECT COUNT(*) c FROM " + tbl)["c"] == 0
     assert [tuple(r) for r in d2.qa("SELECT * FROM users")] == before_users and d2.q1("SELECT layout FROM worlds")["layout"] == layout
-    assert Database(path).q1("PRAGMA user_version")[0] == 10                                           # reopening is a no-op
+    assert Database(path).q1("PRAGMA user_version")[0] == 11                                           # reopening is a no-op
     assert worldplaces.ensure_all(d2) == 1                                                             # and the old city now gets its casino
 
 

@@ -50,7 +50,7 @@ def test_every_result_has_a_payout_and_every_chip_pays_whole_cents():
 def test_the_chips_offered_are_the_ones_the_player_can_pay(h, d):
     v, lobby = enter(h, d, A)
     chips = lobby                                                                                       # the entry screen IS the table: title, game, balance, bet prompt, chips
-    assert t("fa", "bj.cash", cash=fmt.usd(100_00, "fa")) in lobby.caption                               # it says how much cash there is
+    assert t("fa", "bj.cash", cash=mapui._money("fa", 100_00)) in lobby.caption                               # it says how much cash there is
     assert [x for x, _ in chips.buttons][:5] == [chip_label(b) for b in C.CASINO_BETS_CENTS] and t("fa", "bj.pick") in chips.caption
     assert not h.db.q1("SELECT 1 FROM casino_games")                                                    # opening the table deals nothing and charges nothing
     set_cash(h, 7_00)
@@ -104,7 +104,7 @@ HANDS = [   # name, player, dealer, draws, buttons to press after the deal, resu
     ("dealer draws on an equal total and beats you", ["10♠", "K♥"], ["10♣", "Q♦"], ["A♠"], "s", "lose", -5_00),
     ("bust", ["10♠", "6♥"], ["10♣", "9♦"], ["K♠"], "h", "bust", -5_00),
     ("21 against 21 is a push", ["10♠", "5♥"], ["10♣", "8♦"], ["6♠", "3♣"], "h", "push", 0),
-    ("hit to 21, dealer busts", ["10♠", "5♥"], ["10♣", "8♦"], ["6♠", "K♣"], "h", "dealer_bust", 5_00),
+    ("hit to 21, dealer busts: a win with 21 pays 2.5x", ["10♠", "5♥"], ["10♣", "8♦"], ["6♠", "K♣"], "h", "dealer_bust", 7_50),
     ("player blackjack", ["A♠", "K♥"], ["10♠", "9♦"], [], "", "player_blackjack", 7_50),
     ("dealer blackjack", ["10♠", "9♥"], ["A♦", "K♣"], [], "", "dealer_blackjack", -5_00),
     ("both blackjack", ["A♠", "K♥"], ["A♦", "Q♣"], [], "", "push_blackjack", 0),
@@ -123,14 +123,14 @@ def test_a_hand_costs_the_chip_and_pays_by_the_table(h, d, monkeypatch, name, pl
         out = d.press(A, f"mp:{v.sid}:bj:{press}:{row['seq']}", v)
         row = row_of(h, v.sid)
     assert row["state"] == "done" and row["result"] == result and row["bet"] == 5_00 and row["hand_no"] == 1
-    assert row["paid"] == casino.payout(5_00, result) == 5_00 + profit if profit > -5_00 else row["paid"] == 0
+    assert row["paid"] == casino.payout(5_00, result, casino.total(casino.hand_of(row).player)) == 5_00 + profit if profit > -5_00 else row["paid"] == 0
     assert cash_of(h) == 100_00 + profit
     expect = [("casino_bet", f"{v.sid}:1", -5_00)] + ([("casino_win", f"{v.sid}:1", 5_00 + profit)] if row["paid"] else [])
     assert ledger(h) == expect
     assert h.db.q1("SELECT cash FROM users WHERE id=?", (A,))["cash"] == stock0                         # the stock coins never moved
-    assert t("fa", "bj.head", bet=fmt.usd(5_00, "fa")) in out.caption
+    assert t("fa", "bj.head", bet=mapui._money("fa", 5_00)) in out.caption
     line = "bj.net.win" if profit > 0 else "bj.net.lose" if profit < 0 else "bj.net.push"
-    assert t("fa", line, amount=fmt.usd(abs(profit), "fa")) in out.caption and t("fa", "bj.cash", cash=fmt.usd(100_00 + profit, "fa")) in out.caption
+    assert t("fa", line, amount=mapui._money("fa", abs(profit), "+" if profit > 0 else "\u2212" if profit < 0 else "")) in out.caption and t("fa", "bj.cash", cash=mapui._money("fa", 100_00 + profit)) in out.caption
 
 
 def test_the_english_table_shows_dollars(h, d, monkeypatch):
@@ -370,7 +370,7 @@ def test_two_hundred_random_hands_keep_the_books_exact(h):
         while row["state"] == "playing":
             row = casino.act(h.db, sid, 1, A, rng.choice(("hit", "stand")), row["seq"], tb.T[0])
             assert row is not None
-        assert row["paid"] == casino.payout(row["bet"], row["result"])
+        assert row["paid"] == casino.payout(row["bet"], row["result"], casino.total(casino.hand_of(row).player))
         assert cash_of(h) == before - row["bet"] + row["paid"]
         kind = casino.outcome(row["result"])
         wins, pushes, losses = wins + (kind == "win"), pushes + (kind == "push"), losses + (kind == "lose")
@@ -417,14 +417,14 @@ def test_schema_9_adds_the_money_columns_and_keeps_every_old_game(tmp_path):
     db.x("PRAGMA user_version=8")
     db.close()
     d2 = Database(path)
-    assert d2.q1("PRAGMA user_version")[0] == 10                                                           # (v0.19 then added schema 10)
+    assert d2.q1("PRAGMA user_version")[0] == 11                                                           # (v0.19 then added schema 10, v0.20 schema 11)
     cols = [r["name"] for r in d2.qa("PRAGMA table_info(casino_games)")]
     assert cols[-3:] == ["bet", "hand_no", "paid"]
     rows = {r["sid"]: r for r in d2.qa("SELECT * FROM casino_games")}
     assert rows["old1"]["state"] == "playing" and rows["old1"]["seq"] == 4 and rows["old1"]["player"] == '["10♠","9♥"]'
     assert rows["old2"]["result"] == "lose" and rows["old2"]["seq"] == 7
     assert all(r["bet"] == 0 and r["hand_no"] == 1 and r["paid"] == 0 for r in rows.values())             # old hands had nothing at risk
-    assert Database(path).q1("PRAGMA user_version")[0] == 10                                             # reopening changes nothing
+    assert Database(path).q1("PRAGMA user_version")[0] == 11                                             # reopening changes nothing
     # an old hand that is left behind is stood without any money moving; the old table then deals the next hand for a chip
     ledger0 = d2.q1("SELECT COUNT(*) c FROM life_ledger")["c"]
     assert casino.sweep(d2, 10 ** 9) == 1 and d2.q1("SELECT state FROM casino_games WHERE sid='old1'")["state"] == "done"

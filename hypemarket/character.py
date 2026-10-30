@@ -238,8 +238,10 @@ def current_world(db, uid: int):
 
 
 def in_world(db, uid: int, world_id: int) -> bool:
-    """Is `uid` a finished character whose authoritative city is `world_id`? (The only players that are present in a city.)"""
-    return db.q1("SELECT 1 FROM characters WHERE user_id=? AND setup_state='done' AND current_world_id=?", (uid, world_id)) is not None
+    """Is `uid` a finished character whose authoritative city is `world_id`, and who is not on a journey between cities? (The only players that are present in a city: v0.20, a
+    traveller is on the road, in no city, until the arrival is applied.)"""
+    return db.q1("SELECT 1 FROM characters WHERE user_id=? AND setup_state='done' AND current_world_id=? "
+                 "AND NOT EXISTS(SELECT 1 FROM intercity_trips WHERE user_id=? AND state='travelling')", (uid, world_id, uid)) is not None
 
 
 def first_name(db, uid: int) -> str | None:

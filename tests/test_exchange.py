@@ -451,7 +451,7 @@ def test_database_with_open_shorts_upgrades_refunds_margins_and_returns_the_skil
     con.commit()
     con.close()
     d = Database(path)
-    assert d.q1("PRAGMA user_version")[0] == SCHEMA_VERSION == 10                                 # (v0.17 moved the current version from 6 to 7, v0.18 to 8, v0.18.1 to 9, v0.19 to 10; the 4 -> 6 steps run exactly as before)
+    assert d.q1("PRAGMA user_version")[0] == SCHEMA_VERSION == 11                                 # (v0.17 moved the current version from 6 to 7, v0.18 to 8, v0.18.1 to 9, v0.19 to 10; the 4 -> 6 steps run exactly as before)
     assert d.q1("SELECT 1 FROM sqlite_master WHERE name='shorts'") is None
     assert d.q1("SELECT 1 FROM sqlite_master WHERE name='exflow'") is not None
     u1, u2, u3 = (core.get_user(d, i) for i in (1, 2, 3))
@@ -465,7 +465,7 @@ def test_database_with_open_shorts_upgrades_refunds_margins_and_returns_the_skil
     assert {o[0] for o in d.outbox} == {1, 2} and all(o[1] == "short_removed" for o in d.outbox)
     assert X.announce_migration(d) == 0                                                             # told once
     d.close()
-    assert Database(path).q1("PRAGMA user_version")[0] == 10                                        # reopening is a no-op
+    assert Database(path).q1("PRAGMA user_version")[0] == 11                                        # reopening is a no-op
 
 
 def test_a_database_that_never_had_shorts_upgrades_too(tmp_path):

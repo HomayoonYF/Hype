@@ -16,8 +16,8 @@ import pytest
 def _every_player_has_a_finished_character(request, monkeypatch):
     """v0.19: the life game needs a finished character. The long-standing suites are about everything AFTER that (the map, jobs, the casino, ...), so a player who
     sends anything through the real handlers gets a finished character at once (charkit.complete); the city is still assigned the real way, by the first `مپ`.
-    The v0.19 suites (test_v019_*) turn this off and drive the real set-up themselves."""
-    if request.module.__name__.startswith("test_v019"):
+    The v0.19 suites (test_v019_*) turn this off and drive the real set-up themselves, and so does any module that sets REAL_CHARACTER_SETUP = True (v0.20: the ID card)."""
+    if request.module.__name__.startswith("test_v019") or getattr(request.module, "REAL_CHARACTER_SETUP", False):
         yield
         return
     import charkit

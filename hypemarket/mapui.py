@@ -25,7 +25,7 @@ import re
 import secrets
 import sqlite3
 
-from . import casino, cash, character, config as C, core, fmt, interactui, jobviz, presence, views, work, world, worldgeom as G, worldinspect, worldmap, worldnet as N, worldplaces
+from . import casino, cash, character, config as C, core, fmt, interactui, intercity, jobviz, presence, views, work, world, worldgeom as G, worldinspect, worldmap, worldnet as N, worldplaces
 from .core import GameError
 from .texts import t
 from .views import Reply, kb
@@ -402,13 +402,26 @@ def screen_trip(lang: str, w, city, sid: str, st, others) -> Screen:
 
 
 # --- the casino ----------------------------------------------------------------------------------------------------------------------
-def _cards(hand) -> str:
-    return " ".join(hand)
+def _iso(lang: str, s: str) -> str:
+    """A left-to-right token (a card, an amount, a total) inside a Persian message: isolated so Telegram cannot reorder it against the Persian next to it
+    (v0.20). English messages are left as they are."""
+    return fmt.ltr(s) if lang == "fa" else s
+
+
+def _money(lang: str, cents: int, sign: str = "") -> str:
+    return _iso(lang, sign + fmt.usd(cents, lang))
+
+
+def _card_line(lang: str, card: str) -> str:
+    """One card on its own line. In Persian the line is right-to-left (a line that is only an isolated Latin run would otherwise be left-aligned) and the
+    card, rank and suit together, is isolated so «10♠️» never turns into «♠️10»."""
+    return fmt.rtl_line(_iso(lang, card)) if lang == "fa" else card
 
 
 def _tot(lang: str, hand) -> str:
     n, soft = casino.value(hand)
-    return t(lang, "bj.soft", total=fmt.num(n, lang)) if soft and n < 21 else fmt.num(n, lang)
+    s = _iso(lang, fmt.num(n, lang))
+    return t(lang, "bj.soft", total=s) if soft and n < 21 else s
 
 
 def _chips(lang: str, sid: str, seq: int, balance: int) -> list:
@@ -429,11 +442,16 @@ def _bet_rows(lang: str, sid: str, seq: int, balance: int) -> list:
 
 
 def _hand_lines(lang: str, h) -> list:
+    """The two hands, one card per line (v0.20): the dealer's label and cards (the hole card is a 🎴 line until the hand is over, then his total), a blank
+    line, «you», each of your cards on its own line, a blank line and your total on a line of its own."""
+    rtl = fmt.rtl_line if lang == "fa" else (lambda s: s)
+    lines = [t(lang, "bj.dealer")]
     if h.over:
-        dealer = t(lang, "bj.dealer", cards=_cards(h.dealer), total=t(lang, "bj.total", total=_tot(lang, h.dealer)))
+        lines += [_card_line(lang, c) for c in h.dealer] + [t(lang, "bj.sum", total=_tot(lang, h.dealer))]
     else:
-        dealer = t(lang, "bj.dealer", cards=f"{h.dealer[0]} {t(lang, 'bj.hidden')}", total="")
-    return [dealer, t(lang, "bj.you", cards=_cards(h.player), total=_tot(lang, h.player))]
+        lines += [_card_line(lang, h.dealer[0]), rtl(t(lang, "bj.hidden"))]
+    lines += ["", t(lang, "bj.you")] + [_card_line(lang, c) for c in h.player] + ["", t(lang, "bj.sum", total=_tot(lang, h.player))]
+    return lines
 
 
 def screen_table(lang: str, sid: str, city, game, balance: int) -> Screen:
@@ -442,19 +460,21 @@ def screen_table(lang: str, sid: str, city, game, balance: int) -> Screen:
     * a hand running: the cards, whose move it is, and Hit / Stand only.
     `game` is the session's game row, or None before the first hand. The chips the player cannot pay are not offered."""
     if game is None:
-        text = "\n".join([t(lang, "mp.cas.title"), t(lang, "bj.game"), "", t(lang, "bj.cash", cash=fmt.usd(balance, lang)), "", _pick(lang, balance)])
+        text = "\n".join([t(lang, "mp.cas.title"), t(lang, "bj.game"), "", t(lang, "bj.cash", cash=_money(lang, balance)), "", _pick(lang, balance)])
         return Screen(text, _bet_rows(lang, sid, 0, balance), view="bj", sel=city.casino_id, picture=False)
     h = casino.hand_of(game)
     bet = game["bet"]
-    lines = [t(lang, "bj.head", bet=fmt.usd(bet, lang)), ""] + _hand_lines(lang, h) + [""]
+    lines = [t(lang, "bj.head", bet=_money(lang, bet)), ""] + _hand_lines(lang, h) + [""]
     if not h.over:
         lines.append(t(lang, "bj.turn"))
         rows = [[(t(lang, "mp.b.hit"), cd(sid, "bj", "h", game["seq"])), (t(lang, "mp.b.stand"), cd(sid, "bj", "s", game["seq"]))]]
         return Screen("\n".join(lines), rows, view="bj", sel=city.casino_id, picture=False)
     lines.append(t(lang, "bj.r." + h.result))
+    if h.result != "player_blackjack" and casino.won_with_21(h.result, casino.total(h.player)):
+        lines.append(t(lang, "bj.r.win21"))                                  # a win with 21 pays 2.5x: say so, the profit below is then 1.5x the chip
     net = game["paid"] - bet
-    lines.append(t(lang, "bj.net.win" if net > 0 else "bj.net.push" if net == 0 else "bj.net.lose", amount=fmt.usd(abs(net), lang)))
-    lines += [t(lang, "bj.cash", cash=fmt.usd(balance, lang)), "", _pick(lang, balance)]
+    lines.append(t(lang, "bj.net.win" if net > 0 else "bj.net.push" if net == 0 else "bj.net.lose", amount=_money(lang, abs(net), "+" if net > 0 else "\u2212" if net < 0 else "")))
+    lines += [t(lang, "bj.cash", cash=_money(lang, balance)), "", _pick(lang, balance)]
     return Screen("\n".join(lines), _bet_rows(lang, sid, game["seq"], balance), view="bj", sel=city.casino_id, picture=False)
 
 
@@ -529,6 +549,10 @@ async def handle(c):
     # v0.19: the session is bound to a city, and that city must still be the CHARACTER's current city. Which group the message lives in is the session's `chat_id`
     # (checked above); where the city was first created (`worlds.chat_id`) does not matter any more. A session of another city (a stale one) acts on nothing.
     ch = character.get(c.db, c.uid)
+    if character.is_done(ch) and intercity.in_transit(c.db, c.uid):          # v0.20: a traveller is on the road: every button of every map message is closed until they arrive
+        if await intercity.aguard(c.db, c.uid) is not None:
+            return Reply(toast=plain(t(c.lang, "ic.guard.brief")), alert=True)
+        ch = character.get(c.db, c.uid)                                       # (the journey ended just now: the city changed, so the old sessions are stale below)
     if not character.is_done(ch) or ch["current_world_id"] != sess["world_id"]:
         return _deny(c, "world")
     w = c.db.q1("SELECT * FROM worlds WHERE id=?", (sess["world_id"],))

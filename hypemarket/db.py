@@ -221,6 +221,69 @@ CREATE TABLE IF NOT EXISTS character_xp_log(
   delta INTEGER NOT NULL CHECK(delta >= 0), xp_after INTEGER NOT NULL CHECK(xp_after >= 0), created_at INTEGER NOT NULL,
   UNIQUE(user_id, source, ref)
 );
+
+-- v0.20: city IDs, journeys between cities, and admin gift codes. A city's ID is `worlds.id` (AUTOINCREMENT: never reused, even after a row is removed); the trigger below
+-- makes it unchangeable. A journey (`intercity_trips`) is one row per trip: the character stays in the source city (`characters.current_world_id`) until the arrival is
+-- applied, which flips the row travelling -> arrived and moves the character in ONE transaction; the partial unique index allows one open journey per character.
+CREATE TRIGGER IF NOT EXISTS trg_world_id_fixed BEFORE UPDATE OF id ON worlds WHEN NEW.id IS NOT OLD.id
+BEGIN SELECT RAISE(ABORT, 'a city ID never changes'); END;
+CREATE TABLE IF NOT EXISTS intercity_trips(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL, from_world_id INTEGER NOT NULL, to_world_id INTEGER NOT NULL,
+  started_at INTEGER NOT NULL, arrive_at INTEGER NOT NULL, duration INTEGER NOT NULL,
+  state TEXT NOT NULL DEFAULT 'travelling' CHECK(state IN ('travelling','arrived')), arrived_at INTEGER,
+  CHECK(from_world_id <> to_world_id), CHECK(arrive_at > started_at), CHECK(duration = arrive_at - started_at),
+  CHECK((state = 'arrived') = (arrived_at IS NOT NULL))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_intercity_open ON intercity_trips(user_id) WHERE state = 'travelling';
+CREATE INDEX IF NOT EXISTS ix_intercity_to ON intercity_trips(to_world_id, state);
+CREATE TRIGGER IF NOT EXISTS trg_intercity_insert BEFORE INSERT ON intercity_trips
+BEGIN
+  SELECT RAISE(ABORT, 'journey: only a finished character travels') WHERE NOT EXISTS(SELECT 1 FROM characters WHERE user_id = NEW.user_id AND setup_state = 'done');
+  SELECT RAISE(ABORT, 'journey: it starts in the current city') WHERE NOT EXISTS(SELECT 1 FROM characters WHERE user_id = NEW.user_id AND current_world_id = NEW.from_world_id);
+  SELECT RAISE(ABORT, 'journey: unknown destination') WHERE NOT EXISTS(SELECT 1 FROM worlds WHERE id = NEW.to_world_id);
+  SELECT RAISE(ABORT, 'journey: a new journey starts travelling') WHERE NEW.state <> 'travelling' OR NEW.arrived_at IS NOT NULL;
+END;
+CREATE TRIGGER IF NOT EXISTS trg_intercity_update BEFORE UPDATE ON intercity_trips
+BEGIN
+  SELECT RAISE(ABORT, 'journey: immutable field') WHERE NEW.id IS NOT OLD.id OR NEW.user_id IS NOT OLD.user_id OR NEW.from_world_id IS NOT OLD.from_world_id
+                                                      OR NEW.to_world_id IS NOT OLD.to_world_id OR NEW.started_at IS NOT OLD.started_at
+                                                      OR NEW.arrive_at IS NOT OLD.arrive_at OR NEW.duration IS NOT OLD.duration;
+  SELECT RAISE(ABORT, 'journey: an arrived journey stays arrived') WHERE OLD.state = 'arrived';
+  SELECT RAISE(ABORT, 'journey: no arrival before its time') WHERE NEW.state = 'arrived' AND (NEW.arrived_at IS NULL OR NEW.arrived_at < OLD.arrive_at);
+END;
+CREATE TRIGGER IF NOT EXISTS trg_intercity_arrived AFTER UPDATE OF state ON intercity_trips WHEN NEW.state = 'arrived'
+BEGIN
+  SELECT RAISE(ABORT, 'journey: the character must be in the destination when the journey ends')
+  WHERE NOT EXISTS(SELECT 1 FROM characters WHERE user_id = NEW.user_id AND current_world_id = NEW.to_world_id);
+END;
+CREATE TRIGGER IF NOT EXISTS trg_intercity_nodelete BEFORE DELETE ON intercity_trips BEGIN SELECT RAISE(ABORT, 'journeys are kept'); END;
+
+CREATE TABLE IF NOT EXISTS gift_codes(
+  code TEXT PRIMARY KEY CHECK(length(code) >= 8),
+  reward_type TEXT NOT NULL CHECK(reward_type IN ('stock_money','life_cash','char_xp')),
+  amount INTEGER NOT NULL CHECK(amount > 0), max_uses INTEGER NOT NULL CHECK(max_uses > 0),
+  used_count INTEGER NOT NULL DEFAULT 0 CHECK(used_count >= 0 AND used_count <= max_uses),
+  created_by INTEGER NOT NULL, created_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS gift_redemptions(
+  id INTEGER PRIMARY KEY AUTOINCREMENT, code TEXT NOT NULL, user_id INTEGER NOT NULL,
+  reward_type TEXT NOT NULL, amount INTEGER NOT NULL CHECK(amount > 0), redeemed_at INTEGER NOT NULL,
+  UNIQUE(code, user_id)
+);
+CREATE TRIGGER IF NOT EXISTS trg_gift_codes_update BEFORE UPDATE ON gift_codes
+BEGIN
+  SELECT RAISE(ABORT, 'gift code: only the use counter moves, and only up') WHERE NEW.code IS NOT OLD.code OR NEW.reward_type IS NOT OLD.reward_type OR NEW.amount IS NOT OLD.amount
+                                                                              OR NEW.max_uses IS NOT OLD.max_uses OR NEW.created_by IS NOT OLD.created_by
+                                                                              OR NEW.created_at IS NOT OLD.created_at OR NEW.used_count < OLD.used_count;
+END;
+CREATE TRIGGER IF NOT EXISTS trg_gift_codes_nodelete BEFORE DELETE ON gift_codes BEGIN SELECT RAISE(ABORT, 'gift codes are kept'); END;
+CREATE TRIGGER IF NOT EXISTS trg_gift_redeem_insert BEFORE INSERT ON gift_redemptions
+BEGIN
+  SELECT RAISE(ABORT, 'gift redemption: unknown code') WHERE NOT EXISTS(SELECT 1 FROM gift_codes WHERE code = NEW.code AND reward_type = NEW.reward_type AND amount = NEW.amount);
+END;
+CREATE TRIGGER IF NOT EXISTS trg_gift_redeem_update BEFORE UPDATE ON gift_redemptions BEGIN SELECT RAISE(ABORT, 'redemptions are kept as they were'); END;
+CREATE TRIGGER IF NOT EXISTS trg_gift_redeem_delete BEFORE DELETE ON gift_redemptions BEGIN SELECT RAISE(ABORT, 'redemptions are kept'); END;
 """
 
 
@@ -297,7 +360,7 @@ def _migrate_10(conn) -> None:
     character.migrate_legacy(_RawDb(conn))
 
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 # version -> SQL (or a function taking the connection) upgrading a database FROM version-1.
 # New tables need no entry: SCHEMA creates them with IF NOT EXISTS.
 MIGRATIONS: dict = {
@@ -314,6 +377,7 @@ MIGRATIONS: dict = {
     8: _migrate_8,                           # v0.18: life cash + exchange + jobs + interactions tables (from SCHEMA), world_trips.mode, and the one-time $100 grant to existing players
     9: _migrate_9,                           # v0.18.1: casino_games.bet / hand_no / paid (blackjack for life cash); nothing existing changes
     10: _migrate_10,                         # v0.19: characters (tables from SCHEMA) and a pending character for every player with saved world activity; nothing existing changes
+    11: "SELECT 1;",                         # v0.20: intercity_trips, gift_codes, gift_redemptions and the unchangeable city ID are new tables / triggers from SCHEMA; nothing existing changes
 }
 
 

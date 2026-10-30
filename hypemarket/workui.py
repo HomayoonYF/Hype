@@ -15,7 +15,7 @@ import logging
 import math
 import re
 
-from . import character, characterui, config as C, core, fmt, jobviz, mapui, presence, work, world, worldinspect, worldplaces
+from . import character, characterui, config as C, core, fmt, intercity, jobviz, mapui, presence, travelui, work, world, worldinspect, worldplaces
 from .core import GameError
 from .texts import t
 from .views import Reply, kb
@@ -48,6 +48,16 @@ class NeedCharacter(NoCity):
         return characterui.need_reply(c, self.ch)
 
 
+class InTransit(NoCity):
+    """The player is on a journey between cities (v0.20): no job works until they arrive. A message gets the journey's status, a button press a short alert."""
+    def __init__(self, trip):
+        super().__init__("ic.guard.brief")
+        self.trip = trip
+
+    def reply(self, c) -> Reply:
+        return travelui.guard_reply(c, self.trip)
+
+
 def R(c, text: str, rows: list, toast: str | None = None, alert: bool = False, pic=None) -> Reply:
     """A job screen. `pic` (jobviz.map_pic) is the MAP the screen shows above its text, if it has one; `fresh` makes a screen without a picture replace a
     message that has one (and the other way round) instead of leaving a stale picture behind."""
@@ -70,6 +80,10 @@ async def city_of(c):
     ch = character.ensure_profile(c.db, c.uid)
     if ch is None:
         return None
+    if character.is_done(ch):                                        # v0.20: a traveller is on the road (a journey that has ended is applied first)
+        trip = await intercity.aguard(c.db, c.uid)
+        if trip is not None:
+            raise InTransit(trip)
     try:
         w, _created = await world.aworld_for(c.db, c.uid, c.chat.id)
         if not character.is_done(character.get(c.db, c.uid)):

@@ -345,7 +345,7 @@ CASH_START_CENTS = 100_00                  # every player gets $100.00 once (led
 CASH_CAP_CENTS = 10 ** 15                  # no balance may grow past $10 trillion: a hard guard against overflow
 # --- the casino (v0.18.1): blackjack played for life cash ----------------------------------------------------------------------------
 CASINO_BETS_CENTS = (1_00, 5_00, 10_00, 25_00, 100_00)      # the chips of the table: $1, $5, $10, $25, $100 (a bet is always one chip)
-CASINO_BLACKJACK_NUM, CASINO_BLACKJACK_DEN = 3, 2           # a natural blackjack pays 3 to 2 (the profit is bet * 3 / 2; every chip is a whole number of dollars)
+CASINO_BLACKJACK_NUM, CASINO_BLACKJACK_DEN = 3, 2           # a natural blackjack, and (v0.20) ANY hand won with a final total of exactly 21, pays 3 to 2 (profit = bet * 3 / 2, i.e. 2.5x the chip comes back; every chip is a whole number of dollars)
 CASINO_IDLE_SECS = 1800                                     # a hand nobody has touched for 30 minutes is stood (played out) by the bot and paid as usual
 
 
@@ -411,6 +411,16 @@ def display_utc_offset() -> int:
     return int(_env_num("DISPLAY_UTC_OFFSET_MIN", 210.0, -720.0, 840.0))
 
 
+INTERCITY_TRAVEL_MINUTES_DEFAULT = 10      # v0.20: a journey between two cities lasts this many REAL minutes (intercity.py)
+
+
+def intercity_travel_secs() -> int:
+    """How long a journey between two cities takes, in seconds: INTERCITY_TRAVEL_MINUTES in .env (real minutes, default 10, at least one second and at most one
+    day). The ONE place that decides it. A journey saves its own duration when it starts, so changing the setting never moves the arrival of a journey
+    that is already under way."""
+    return max(1, int(round(_env_num("INTERCITY_TRAVEL_MINUTES", float(INTERCITY_TRAVEL_MINUTES_DEFAULT), 1.0 / 60.0, 24.0 * 60.0) * 60.0)))
+
+
 def hug_need_near() -> bool:
     return os.environ.get("HUG_NEED_NEAR", "1").strip().lower() not in ("0", "false", "no", "off")
 
@@ -451,3 +461,12 @@ def digits_mode() -> str:
     """'en' (default since v0.18.1): every number is shown with English digits 0-9 and the signs , . %; 'fa': the old Persian digits ۰-۹ and ٬ ٫ ٪.
     One switch (env DIGITS=fa) brings the old look back; the Persian digits still exist in the code and the texts."""
     return "fa" if os.environ.get("DIGITS", "en").strip().lower() in ("fa", "persian", "farsi", "old", "legacy") else "en"
+
+
+# --- admin gift codes (v0.20) ----------------------------------------------------------------------------------------------------------
+# What an admin may put into one gift code (the amount is per redeemer, in the unit the admin types it in) and how many different players may use it. These are sanity
+# bounds against a typo, not game balance; gifts.py is the only place that reads them.
+GIFT_MAX_STOCK_COINS = 1_000_000           # stock money, whole 🪙 per redeemer
+GIFT_MAX_CASH_DOLLARS = 100_000            # life cash, whole dollars per redeemer
+GIFT_MAX_XP = 100_000                      # character XP per redeemer
+GIFT_MAX_USES = 10_000                     # how many different players may redeem one code

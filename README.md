@@ -52,6 +52,9 @@ The whole game is one SQLite file (`hypemarket.db`) — **back it up** (copy it 
 | Daily salary | every morning a private message with your wealth summary and a **claim salary** button (`حقوق` turns it on/off) |
 | Progress | 26 achievements (`دستاوردها`) with rewards · admin analytics dashboard (`/stats`) and a daily report |
 | City | `مپ` — your character's persistent city map (v0.15; since v0.19 a character lives in one city whatever group it is typed in, section 19) · `مپ P14`, `مپ L1`, `مپ D2` inspect one parcel, public place or district and mark it on the map (v0.16) · **v0.17: the map has buttons** (you, the people near you, places, empty lots, 🚶 walking along the roads), **every city has a casino** (v0.18.1: blackjack for cash, see section 17), and the buttons only obey the player who sent `مپ` · nothing can be bought or built yet · sections 12, 14 and 15 |
+| Cities & travel | **v0.20:** every city has a permanent numeric ID · `شهرها` lists them · `سفر 3` sets off for city 3: a real **10-minute** journey (`INTERCITY_TRAVEL_MINUTES`) that survives restarts and offline time, closes the map / jobs / casino until you arrive, and never changes your birthplace · section 20 |
+| ID card | **v0.20:** `کارت ملی` sends your character's national ID card as a picture: a 2D portrait drawn from the character's saved looks, with name, citizen ID, age, gender, birthplace and current city · also a button in `منو` · section 20 |
+| Gift codes | **v0.20:** an admin makes a code in `/admin` → `🎁 ساخت گیفت کارت` (stock money, life cash or character XP, a limit of different players); a player types `کد هدیه HM-XXXX-XXXX-XXXX`, once per player, atomically · section 20 |
 | Life cash & jobs | **v0.18:** a second balance, `پول نقد` ($, $100 at the start), next to stock money · `صرافی` turns stock money into cash, **one way only** (v0.18.2), at a fixed 1,000 🪙 = $5 · `مشاغل`: Snapp rides, McDonald's shifts, City Hall errands, a compact text list (v0.18.2: only route maps are pictures) · greetings and hugs are buttons under `📍 اطراف من` · see sections 16, 17 and 18 |
 | Guidance | `راهنما` is a menu: starter guide (a checklist that ticks itself off), all commands, and how the game works · quests: a starter checklist, 3 daily and 3 weekly quests with automatic rewards |
 | Telegram | inline buttons everywhere · price alerts by DM · charts · Stars shop (badges, season pass, extra slot, spotlight) · live market board per group (one message the bot keeps editing) |
@@ -619,3 +622,69 @@ Tested against a simulated Telegram only (no real Telegram, and the real Persian
 ### Files
 
 New: `character.py`, `characterui.py`, `charxp.py`, `gamecal.py`, `traits.py`, `texts_char.py`. Changed: `db.py` (schema 10), `world.py` (`aworld_for`), `presence.py`, `interact.py`, `interactui.py`, `mapui.py`, `workui.py`, `handlers.py`, `config.py`, `texts.py`, `texts_life.py`, `texts_world.py`, `docs.py`, `worldinspect.py`.
+
+## 20. v0.20 — Blackjack 21 bonus, city IDs and travel, the national ID card, admin gift codes (on top of v0.19)
+
+**What changed for players.**
+
+1. **Blackjack.** A hand won with a **final total of exactly 21** (a natural blackjack, or 21 reached by hitting or doubling) now pays **2.5×** the chip back (profit 1.5× the chip); every other win still pays 2×, a push returns the chip, a loss loses it. The table is laid out so that **each card is on its own line, the score on its own line**, and numbers and card symbols are wrapped in Unicode isolates so a Persian line does not scramble them.
+2. **City IDs, `شهرها`, `سفر <ID>`.** Every city has a permanent ID (its `worlds.id`). `شهرها` lists them page by page (read-only). `سفر 3` starts a journey to city 3 that lasts **10 real minutes** (the one setting `INTERCITY_TRAVEL_MINUTES`, read when the journey starts and saved in the journey's row). While travelling the character is on no map and in nobody's «nearby» list, and the map, jobs, casino, local walking and hugs answer with the journey's status. `سفر` alone shows the journey. The birthplace never changes.
+3. **`کارت ملی`.** The character's national ID card as a picture (also the `🪪` button of `منو`). It shows the **real 2D portrait**, first and last name, citizen ID (the v0.19 one), current age, gender, birthplace and current city. Not finished with the set-up → the set-up is shown instead. While travelling, the «current city» field says «در سفر به <ID • name>» and never the destination as if arrived.
+4. **Gift codes.** An admin opens `/admin` → `🎁 ساخت گیفت کارت`, picks the reward (**stock money**, **life cash** or **character XP**), types the amount per player and how many different players may use the code, confirms, and gets a code like `HM-7QK2-MZ4D-X9PV`. A player types `کد هدیه HM-7QK2-MZ4D-X9PV`. `📋 گیفت‌کدها` lists the latest codes. There is no expiry and nothing to sell or trade.
+
+### The model in one place
+
+| Thing | Where it lives | Rules |
+|---|---|---|
+| **City ID** | `worlds.id` (`AUTOINCREMENT`) | Already unique and sequential, never reused; a trigger now refuses to change it. Nothing was migrated. |
+| **Journey** | `intercity_trips` | One row per journey (from, to, `started_at`, `arrive_at`, `duration`, `state`). A partial unique index allows **one open journey per character**; the row is immutable except `travelling → arrived` (triggers), and rows are never deleted. |
+| **Arrival** | `intercity.settle` | **Lazy and idempotent**: applied whenever anybody looks (the traveller's next command, anybody's «nearby» in the destination, the 5-minute housekeeping). One transaction: the character's `current_world_id` becomes the destination, the row flips `travelling → arrived` with a guarded `UPDATE`. A repeat or a race matches nothing the second time. |
+| **Portrait** | `portrait.py` (pure drawing; nothing stored) | Drawn from the saved traits and gender only: no randomness, no clock, no network. Same traits → same pixels. |
+| **ID card** | `idcard.py` (a PNG made in memory, never stored) | Reads the saved rows; changes nothing. |
+| **Gift code** | `gift_codes`, `gift_redemptions` | See below. |
+
+### Travel
+
+* **Setting off** (`intercity.start`, one transaction) is refused for: no finished character, an unknown ID, the city you are already in, a journey already going, an **open job**, a **local walk or Snapp ride** in progress, a **blackjack hand** on the table. Each refusal is a Persian sentence and nothing is written.
+* **Going and coming.** The character stays in the source city until the arrival is applied. The duration is saved in the journey row, so changing `INTERCITY_TRAVEL_MINUTES` never moves a journey that is already going, and a restart cannot reset a timer (the end is an absolute time). Stock-market features do not depend on a city and keep working during a journey.
+* **Birthplace** (`birth_world_id`) is never touched.
+
+### The ID card
+
+* **Portrait.** The seven saved traits (height, build, skin tone, hair colour, hair style, eye colour, face shape) and the gender each change the picture: height moves the head against a height chart and lengthens the neck, build changes the shoulders, neck and face width, skin tone / hair / eyes are colours, hair style and face shape are four different outlines. A woman has long hair, a softer brow and coloured lips; a man has short hair and a stronger brow and jaw.
+* **Stable.** The traits are saved once and locked (v0.19), the drawing is pure, so the same character gets the same portrait on every request, in every group, after restarts and after journeys. The card's text is the only thing that changes (age, city).
+* **Style.** Black and dark green, thin lines, Vazirmatn font bundled with the bot. The card says it is an in-game card with no legal validity. No remote service is used.
+
+### Gift codes
+
+* **The code.** `HM-` + 12 characters from a 32-letter alphabet without look-alikes (no 0/O, 1/I), drawn with `secrets` (60 random bits): not guessable, unique by the table's primary key. Typed back with any case, spacing or digit script.
+* **Rewards and ledgers.** *Stock money*: `users.cash` (the same balance `/give` and the daily bonus change), counted as minted. *Life cash*: `cash.apply` (ledger row `gift` / code, idempotent by itself). *Character XP*: `charxp.grant` (source `gift`, reference = code, idempotent by itself), which needs a **finished** character; an XP code is not used up by a player who has none.
+* **Exactly once.** One transaction: read the code → refuse a second use by the same player → refuse when full → raise the counter with `WHERE used_count < max_uses` → write the redemption (`UNIQUE(code, user_id)`) → pay. If paying fails (a cap, a crash) **nothing** stays: no place used, no coin moved. Two players racing for the last place cannot both get it; the same player racing with himself is paid once; a retried message is answered «already used».
+* **Protected rows.** A code's reward, amount and limit never change, its counter only goes up, nothing is deleted, redemptions are append-only (triggers).
+* **Who may make one.** Only accounts in `ADMIN_IDS`: `/admin` opens only for them in a private chat, every button re-checks it, and creating the code checks it **again at execution**. The draft (reward, amount, players) lives in memory: cancelling, waiting 10 minutes or restarting the bot leaves no code behind; a double tap or an old confirm button creates at most one.
+* **Players.** `کد هدیه <code>` (also `gift code <code>`). The answer never repeats the code. Refusals: bad format, unknown code, already redeemed, no places left, XP code without a finished character, balance at its cap. In a group only a message that looks like a code attempt is taken as the command (`کد هدیه نداری؟` is chat).
+* **Limits.** Per player: 1,000,000 🪙, $100,000 or 100,000 XP; at most 10,000 players per code (`config.GIFT_MAX_*`, sanity bounds against a typo).
+* **A code typed in a group is visible to everybody there.** The admin's confirmation says so and recommends the private chat. There is no per-user attempt counter: 60 random bits make guessing pointless, and the ordinary flood throttle applies.
+
+### Database
+
+Schema **11**, additive only: new tables `intercity_trips`, `gift_codes`, `gift_redemptions` and their triggers, plus the trigger that fixes `worlds.id`. No existing table, row, balance, ledger entry, city, character or trip changes. A v0.19 database upgrades by opening it with v0.20.
+
+### Configuration
+
+`INTERCITY_TRAVEL_MINUTES` (real minutes, default 10) in `.env`. Everything else is in `config.py`.
+
+### Things to check by hand in Telegram
+
+1. Win a blackjack hand with 21 and look at the payout and the one-card-per-line layout in the Persian client (the real rendering of the isolates cannot be proven by unit tests).
+2. `شهرها`, then `سفر 2` from another account; try `مپ`, `مشاغل` and the casino during the journey; wait for the arrival; send `کارت ملی`.
+3. Look at the card in the Persian and English clients (the Persian shaping and right-to-left order were only checked here with stand-ins for `arabic-reshaper` / `python-bidi`).
+4. `/admin` → `🎁 ساخت گیفت کارت` for each reward; redeem from two accounts, from a group and from the private chat; try the same code twice.
+
+### Honest limits
+
+Tested against a simulated Telegram only (no real Telegram client). In the build environment `arabic-reshaper` and `python-bidi` were **stand-ins** (no network to install the real ones), so the card's Persian text was checked with them and a right-to-left mark is used to fix the paragraph direction; the real libraries should give the same order but this was not seen. The portrait is a stylised drawing, not a photograph. The journey time is the same between every pair of cities (no distance model).
+
+### Files
+
+New: `intercity.py`, `travelui.py`, `texts_travel.py`, `portrait.py`, `idcard.py`, `gifts.py`, `giftui.py`, `texts_gift.py`. Changed: `db.py` (schema 11), `casino.py`, `mapui.py`, `fmt.py`, `config.py`, `adminpanel.py`, `handlers.py`, `workui.py`, `presence.py`, `interact.py`, `character.py`, `jobs.py`, `views.py`, `sections.py`, `docs.py`, `texts.py`, `texts_char.py`, `texts_map.py`.

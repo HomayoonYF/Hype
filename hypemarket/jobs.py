@@ -8,7 +8,7 @@ import logging
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramRetryAfter
 from aiogram.types import BufferedInputFile
 
-from . import achievements, analytics, backups, bots, casino, charts, config as C, exchange, salary, core, events, progress, quests, social, trading, views, work
+from . import achievements, analytics, backups, bots, casino, charts, config as C, exchange, intercity, salary, core, events, progress, quests, social, trading, views, work
 from .handlers import App, fit_caption, flush_outbox, send_mod_alerts
 from .texts import t
 
@@ -77,6 +77,10 @@ async def slow_tick(app: App) -> None:
         casino.sweep(app.db)                   # blackjack hands left on the table (idle 30 min, or their message expired) are stood and paid
     except Exception:
         log.exception("casino sweep failed")
+    try:
+        intercity.sweep(app.db)                # v0.20: journeys that have ended are applied (the arrival never depends on this loop: it is also applied when anybody looks)
+    except Exception:
+        log.exception("intercity sweep failed")
     await post_boards(app)
     await flush_outbox(app)
 

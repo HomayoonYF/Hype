@@ -13,8 +13,8 @@ city itself. Nothing is stored about «where the walker is right now»: that is 
   Arrival is applied lazily by `settle` (the next time that player acts, or anybody looks at the saved row), in one transaction that also
   marks the trip arrived and writes the destination into the player's row. No timers, no background task; a restart loses nothing.
 * One walk at a time per player per city: a partial UNIQUE index on (world, player) WHERE state = 'walking'.
-* Nearby: the finished characters whose CURRENT city is this one (a character is present in exactly one city, whatever group they type in, so an old row in
-  another city can never show up as a second copy) and whose road distance to you is at most the configured radius (straight lines are only used to skip
+* Nearby: the finished characters whose CURRENT city is this one and who are not on a journey between cities (a character is present in exactly one city, whatever group they type in,
+  so an old row in another city can never show up as a second copy; v0.20: a traveller is on the road, on nobody's map) and whose road distance to you is at most the configured radius (straight lines are only used to skip
   the obviously far ones: a road is never shorter than the straight line). They are named by their first name.
 No function here touches money, stocks, XP or anything outside the five map tables.
 """
@@ -259,11 +259,14 @@ def nearby(db, city, uid: int, pos, now: int | None = None, radius: float | None
     now = core.now() if now is None else now
     radius = C.nearby_radius() if radius is None else radius
     limit = C.MAP_MAX_OTHERS if limit is None else limit
+    from . import intercity                                              # (v0.20: travellers who have reached this city are put on its map first)
+    intercity.settle_arrivals(db, city, now)
     trips = {r["user_id"]: r for r in db.qa("SELECT * FROM world_trips WHERE world_id=? AND state='walking'", (city.id,))}
     cand = []
     for r in db.qa("SELECT p.user_id, p.x, p.y, c.first_name FROM world_players p JOIN users u ON u.id=p.user_id "
                    "JOIN characters c ON c.user_id=p.user_id AND c.current_world_id=p.world_id AND c.setup_state='done' "
-                   "WHERE p.world_id=? AND p.user_id<>? AND u.banned=0 AND u.bot=0", (city.id, uid)):
+                   "WHERE p.world_id=? AND p.user_id<>? AND u.banned=0 AND u.bot=0 "
+                   "AND NOT EXISTS(SELECT 1 FROM intercity_trips i WHERE i.user_id=p.user_id AND i.state='travelling')", (city.id, uid)):
         here = (r["x"], r["y"])
         tr = trips.get(r["user_id"])
         if tr is not None:

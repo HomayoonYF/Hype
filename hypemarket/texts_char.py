@@ -21,6 +21,10 @@ FA_CHAR = {
     "e.char_gender": "این گزینه معتبر نیست؛ مرد یا زن رو انتخاب کن.",
     "e.char_none": "اول باید شخصیتت رو بسازی.",
     "e.char_world": "شهر شخصیتت پیدا نشد. به ادمین خبر بده.",
+    "menu.idcard": "🪪 کارت ملی",
+    "idc.caption": "🪪 <b>کارت ملی</b> • {first} {last}\nاین کارت فقط توی بازیه و هویت واقعی تو نیست.",
+    "e.card_char": "اول ساخت شخصیتت رو تموم کن؛ بعد می‌تونی کارت ملی بگیری.",
+    "e.card_traits": "ویژگی‌های ظاهری شخصیتت پیدا نشد؛ به ادمین خبر بده.",
 }
 
 EN_CHAR = {
@@ -43,4 +47,8 @@ EN_CHAR = {
     "e.char_gender": "That option is not valid; choose male or female.",
     "e.char_none": "You need to create your character first.",
     "e.char_world": "Your character's city was not found. Tell the admin.",
+    "menu.idcard": "🪪 ID card",
+    "idc.caption": "🪪 <b>National ID</b> • {first} {last}\nThis card is in-game only; it is not your real identity.",
+    "e.card_char": "Finish creating your character first; then you can get an ID card.",
+    "e.card_traits": "Your character's saved looks could not be found; tell an admin.",
 }

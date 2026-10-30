@@ -16,6 +16,17 @@ from hypemarket.db import Database
 from hypemarket.texts import FA, EN, t
 
 U = 61001
+LRI, PDI, RLM = "\u2066", "\u2069", "\u200f"
+
+
+def money(cents, sign=""):
+    """An amount the way the Persian table prints it (v0.20): an isolated left-to-right run."""
+    return f"{LRI}{sign}{fmt.usd(cents, 'fa')}{PDI}"
+
+
+def cl(card):
+    """A card's own line in the Persian table (v0.20): right-to-left line, the card isolated."""
+    return f"{RLM}{LRI}{card}{PDI}"
 
 
 # ============================================================================================== the dealer's decision
@@ -303,8 +314,8 @@ def lines_of(out):
 
 def test_the_entry_screen_is_title_game_balance_prompt_and_the_bets(h, d):
     v, lobby = enter(h, d, A)
-    assert lines_of(lobby) == [t("fa", "mp.cas.title"), t("fa", "bj.game"), "", t("fa", "bj.cash", cash=fmt.usd(100_00, "fa")), "", t("fa", "bj.pick")]
-    assert lobby.caption == "🎰 <b>کازینو</b>\n♠️ بلک‌جک\n\n💵 موجودی نقدی: <b>$۱۰۰٫۰۰</b>\n\nمبلغ شرطت رو انتخاب کن."
+    assert lines_of(lobby) == [t("fa", "mp.cas.title"), t("fa", "bj.game"), "", t("fa", "bj.cash", cash=money(100_00)), "", t("fa", "bj.pick")]
+    assert lobby.caption == "🎰 <b>کازینو</b>\n♠️ بلک‌جک\n\n💵 موجودی نقدی: <b>\u2066$۱۰۰٫۰۰\u2069</b>\n\nمبلغ شرطت رو انتخاب کن."
     assert [x for x, _ in lobby.buttons] == [chip_label(b) for b in C.CASINO_BETS_CENTS] + [t("fa", "bj.b.rules"), t("fa", "mp.b.exit")]
 
 
@@ -312,7 +323,7 @@ def test_the_entry_screen_shows_the_real_balance_and_only_affordable_bets(h, d):
     v, lobby = enter(h, d, A)
     h.db.x("UPDATE life_accounts SET balance=? WHERE user_id=?", (11_339, A))                            # «$113.39», not a hard-coded example
     lobby = d.press(A, f"mp:{v.sid}:bj:o", v)
-    assert t("fa", "bj.cash", cash=fmt.usd(11_339, "fa")) in lobby.caption
+    assert t("fa", "bj.cash", cash=money(11_339)) in lobby.caption
     assert [x for x, _ in lobby.buttons][:5] == [chip_label(b) for b in C.CASINO_BETS_CENTS]
     h.db.x("UPDATE life_accounts SET balance=? WHERE user_id=?", (7_00, A))
     chips = d.press(A, f"mp:{v.sid}:bj:o", v)
@@ -326,7 +337,8 @@ def test_a_hand_in_progress_shows_cards_status_and_only_hit_and_stand(h, d, monk
     v, lobby = enter(h, d, A)
     scripted(monkeypatch, ["10♥", "6♣"], ["7♠", "9♦"], ["2♣"])
     table = table_of(d, A, v, lobby, bet=5_00)
-    assert lines_of(table) == [t("fa", "bj.head", bet=fmt.usd(5_00, "fa")), "", "دیلر: 7♠ 🎴", f"تو: 10♥ 6♣ — {fmt.num(16, 'fa')}", "", "نوبت توئه."]
+    assert lines_of(table) == [t("fa", "bj.head", bet=money(5_00)), "", "<b>دیلر:</b>", cl("7♠"), RLM + "🎴", "", "<b>تو:</b>", cl("10♥"), cl("6♣"), "",
+                               f"<b>مجموع: {LRI}{fmt.num(16, 'fa')}{PDI}</b>", "", "نوبت توئه."]                       # v0.20: one card per line, the total on a line of its own
     assert [x for x, _ in table.buttons] == ["🃏 کارت بکش", "✋ بایست"]                                    # no chips, no rules, no door while a hand is running
     assert "قانون" not in table.caption and "۳ به ۲" not in table.caption
 
@@ -336,12 +348,12 @@ def test_a_finished_hand_shows_result_money_and_balance_then_the_bets(h, d, monk
     scripted(monkeypatch, ["10♥", "9♣"], ["10♠", "7♦"], ["K♣"])
     table = table_of(d, A, v, lobby, bet=5_00)
     out = d.go(A, table, t("fa", "mp.b.stand"))
-    assert lines_of(out) == [t("fa", "bj.head", bet=fmt.usd(5_00, "fa")), "", f"دیلر: 10♠ 7♦ K♣ — {fmt.num(27, 'fa')}", f"تو: 10♥ 9♣ — {fmt.num(19, 'fa')}", "",
-                             t("fa", "bj.r.dealer_bust"), t("fa", "bj.net.win", amount=fmt.usd(5_00, "fa")), t("fa", "bj.cash", cash=fmt.usd(105_00, "fa")), "", t("fa", "bj.pick")]
+    assert lines_of(out) == [t("fa", "bj.head", bet=money(5_00)), "", "<b>دیلر:</b>", cl("10♠"), cl("7♦"), cl("K♣"), f"<b>مجموع: {LRI}{fmt.num(27, 'fa')}{PDI}</b>", "", "<b>تو:</b>", cl("10♥"), cl("9♣"), "",
+                             f"<b>مجموع: {LRI}{fmt.num(19, 'fa')}{PDI}</b>", "", t("fa", "bj.r.dealer_bust"), t("fa", "bj.net.win", amount=money(5_00, "+")), t("fa", "bj.cash", cash=money(105_00)), "", t("fa", "bj.pick")]
     assert [x for x, _ in out.buttons] == [chip_label(b) for b in C.CASINO_BETS_CENTS] + [t("fa", "bj.b.rules"), t("fa", "mp.b.exit")]
     scripted(monkeypatch, ["10♥", "9♣"], ["10♠", "7♦"], ["4♣"])
     out = d.go(A, next_hand(d, A, v, out, bet=10_00), t("fa", "mp.b.stand"))
-    assert t("fa", "bj.net.lose", amount=fmt.usd(10_00, "fa")) in out.caption and t("fa", "bj.cash", cash=fmt.usd(95_00, "fa")) in out.caption
+    assert t("fa", "bj.net.lose", amount=money(10_00, "\u2212")) in out.caption and t("fa", "bj.cash", cash=money(95_00)) in out.caption
     assert t("fa", "bj.r.lose") in out.caption and "−" in out.caption
 
 
@@ -384,7 +396,7 @@ def test_the_english_screens_follow_the_same_shape(h, d, monkeypatch):
     assert "$100.00" in lobby.caption and lobby.buttons[-2][0] == "📖 Rules"
     scripted(monkeypatch, ["10♥", "6♣"], ["7♠", "9♦"], ["2♣"])
     table = d.press(B, chip_data(lobby, 5_00, "en"), v)
-    assert lines_of(table) == ["🎰 <b>Blackjack</b> • 🎟 Bet: <b>$5.00</b>", "", "Dealer: 7♠ 🎴", "You: 10♥ 6♣ — 16", "", "Your move."]
+    assert lines_of(table) == ["🎰 <b>Blackjack</b> • 🎟 Bet: <b>$5.00</b>", "", "<b>Dealer:</b>", "7♠", "🎴", "", "<b>You:</b>", "10♥", "6♣", "", "<b>Total: 16</b>", "", "Your move."]
     assert [x for x, _ in table.buttons] == ["🃏 Hit", "✋ Stand"]
 
 

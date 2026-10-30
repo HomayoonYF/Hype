@@ -17,7 +17,10 @@ THE MONEY (life cash only, in cents; never the stock coins, shares, levels or it
     * A hand is played for one CHIP (`config.CASINO_BETS_CENTS`: $1, $5, $10, $25, $100). The chip is taken from the player's life cash when
       the hand is dealt, in the SAME database transaction that creates the hand: a player who cannot pay the chip gets no hand and loses nothing.
     * Payout, credited in the same transaction in which the hand finishes: win or dealer bust 1 to 1 (the chip comes back plus the same
-      again), a natural blackjack 3 to 2, a push gives the chip back, a loss or a bust pays nothing.
+      again, i.e. 2x the chip), a win with a FINAL TOTAL OF EXACTLY 21 3 to 2 (v0.20: the chip plus one and a half times it, i.e. 2.5x the
+      chip; a natural blackjack is such a win, and so is reaching 21 by hitting and then seeing the dealer bust), a push gives the chip back,
+      a loss or a bust pays nothing. The 2.5x belongs to the hand that WINS with 21: a 21 that is only a push, or that the dealer beats, or
+      a hand that passed through 21 on the way, pays by its own result.
     * Every movement is a row of the cash ledger (`casino_bet` / `casino_win`, ref "<session>:<hand number>"), and (user, kind, ref) is
       UNIQUE: a repeated, late or duplicated press, a retry after a crash, or the sweep below can never charge or pay a hand twice.
     * A hand nobody touches for `config.CASINO_IDLE_SECS`, or whose map message has expired or been dropped, is STOOD by `sweep` (the player's
@@ -170,10 +173,16 @@ def outcome(result: str) -> str:
 
 
 # --- money -----------------------------------------------------------------------------------------------------------------------
-def payout(bet: int, result: str) -> int:
+def won_with_21(result: str, player_total: int | None) -> bool:
+    """Did the player WIN the hand with a final total of exactly 21? (A natural blackjack counts: it is a won hand of 21.)"""
+    return result in WIN_RESULTS and (result == "player_blackjack" or player_total == 21)
+
+
+def payout(bet: int, result: str, player_total: int | None = None) -> int:
     """Cents the table gives back for a finished hand of stake `bet` (the chip itself included): 0 for a loss, `bet` for a push,
-    2 x `bet` for a win, `bet` + 3/2 x `bet` for a natural blackjack."""
-    if result == "player_blackjack":
+    2 x `bet` for a win, `bet` + 3/2 x `bet` (2.5 x `bet`) for a win with a final total of exactly 21 (a natural blackjack included).
+    `player_total` is the player's final total (None: unknown, then only a natural pays the 21 rate)."""
+    if won_with_21(result, player_total):
         return bet + bet * C.CASINO_BLACKJACK_NUM // C.CASINO_BLACKJACK_DEN
     if result in ("win", "dealer_bust"):
         return 2 * bet
@@ -186,9 +195,9 @@ def ref_of(sid: str, hand_no: int) -> str:
     return f"{sid}:{int(hand_no)}"
 
 
-def _pay(db, uid: int, sid: str, hand_no: int, bet: int, result: str, now: int) -> int:
+def _pay(db, uid: int, sid: str, hand_no: int, bet: int, result: str, now: int, player_total: int | None = None) -> int:
     """Credit a finished hand (inside the caller's transaction). Returns the cents credited (cut to the room under the balance cap)."""
-    amount = payout(bet, result)
+    amount = payout(bet, result, player_total)
     if amount <= 0:
         return 0
     amount = min(amount, C.CASH_CAP_CENTS - cash.balance(db, uid))
@@ -243,7 +252,7 @@ def start(db, sid: str, world_id: int, uid: int, seq: int, now: int, bet: int, r
         if cash.apply(db, uid, -bet, "casino_bet", ref_of(sid, hand_no), note="blackjack", now=now) is None:
             raise RuntimeError("a casino hand was charged twice")          # the ref names a hand that exists once: cannot happen
         if h.over:                                                         # a natural ends the hand at the deal: pay it now
-            paid = _pay(db, uid, sid, hand_no, bet, h.result, now)
+            paid = _pay(db, uid, sid, hand_no, bet, h.result, now, total(h.player))
             db.x("UPDATE casino_games SET paid=? WHERE sid=?", (paid, sid))
         return get(db, sid)
 
@@ -257,7 +266,7 @@ def _apply_action(db, row, action: str, now: int):
             (deck, pl, de, h.state, h.result, now, row["sid"], row["seq"], row["user_id"])).rowcount != 1:
         return None
     if h.over:
-        paid = _pay(db, row["user_id"], row["sid"], row["hand_no"], row["bet"], h.result, now)
+        paid = _pay(db, row["user_id"], row["sid"], row["hand_no"], row["bet"], h.result, now, total(h.player))
         db.x("UPDATE casino_games SET paid=? WHERE sid=?", (paid, row["sid"]))
     return get(db, row["sid"])
 

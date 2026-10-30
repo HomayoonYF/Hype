@@ -15,6 +15,10 @@ ALIASES: dict[str, list[str]] = {
     "language": ["زبان", "language", "lang"],
     "menu": ["منو", "menu"],
     "map": ["مپ", "نقشه", "map"],
+    "cities": ["شهرها", "شهر ها", "cities"],
+    "travel": ["سفر", "travel"],
+    "idcard": ["کارت ملی", "کارت‌ملی", "کارتملی", "idcard", "id card", "national id"],
+    "giftcode": ["کد هدیه", "کدهدیه", "giftcode", "gift code"],
     "cash": ["پول", "پول نقد", "پول سهام", "کیف پول", "cash", "wallet"],
     "fx": ["صرافی", "currency", "fx"],
     "jobs": ["مشاغل", "شغل", "شغل‌ها", "شغل ها", "jobs"],
@@ -94,7 +98,7 @@ SOFT_EXACT = {
     "group", "index", "grouprank", "leaderboard", "top", "invite", "level", "reputation", "skills", "legacy", "rebirth",
     "news", "events", "season", "shop", "settings", "quiet", "language", "payout", "alert", "quests", "whales", "trust", "achievements", "share",
     "exchange", "earnings", "menu", "stocks", "stockhelp", "map",
-    "cash", "jobs", "snapp", "mcd", "muni",
+    "cash", "jobs", "snapp", "mcd", "muni", "idcard",
 }
 # ...or with arguments (validated further in handlers.soft_ok).
 SOFT_ARGS = {"buy", "sell", "price", "chart", "launch", "project", "meme", "alert", "upgrade", "cashout",
@@ -900,6 +904,8 @@ from .texts_world import EN_WORLD, FA_WORLD  # noqa: E402  (inspecting parcels, 
 from .texts_map import EN_MAP, FA_MAP  # noqa: E402  (the interactive map, walking, the casino)
 from .texts_life import EN_LIFE, FA_LIFE  # noqa: E402  (life cash, the currency exchange, jobs, greetings and hugs)
 from .texts_char import EN_CHAR, FA_CHAR  # noqa: E402  (v0.19: the character set-up)
+from .texts_travel import EN_TRAVEL, FA_TRAVEL  # noqa: E402  (v0.20: the list of cities and travel between them)
+from .texts_gift import EN_GIFT, FA_GIFT  # noqa: E402  (v0.20: admin gift codes)
 
 FA.update(FA_EX)
 EN.update(EN_EX)
@@ -915,6 +921,10 @@ FA.update(FA_LIFE)
 EN.update(EN_LIFE)
 FA.update(FA_CHAR)
 EN.update(EN_CHAR)
+FA.update(FA_TRAVEL)
+EN.update(EN_TRAVEL)
+FA.update(FA_GIFT)
+EN.update(EN_GIFT)
 FA["cat.life"], EN["cat.life"] = "پول و کار", "Money and jobs"
 
 STR = {"fa": FA, "en": EN}

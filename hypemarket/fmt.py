@@ -8,6 +8,20 @@ from . import config as C
 FA_DIGITS = str.maketrans("0123456789", "۰۱۲۳۴۵۶۷۸۹")
 EN_DIGITS = str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩٬٫٪", "01234567890123456789,.%")      # Persian and Arabic-Indic digits and their signs -> 0-9 , . %
 LRM = "\u200e"
+RLM = "\u200f"
+LRI, RLI, PDI = "\u2066", "\u2067", "\u2069"     # Unicode bidirectional ISOLATES: the text between them never reorders with, and never takes its direction from, the text around it
+
+
+def ltr(s) -> str:
+    """`s` as an isolated left-to-right run (a card «10♠️», an amount «$25.00», a total): it keeps its own order inside a Persian line and cannot jump
+    to the wrong side of the label next to it."""
+    return f"{LRI}{s}{PDI}"
+
+
+def rtl_line(s: str) -> str:
+    """A line of a Persian message that must be laid out right to left whatever it starts with (a line made only of an isolated Latin run has no strong
+    right-to-left letter, so the app would left-align it): a right-to-left mark first."""
+    return RLM + s
 
 
 def digits(s):

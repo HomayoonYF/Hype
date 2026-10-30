@@ -85,7 +85,7 @@ def test_the_migration_grants_every_existing_human_once_and_never_again(tmp_path
     d.x("PRAGMA user_version=7")
     d.close()
     d2 = Database(path)                                                                      # a v0.17 database opens on v0.18
-    assert d2.q1("PRAGMA user_version")[0] == SCHEMA_VERSION == 10 and 8 in MIGRATIONS and 9 in MIGRATIONS and 10 in MIGRATIONS
+    assert d2.q1("PRAGMA user_version")[0] == SCHEMA_VERSION == 11 and 8 in MIGRATIONS and 9 in MIGRATIONS and 10 in MIGRATIONS and 11 in MIGRATIONS
     assert [(r["user_id"], r["balance"]) for r in d2.qa("SELECT * FROM life_accounts ORDER BY user_id")] == [(U1, 10_000), (U2, 10_000)]
     assert len(d2.qa("SELECT * FROM life_ledger WHERE kind='grant'")) == 2
     assert d2.q1("SELECT 1 FROM life_accounts WHERE user_id=-5") is None                    # bots have no account

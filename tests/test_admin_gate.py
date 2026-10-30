@@ -502,7 +502,7 @@ def test_admin_opens_the_panel_in_private(h):
     m = calls[-1]
     assert isinstance(m, SendMessage)
     cb = panel_buttons(m)
-    assert cb == ["ad:chan:1", "ad:bk:1"] and all(len(c.encode()) <= 64 for c in cb)
+    assert cb == ["ad:chan:1", "ad:bk:1", "ad:gift:1", "ad:gl:1"] and all(len(c.encode()) <= 64 for c in cb)
     assert FA["ad.chan_none"] in m.text and fmt.dur(86400, "fa") in m.text
     h.db.x("UPDATE users SET lang='en' WHERE id=1")
     m2 = h.say(ADMIN, "/admin")[-1]

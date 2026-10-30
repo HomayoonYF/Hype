@@ -99,6 +99,8 @@ def _expire_due(db, now: int, uid: int | None = None) -> None:
 def near(db, city, a: int, b: int, now: int) -> bool:
     """Are players `a` and `b` within the map's nearby radius of each other (road distance) in this city? Both must be finished characters whose current city
     this is (a character is present in one city only); players who never opened the map are put at their fixed spawn spot first, exactly as opening the map would."""
+    from . import intercity                                              # (v0.20: a traveller who has reached this city is in it before anything else is asked)
+    intercity.settle_arrivals(db, city, now)
     if not (character.in_world(db, a, city.id) and character.in_world(db, b, city.id)):
         return False
     sa, sb = presence.stand(db, city, a, now), presence.stand(db, city, b, now)

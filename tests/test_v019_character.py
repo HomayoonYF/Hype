@@ -44,7 +44,7 @@ def make(db, uid, *, now=T0, rng=None, first="علی", last="رضایی", gender
 def test_a_fresh_database_has_every_v019_table_and_the_counter_at_zero(db):
     names = {r["name"] for r in db.qa("SELECT name FROM sqlite_master WHERE type='table'")}
     assert {"characters", "character_genes", "character_traits", "character_xp", "character_xp_log", "citizen_seq"} <= names
-    assert db.q1("PRAGMA user_version")[0] == SCHEMA_VERSION == 10
+    assert db.q1("PRAGMA user_version")[0] == SCHEMA_VERSION == 11
     assert dict(db.q1("SELECT * FROM citizen_seq")) == {"id": 1, "next_id": 0}
 
 
@@ -539,8 +539,9 @@ def test_character_xp_is_separate_from_the_stock_game(db):
     assert core.get_user(db, 1)["max_level"] == 0
 
 
-def test_no_game_code_grants_character_xp():
-    """v0.19 is infrastructure only: nothing in the game awards character XP yet."""
+def test_no_game_code_grants_character_xp_except_gift_codes():
+    """Character XP is still infrastructure: no job, task, casino hand or greeting awards it. The one v0.20 exception is an admin's gift code (gifts.py, source `gift`,
+    reference = the code), which goes through the same idempotent `charxp.grant`."""
     offenders = []
     for p in (ROOT / "hypemarket").rglob("*.py"):
         if p.name == "charxp.py":
@@ -548,7 +549,8 @@ def test_no_game_code_grants_character_xp():
         s = p.read_text(encoding="utf-8")
         if re.search(r"charxp\s*\.\s*grant\s*\(", s) or re.search(r"from\s+\.?charxp\s+import[^\n]*\bgrant\b", s) or "character_xp_log" in s and p.name != "db.py":
             offenders.append(p.name)
-    assert offenders == []
+    assert offenders == ["gifts.py"]
+    assert "charxp.grant(db, uid, amount, \"gift\", code, now)" in (ROOT / "hypemarket" / "gifts.py").read_text(encoding="utf-8")
     for p in (ROOT / "hypemarket").glob("*.py"):                                     # ...and nothing writes the table directly either
         if p.name not in ("charxp.py", "db.py", "character.py"):
             assert "character_xp" not in p.read_text(encoding="utf-8"), p.name
@@ -611,7 +613,7 @@ def test_the_migration_reconstructs_legacy_characters_by_the_documented_rule(tmp
     assert raw.execute("PRAGMA user_version").fetchone()[0] == 9
     raw.close()
     d = Database(path)
-    assert d.q1("PRAGMA user_version")[0] == 10
+    assert d.q1("PRAGMA user_version")[0] == SCHEMA_VERSION                           # (v0.20 then added schema 11: nothing else changes)
     rows = {r["user_id"]: r for r in d.qa("SELECT * FROM characters")}
     assert sorted(rows) == [10, 11, 12, 13, 16, 18, 19]                                # 14: nothing saved; 15: a bot; 17: only a vanished city
     assert [rows[u]["citizen_id"] for u in sorted(rows)] == list(range(7))             # ascending Telegram ID, zero-based, no gaps
@@ -649,7 +651,7 @@ def test_the_migration_changes_nothing_that_existed_and_is_safe_to_repeat(tmp_pa
     for _ in range(2):
         d = Database(path)                                                            # reopening is not a migration
         assert snapshot(d, ("characters", "character_genes", "character_traits", "character_xp", "citizen_seq")) == first
-        assert d.q1("PRAGMA user_version")[0] == 10
+        assert d.q1("PRAGMA user_version")[0] == SCHEMA_VERSION
         d.close()
 
 
@@ -675,7 +677,7 @@ def test_a_failed_migration_leaves_the_v9_database_untouched_and_can_be_retried(
     raw.close()
     monkeypatch.setattr(character, "_insert", real)
     d = Database(path)
-    assert d.q1("SELECT COUNT(*) c FROM characters")["c"] == 7 and d.q1("PRAGMA user_version")[0] == 10
+    assert d.q1("SELECT COUNT(*) c FROM characters")["c"] == 7 and d.q1("PRAGMA user_version")[0] == SCHEMA_VERSION
     d.close()
 
 
@@ -683,7 +685,7 @@ def test_a_newer_database_is_refused(tmp_path):
     path = str(tmp_path / "new.db")
     Database(path).close()
     raw = sqlite3.connect(path)
-    raw.execute("PRAGMA user_version=11")
+    raw.execute(f"PRAGMA user_version={SCHEMA_VERSION + 1}")
     raw.close()
     with pytest.raises(RuntimeError):
         Database(path)

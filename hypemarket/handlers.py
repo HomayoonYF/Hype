@@ -14,7 +14,7 @@ from aiogram import Bot, F, Router
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramRetryAfter
 from aiogram.types import BufferedInputFile, CallbackQuery, ChatMemberUpdated, InputMediaPhoto, LabeledPrice, Message, PreCheckoutQuery, User
 
-from . import achievements, adminpanel, analytics, backups, cash, character, characterui, charts, interact, lifeui, mapui, salary, config as C, core, events, fmt, gate, progress, quests, sections, shop, social, textparse, trading, trust, views, work, workui, world, worldinspect, worldmap, worldplaces
+from . import achievements, adminpanel, analytics, backups, cash, character, characterui, charts, giftui, gifts, idcard, interact, intercity, lifeui, mapui, salary, config as C, core, events, fmt, gate, progress, quests, sections, shop, social, textparse, trading, travelui, trust, views, work, workui, world, worldinspect, worldmap, worldplaces
 from .core import GameError
 from .db import Database
 from .texts import ALIASES, SOFT_ARGS, SOFT_EXACT, EXAMPLES, level_title, t
@@ -45,6 +45,7 @@ class App:
     touched_day: int = 0
     alert_ts: dict = field(default_factory=dict)
     pending: dict = field(default_factory=dict)       # uid -> (stock command, expiry): the player's next message answers a guided prompt
+    gift_drafts: dict = field(default_factory=dict)   # admin uid -> the unfinished «ساخت گیفت کارت» draft (memory only: nothing is stored before the confirmation)
     gate_ok: dict = field(default_factory=dict)       # uid -> until when «is a member of the required channel» is trusted
     gate_no: dict = field(default_factory=dict)       # uid -> until when «not a member of the required channel» is trusted (a few seconds)
     gate_told: dict = field(default_factory=dict)     # (chat, uid) -> until when a group is not told again to join
@@ -218,6 +219,14 @@ def soft_ok(app: App, p: textparse.Parsed, m: Message | None = None) -> bool:
         return True
     if p.cmd == "map":                                       # «مپ» alone, or «مپ P14»: any other words after it are just chat
         return not a or worldinspect.parse_ref(a) is not None
+    if p.cmd == "cities":                                    # «شهرها» alone, or «شهرها 2» (a page number): any other words after it are just chat
+        return not a or (len(a) == 1 and intercity.parse_city_id(a[0]) is not None)
+    if p.cmd == "travel":                                    # «سفر 3» (one ID-shaped word) always; a bare «سفر» is ordinary chat unless the sender is on a journey: then it shows it
+        if len(a) == 1:
+            return intercity.parse_city_id(a[0]) is not None
+        return not a and m is not None and m.from_user is not None and intercity.active(db, m.from_user.id) is not None
+    if p.cmd == "giftcode":                                  # in a group «کد هدیه ...» is a command only when what follows looks like a code typed wrongly or rightly; «کد هدیه نداری؟» is chat
+        return gifts.looks_like_attempt(a)
     if p.cmd == "fx":                                        # «صرافی» alone, «صرافی 250», «صرافی سهام 250», «صرافی همه»; «صرافی نقد ...» gets the one-way answer; anything else is chat
         if not a:
             return True
@@ -1054,6 +1063,10 @@ async def h_map(c: Ctx):
     ch = character.ensure_profile(c.db, c.uid)                           # v0.19: one permanent character per player, created once
     if ch is None:
         raise Ignore
+    if character.is_done(ch):                                            # v0.20: a traveller is on the road: no map until the journey ends (a journey that has ended is applied first)
+        trip = await intercity.aguard(c.db, c.uid)
+        if trip is not None:
+            return travelui.guard_reply(c, trip)
     try:
         w, created = await world.aworld_for(c.db, c.uid, c.chat.id)      # the CHARACTER's city, whatever group this is (a brand-new character: this group's city, once)
         if not character.is_done(character.get(c.db, c.uid)):
@@ -1071,6 +1084,48 @@ async def h_map(c: Ctx):
     except Exception:                                                     # drawing failed: the saved city stays exactly as it is
         log.exception("map of world %s failed", w["id"])
         return Reply(text=t(c.lang, "map.failed"))
+
+
+@cmd("cities")
+async def h_cities(c: Ctx):
+    """`شهرها`: the read-only list of the saved cities with their permanent IDs (v0.20)."""
+    r = await travelui.cities(c)
+    if r is None:
+        raise Ignore
+    return r
+
+
+@cmd("travel")
+async def h_travel(c: Ctx):
+    """`سفر <ID>`: a journey to another city (10 real minutes by default); `سفر` alone: the journey in progress (v0.20)."""
+    r = await travelui.travel(c)
+    if r is None:
+        raise Ignore
+    return r
+
+
+@cmd("idcard")
+async def h_idcard(c: Ctx):
+    """`کارت ملی`: the player's national ID card, a picture with the character's own 2D portrait and saved data (v0.20)."""
+    r = await idcard.show(c, travelui._unfinished)
+    if r is None:
+        raise Ignore
+    return r
+
+
+@cmd("giftcode")
+async def h_giftcode(c: Ctx):
+    """`کد هدیه <code>`: redeem an admin's gift code, once per player (v0.20)."""
+    r = await giftui.redeem(c)
+    if r is None:
+        raise Ignore
+    return r
+
+
+@cbk("cy")
+async def cb_cities(c: Ctx):
+    """cy:<page>:<player id>: the pages of the list of cities."""
+    return await travelui.handle_page(c)
 
 
 @cmd("charname")
@@ -1772,6 +1827,13 @@ async def handle_message(m: Message, app: App, text: str) -> None:
                     c = Ctx(app=app, bot=app.bot, tg=tg, chat=chat, lang=lang, cmd="admin", args=[text], msg=m, created=created)
                     await run(c, lambda cx: adminpanel.channel_text(app, cx.lang, cx.uid, text), is_cb=False)
                 return
+            if pend[0] in adminpanel.GIFT_PROMPTS:                              # the admin's answer to a «ساخت گیفت کارت» question (amount / number of players)
+                if adminpanel.allowed(app, tg.id):
+                    lang, created = _prepare(app, tg, chat)
+                    c = Ctx(app=app, bot=app.bot, tg=tg, chat=chat, lang=lang, cmd="admin", args=[text], msg=m, created=created)
+                    key = pend[0]
+                    await run(c, lambda cx: adminpanel.gift_text(app, cx.lang, cx.uid, key, text), is_cb=False)
+                return
             if pend[0] in FX_PROMPTS:                                           # «🪙 → 💵»: the plain message is the amount to exchange
                 p = textparse.parse(f"fx {FX_PROMPTS[pend[0]]} {text}", app.botname)
             else:
@@ -1824,7 +1886,7 @@ async def on_photo(m: Message, app: App) -> None:
     await handle_message(m, app, m.caption)
 
 
-BOUND = {"pf", "cl", "up", "sk", "lg", "rb", "rug", "hp", "qs", "wh", "scp", "scr", "sal", "mn", "sm", "ad", "gate", "cs", "jb", "ia", "cr"}
+BOUND = {"pf", "cl", "up", "sk", "lg", "rb", "rug", "hp", "qs", "wh", "scp", "scr", "sal", "mn", "sm", "ad", "gate", "cs", "jb", "ia", "cr", "cy"}
 
 
 @router.callback_query()
