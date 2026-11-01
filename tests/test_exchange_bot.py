@@ -150,8 +150,11 @@ def test_short_selling_is_gone_from_every_menu_and_text(h):
     for words in (["شورت"], ["شورت", "بستن شورت"]):
         for w in words:
             assert textparse.parse(w + " SPEED 5", None) is None or textparse.parse(w + " SPEED 5", None).cmd not in ("short", "cover")
-    assert not any("short" in k.lower() and not k.startswith("n.short_removed") for k in FA)
-    assert not any("short" in k.lower() and not k.startswith("n.short_removed") for k in EN)
+    # "short" is also a body-height word of the character appearance texts (tr.height.short): not the stock feature
+    def stock_short(k):
+        return "short" in k.lower() and not k.startswith(("n.short_removed", "tr.height."))
+    assert not any(stock_short(k) for k in FA)
+    assert not any(stock_short(k) for k in EN)
     rich(h, 2)
     assert h.say(2, "شورت CHAT 5") == []
 

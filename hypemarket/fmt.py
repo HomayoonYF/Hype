@@ -85,6 +85,33 @@ def clock(ts: int, lang: str) -> str:
     return loc(f"{mins // 60:02d}:{mins % 60:02d}", lang)
 
 
+def _jalali(gy: int, gm: int, gd: int) -> tuple:
+    """The Persian (Solar Hijri) date of a Gregorian date (the well-known 33-year-cycle arithmetic)."""
+    cum = (0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334)
+    gy2 = gy + 1 if gm > 2 else gy
+    days = 355666 + 365 * gy + (gy2 + 3) // 4 - (gy2 + 99) // 100 + (gy2 + 399) // 400 + gd + cum[gm - 1]
+    jy = -1595 + 33 * (days // 12053)
+    days %= 12053
+    jy += 4 * (days // 1461)
+    days %= 1461
+    if days > 365:
+        jy += (days - 1) // 365
+        days = (days - 1) % 365
+    if days < 186:
+        return jy, 1 + days // 31, 1 + days % 31
+    return jy, 7 + (days - 186) // 30, 1 + (days - 186) % 30
+
+
+def date(ts: int, lang: str) -> str:
+    """A calendar date for a timestamp in the configured display zone: the Persian calendar («1405/08/08») in Persian, the ISO date («2026-10-30») in English."""
+    import datetime as _dt
+    d = _dt.datetime.fromtimestamp(0, _dt.timezone.utc) + _dt.timedelta(seconds=int(ts) + C.display_utc_offset() * 60)
+    if lang == "fa":
+        jy, jm, jd = _jalali(d.year, d.month, d.day)
+        return loc(f"{jy:04d}/{jm:02d}/{jd:02d}", lang)
+    return f"{d.year:04d}-{d.month:02d}-{d.day:02d}"
+
+
 def price(units: int, lang: str) -> str:
     """Prices of single shares are shown with two decimals (balances are rounded harder)."""
     v = units / C.UNIT

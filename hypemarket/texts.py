@@ -18,6 +18,7 @@ ALIASES: dict[str, list[str]] = {
     "cities": ["شهرها", "شهر ها", "cities"],
     "travel": ["سفر", "travel"],
     "idcard": ["کارت ملی", "کارت‌ملی", "کارتملی", "idcard", "id card", "national id"],
+    "character": ["شخصیت", "character"],
     "giftcode": ["کد هدیه", "کدهدیه", "giftcode", "gift code"],
     "cash": ["پول", "پول نقد", "پول سهام", "کیف پول", "cash", "wallet"],
     "fx": ["صرافی", "currency", "fx"],
@@ -98,7 +99,7 @@ SOFT_EXACT = {
     "group", "index", "grouprank", "leaderboard", "top", "invite", "level", "reputation", "skills", "legacy", "rebirth",
     "news", "events", "season", "shop", "settings", "quiet", "language", "payout", "alert", "quests", "whales", "trust", "achievements", "share",
     "exchange", "earnings", "menu", "stocks", "stockhelp", "map",
-    "cash", "jobs", "snapp", "mcd", "muni", "idcard",
+    "cash", "jobs", "snapp", "mcd", "muni", "idcard", "character",
 }
 # ...or with arguments (validated further in handlers.soft_ok).
 SOFT_ARGS = {"buy", "sell", "price", "chart", "launch", "project", "meme", "alert", "upgrade", "cashout",

@@ -33,3 +33,13 @@ def age_at(anchor: int, now: int, start_age: int | None = None) -> int:
     """The age of something that began at `start_age` (default: a new character's 15) at `anchor`, as of `now`."""
     return (C.CHARACTER_START_AGE if start_age is None else int(start_age)) + whole_years(anchor, now)
 
+
+
+def birth_at(anchor: int, start_age: int | None = None) -> int:
+    """The birthday (a timestamp) of something whose age anchor is `anchor`: the anchor minus its starting age in game years, so that `age_at(birth_at(a), now, 0)` equals `age_at(a, now)` for every `now`."""
+    return int(anchor) - (C.CHARACTER_START_AGE if start_age is None else int(start_age)) * year_seconds()
+
+
+def after_years(ts: int, years: int) -> int:
+    """The timestamp `years` game years after `ts` (an expiry date)."""
+    return int(ts) + int(years) * year_seconds()

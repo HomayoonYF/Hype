@@ -284,6 +284,40 @@ BEGIN
 END;
 CREATE TRIGGER IF NOT EXISTS trg_gift_redeem_update BEFORE UPDATE ON gift_redemptions BEGIN SELECT RAISE(ABORT, 'redemptions are kept as they were'); END;
 CREATE TRIGGER IF NOT EXISTS trg_gift_redeem_delete BEFORE DELETE ON gift_redemptions BEGIN SELECT RAISE(ABORT, 'redemptions are kept'); END;
+
+-- v0.20 (identity document): what a character's national ID shows besides the v0.19 profile. One row per character, created with the character (`character_identity`).
+-- Created at birth: nationality, languages (game-world defaults, never read from Telegram), citizen status and the fictional fingerprint ID. Set ONCE when the profile is finished
+-- (`issue`; for a character that was already finished it is backfilled from its saved age anchor): birthday, height in cm, signature seed, document number, issue and expiry
+-- dates and the issuing authority. The home address has a city (the birth city) and three components that stay empty until a future property system assigns them.
+CREATE TABLE IF NOT EXISTS character_identity(
+  user_id INTEGER PRIMARY KEY,
+  nationality TEXT NOT NULL CHECK(nationality <> ''), languages TEXT NOT NULL CHECK(languages <> ''),
+  fingerprint_id TEXT NOT NULL UNIQUE CHECK(length(fingerprint_id) >= 8),
+  status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','suspended','revoked')),
+  home_world_id INTEGER, home_district TEXT, home_street TEXT, home_building TEXT,
+  born_at INTEGER, height_cm INTEGER CHECK(height_cm IS NULL OR height_cm BETWEEN 100 AND 250),
+  signature_seed TEXT, doc_number TEXT UNIQUE, issued_at INTEGER, expires_at INTEGER, authority TEXT,
+  created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+  CHECK((born_at IS NULL) = (issued_at IS NULL) AND (issued_at IS NULL) = (expires_at IS NULL) AND (issued_at IS NULL) = (doc_number IS NULL)
+        AND (issued_at IS NULL) = (authority IS NULL) AND (issued_at IS NULL) = (height_cm IS NULL) AND (issued_at IS NULL) = (signature_seed IS NULL)),
+  CHECK(expires_at IS NULL OR expires_at > issued_at)
+);
+CREATE TRIGGER IF NOT EXISTS trg_ident_insert BEFORE INSERT ON character_identity
+BEGIN
+  SELECT RAISE(ABORT, 'identity: no such character') WHERE NOT EXISTS(SELECT 1 FROM characters WHERE user_id = NEW.user_id);
+  SELECT RAISE(ABORT, 'identity: unknown home city') WHERE NEW.home_world_id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM worlds WHERE id = NEW.home_world_id);
+END;
+CREATE TRIGGER IF NOT EXISTS trg_ident_update BEFORE UPDATE ON character_identity
+BEGIN
+  SELECT RAISE(ABORT, 'identity: immutable field') WHERE NEW.user_id IS NOT OLD.user_id OR NEW.fingerprint_id IS NOT OLD.fingerprint_id OR NEW.created_at IS NOT OLD.created_at
+      OR (OLD.issued_at IS NOT NULL AND (NEW.born_at IS NOT OLD.born_at OR NEW.height_cm IS NOT OLD.height_cm OR NEW.signature_seed IS NOT OLD.signature_seed
+                                         OR NEW.doc_number IS NOT OLD.doc_number OR NEW.issued_at IS NOT OLD.issued_at OR NEW.expires_at IS NOT OLD.expires_at
+                                         OR NEW.authority IS NOT OLD.authority))
+      OR (OLD.home_world_id IS NOT NULL AND NEW.home_world_id IS NULL);
+  SELECT RAISE(ABORT, 'identity: unknown home city') WHERE NEW.home_world_id IS NOT NULL AND NEW.home_world_id IS NOT OLD.home_world_id
+                                                          AND NOT EXISTS(SELECT 1 FROM worlds WHERE id = NEW.home_world_id);
+END;
+CREATE TRIGGER IF NOT EXISTS trg_ident_nodelete BEFORE DELETE ON character_identity BEGIN SELECT RAISE(ABORT, 'identity is kept'); END;
 """
 
 
@@ -360,7 +394,17 @@ def _migrate_10(conn) -> None:
     character.migrate_legacy(_RawDb(conn))
 
 
-SCHEMA_VERSION = 11
+def _migrate_12(conn) -> None:
+    """v0.20 (identity document). Every existing character gets one `character_identity` row: the game-world default nationality and languages, an Active citizen status, a
+    new fictional fingerprint ID and, when the character has a birth city, that city as the home city. A character whose profile is FINISHED is also issued its document: the
+    issue date is its saved age anchor (`age_started_at`), the birthday is that anchor minus the starting age in game years (so the age that is worked out from the anchor does
+    not change), the expiry follows the configured policy and the height, signature seed and document number are derived exactly as for a new character. Only new rows are
+    written: no existing table, row, balance, ledger entry, city, trip, XP record or trait changes, and a character that already has a row is skipped (safe to repeat)."""
+    from . import identity
+    identity.backfill(_RawDb(conn))
+
+
+SCHEMA_VERSION = 12
 # version -> SQL (or a function taking the connection) upgrading a database FROM version-1.
 # New tables need no entry: SCHEMA creates them with IF NOT EXISTS.
 MIGRATIONS: dict = {
@@ -378,6 +422,7 @@ MIGRATIONS: dict = {
     9: _migrate_9,                           # v0.18.1: casino_games.bet / hand_no / paid (blackjack for life cash); nothing existing changes
     10: _migrate_10,                         # v0.19: characters (tables from SCHEMA) and a pending character for every player with saved world activity; nothing existing changes
     11: "SELECT 1;",                         # v0.20: intercity_trips, gift_codes, gift_redemptions and the unchangeable city ID are new tables / triggers from SCHEMA; nothing existing changes
+    12: _migrate_12,                       # v0.20 (identity document): one `character_identity` row per existing character (the table itself comes from SCHEMA); see _migrate_12
 }
 
 

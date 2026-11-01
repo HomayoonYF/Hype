@@ -14,7 +14,7 @@ from aiogram import Bot, F, Router
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramRetryAfter
 from aiogram.types import BufferedInputFile, CallbackQuery, ChatMemberUpdated, InputMediaPhoto, LabeledPrice, Message, PreCheckoutQuery, User
 
-from . import achievements, adminpanel, analytics, backups, cash, character, characterui, charts, giftui, gifts, idcard, interact, intercity, lifeui, mapui, salary, config as C, core, events, fmt, gate, progress, quests, sections, shop, social, textparse, trading, travelui, trust, views, work, workui, world, worldinspect, worldmap, worldplaces
+from . import achievements, adminpanel, analytics, backups, cash, character, characterui, charhub, charts, giftui, gifts, interact, intercity, lifeui, mapui, salary, config as C, core, events, fmt, gate, progress, quests, sections, shop, social, textparse, trading, travelui, trust, views, work, workui, world, worldinspect, worldmap, worldplaces
 from .core import GameError
 from .db import Database
 from .texts import ALIASES, SOFT_ARGS, SOFT_EXACT, EXAMPLES, level_title, t
@@ -1106,8 +1106,26 @@ async def h_travel(c: Ctx):
 
 @cmd("idcard")
 async def h_idcard(c: Ctx):
-    """`کارت ملی`: the player's national ID card, a picture with the character's own 2D portrait and saved data (v0.20)."""
-    r = await idcard.show(c, travelui._unfinished)
+    """`کارت ملی`: the front of the player's two-sided national ID card, with buttons for the reverse and back to the character hub (v0.20)."""
+    r = await charhub.command(c, "card", travelui._unfinished)
+    if r is None:
+        raise Ignore
+    return r
+
+
+@cmd("character")
+async def h_character(c: Ctx):
+    """`شخصیت`: the character hub: the ID card, the profile, the appearance, the genetics, the personal information and the progress (v0.20)."""
+    r = await charhub.command(c, "hub", travelui._unfinished)
+    if r is None:
+        raise Ignore
+    return r
+
+
+@cbk("cg")
+async def cb_character(c: Ctx):
+    """cg:<section>:<player id>: a screen of the character hub (hub, card, cardb, prof, look, gene, pers, prog) or the note of the side of the card already showing (nf, nr)."""
+    r = await charhub.callback(c, travelui._unfinished)
     if r is None:
         raise Ignore
     return r
@@ -1886,7 +1904,7 @@ async def on_photo(m: Message, app: App) -> None:
     await handle_message(m, app, m.caption)
 
 
-BOUND = {"pf", "cl", "up", "sk", "lg", "rb", "rug", "hp", "qs", "wh", "scp", "scr", "sal", "mn", "sm", "ad", "gate", "cs", "jb", "ia", "cr", "cy"}
+BOUND = {"pf", "cl", "up", "sk", "lg", "rb", "rug", "hp", "qs", "wh", "scp", "scr", "sal", "mn", "sm", "ad", "gate", "cs", "jb", "ia", "cr", "cy", "cg"}
 
 
 @router.callback_query()

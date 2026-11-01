@@ -5,7 +5,7 @@ Two kinds of saved data, kept apart on purpose:
 * **genes** (`character_genes`): for every trait in the catalog two alleles, each one a code of that trait. This is the INHERITABLE part: a future
   family system will build a child's genes from one allele of each parent, probabilistically (it needs nothing but these two columns).
 * **traits** (`character_traits`): the visible phenotype, one code per trait, derived from the genes by the catalog's rule and saved with them.
-  This is what a future portrait renderer reads. It is saved, not recomputed per view, so it can never change by reading it.
+  This is what the card, the appearance screen and any future renderer read. It is saved, not recomputed per view, so it can never change by reading it.
 
 Both are written ONCE, in the transaction that creates the character, and the database refuses every later change (triggers in db.py): a retry, a
 restart, a migration run twice or a read can never reroll an appearance. Changing body condition (weight, fitness, ...) is a different, future

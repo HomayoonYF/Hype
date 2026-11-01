@@ -172,6 +172,7 @@ FA_LIFE.update({
     # --- map integration
     "mp.drive": "🚗 در راه {dest} — {pct}٪ • حدود {eta} مونده • {speed}",
     "mp.in_ride": "🚕 وسط یه سفر اسنپی؛ اول تمومش کن یا لغوش کن.",
+    "mp.on_shift": "🍔 سر شیفت مک‌دونالدی و تا پایانش ({left} دیگه) نمی‌تونی از اون‌جا بری.",
     "mp.b.jobs": "💼 مشاغل", "map.lm.mcdonalds": "مک‌دونالد",
     # --- DM
     "n.shift_ready": "🍔 شیفتت تموم شد! دستمزد <b>{cents}</b> آماده‌ی برداشته: <code>مک‌دونالد</code>",
@@ -296,6 +297,7 @@ EN_LIFE.update({
     "muni.done": "✅ <b>{name}</b> done\n{emoji} Reward: <b>{reward}</b>\n💵 Cash now: <b>{balance}</b>",
     "mp.drive": "🚗 Driving to {dest} — {pct}% • about {eta} left • {speed}",
     "mp.in_ride": "🚕 You are in the middle of a Snapp ride; finish or cancel it first.",
+    "mp.on_shift": "🍔 You are on a McDonald's shift and cannot leave until it is over ({left} left).",
     "mp.b.jobs": "💼 Jobs", "map.lm.mcdonalds": "McDonald's",
     "n.shift_ready": "🍔 Your shift is over! Your wage of <b>{cents}</b> is ready: <code>mcdonalds</code>",
     "e.job_busy": "⛔ You already have another job: <b>{job}</b>. Finish or cancel it first (a McDonald's shift cannot be cancelled).",

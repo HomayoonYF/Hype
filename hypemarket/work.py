@@ -557,6 +557,16 @@ def sync(db, city, uid: int, now: int | None = None) -> dict | None:
     return None
 
 
+def shift_hold(db, uid: int, now: int | None = None):
+    """v0.20 fix. While a McDonald's shift is RUNNING (open and not yet due, by the server clock) the worker stays at work: this returns `(place id, seconds left)`, else None.
+    A shift that is due but not collected no longer holds anybody (the work is done); neither does any other job. `presence.start_trip` asks it before it plans any walk."""
+    now = core.now() if now is None else now
+    t = current(db, uid)
+    if t is None or shift_state(t, now) != "working":
+        return None
+    return data_of(t).get("place"), max(1, int(t["due_at"]) - now)
+
+
 def in_ride(db, uid: int) -> bool:
     """Is the player in the middle of a Snapp ride (driving to the passenger or to the destination)? Then the map's «go» is not available to
     them: the ride owns their one trip until it is finished or cancelled."""

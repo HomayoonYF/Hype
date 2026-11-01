@@ -4,8 +4,8 @@ ONE character per Telegram user (`characters.user_id` is the user's Telegram ID,
 group, the menu, a restart, a changed Telegram name or a new map session. What it holds, and ONLY this (everything else has its own table and module):
 
 * **identity**: a citizen ID, a first and a last name, a gender chosen by the player, the age anchor, the birthplace and the current city.
-  Genes and the visible traits are in `traits.py`; character XP is in `charxp.py`; the calendar is `gamecal.py`; the body condition and the portrait are
-  future systems that do not exist yet.
+  Genes and the visible traits are in `traits.py`; character XP is in `charxp.py`; the calendar is `gamecal.py`; the body condition is a future system that does not exist yet
+  (there is no portrait: the ID card is text only).
 * **citizen ID**: zero-based and sequential. It comes from the one-row counter `citizen_seq`, read and advanced inside the same write transaction that creates
   the character (`BEGIN IMMEDIATE`: two creators can never read the same number, a rolled-back creation gives the number back, a restart cannot reset it), and
   `characters.citizen_id` is UNIQUE. Rows are never deleted (a trigger refuses), so an ID is never reused. It is NOT the Telegram ID.
@@ -125,6 +125,8 @@ def _insert(db, uid: int, now: int, rng, *, origin: str = "new", birth: int | No
          (uid, cid, origin, basis, birth, current, now, now))
     db.x("INSERT INTO character_xp(user_id,xp,updated_at) VALUES(?,0,?)", (uid, now))
     traits.save(db, uid, traits.roll_genes(rng))
+    from . import identity                                                        # the identity row (nationality, languages, fingerprint, home city) is born with the character
+    identity.ensure(db, uid, now)
 
 
 def ensure_profile(db, uid: int, now: int | None = None, rng: random.Random | None = None):
@@ -197,6 +199,9 @@ def choose_gender(db, uid: int, gender, now: int | None = None) -> tuple:
             raise GameError("char_state")
         n = db.x("UPDATE characters SET gender=?, setup_state='done', age_started_at=?, updated_at=? WHERE user_id=? AND setup_state='gender'",
                  (gender, now, now, uid)).rowcount
+        if n == 1:
+            from . import identity                                                # the document is issued in the same transaction that finishes the profile
+            identity.issue(db, uid, now)
         return get(db, uid), n == 1
 
 
@@ -229,6 +234,8 @@ def assign_world(db, uid: int, world_id: int, now: int | None = None):
             raise GameError("char_world")
         db.x("UPDATE characters SET birth_world_id=?, current_world_id=?, updated_at=? WHERE user_id=? AND current_world_id IS NULL AND birth_world_id IS NULL",
              (world_id, world_id, now, uid))
+        from . import identity                                                    # the birth city is also the home city (until a property system lets the character move)
+        identity.set_home_city(db, uid, world_id, now)
         return get(db, uid)
 
 

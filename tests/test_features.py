@@ -424,7 +424,7 @@ def test_old_database_is_upgraded_in_place(tmp_path):
     d.x("UPDATE users SET cash=777 WHERE id=5")
     d.close()
     con = sqlite3.connect(path)                      # turn it into a "schema 1" database
-    for tbl in ("intercity_trips", "gift_redemptions", "gift_codes",
+    for tbl in ("intercity_trips", "gift_redemptions", "gift_codes", "character_identity",
                 "characters", "character_genes", "character_traits", "character_xp", "character_xp_log", "citizen_seq"):
         con.execute(f"DROP TABLE {tbl}")             # (v0.19 / v0.20 tables: a schema-1 database has none, and their triggers name users.bot / characters)
     for col in ("whale_dm", "bot", "bonus_points"):

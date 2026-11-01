@@ -519,7 +519,7 @@ def quest_done_lines(lang: str, items: list) -> str:
 
 
 # --- the global menu, the stock section menu, the help hub ----------------------------------------------------------
-MAIN_GO = ("profile", "daily", "invite", "map", "cash", "jobs", "cities", "idcard")          # global screens the main menu opens (each one is an ordinary command)
+MAIN_GO = ("profile", "daily", "invite", "map", "cash", "jobs", "cities", "idcard", "character")          # global screens the main menu opens (each one is an ordinary command)
 STOCK_GO = tuple(sorted(sections.MENU_SCREENS))   # screens a stock-menu button may open (ordinary commands, run with no arguments)
 ORIGINS = frozenset({"m"} | {cid for cid, _ in sections.STOCK_CATEGORIES})     # where a button was pressed: "m" = the stock menu, else a category
 
@@ -529,7 +529,8 @@ def main_menu(lang: str, uid: int) -> Reply:
             [(t(lang, "menu.profile"), f"mn:go:profile:{uid}"), (t(lang, "menu.daily"), f"mn:go:daily:{uid}")],
             [(t(lang, "menu.invite"), f"mn:go:invite:{uid}"), (t(lang, "menu.map"), f"mn:go:map:{uid}")],
             [(t(lang, "menu.cash"), f"mn:go:cash:{uid}"), (t(lang, "menu.jobs"), f"mn:go:jobs:{uid}")],
-            [(t(lang, "menu.cities"), f"mn:go:cities:{uid}"), (t(lang, "menu.idcard"), f"mn:go:idcard:{uid}")]]
+            [(t(lang, "menu.cities"), f"mn:go:cities:{uid}"), (t(lang, "menu.idcard"), f"mn:go:idcard:{uid}")],
+            [(t(lang, "menu.character"), f"mn:go:character:{uid}")]]
     return Reply(text=t(lang, "menu.title", brand=t(lang, "brand")), kb=kb(rows))
 
 
@@ -615,7 +616,8 @@ def with_back(r: Reply, label: str, data: str) -> Reply:
     if r is None or not isinstance(r, Reply) or r.photo:
         return r
     rows = [list(row) for row in (r.kb.inline_keyboard if r.kb else [])]
-    rows.append([InlineKeyboardButton(text=label, callback_data=data)])
+    if not any(b.callback_data == data for row in rows for b in row):            # a screen that already has this way back (the character hub) does not get a second one
+        rows.append([InlineKeyboardButton(text=label, callback_data=data)])
     r.kb = InlineKeyboardMarkup(inline_keyboard=rows)
     r.edit = True
     return r

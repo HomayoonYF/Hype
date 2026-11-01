@@ -470,3 +470,46 @@ GIFT_MAX_STOCK_COINS = 1_000_000           # stock money, whole 🪙 per redeeme
 GIFT_MAX_CASH_DOLLARS = 100_000            # life cash, whole dollars per redeemer
 GIFT_MAX_XP = 100_000                      # character XP per redeemer
 GIFT_MAX_USES = 10_000                     # how many different players may redeem one code
+
+
+# --- the identity document (v0.20): nationality, languages, height, the card's validity and its issuing authority --------------------------------
+# Every value here is a GAME-WORLD setting: nothing about a character's nationality, language or height is ever read from Telegram (the language of the app, the
+# country of the phone, an IP address). identity.py is the only reader.
+CARD_VALID_GAME_YEARS = 10                 # a card is valid for this many GAME years from its issue date (4 real days each, so 40 real days); env CARD_VALID_GAME_YEARS
+CHAR_NATIONALITY_DEFAULT = "hype"          # the one nationality of the game world (a code; its names are the texts `nat.<code>`); env CHAR_NATIONALITY
+CHAR_LANGUAGES_DEFAULT = "fa"              # the languages a new character knows (codes, comma separated; names are the texts `ln.<code>`); env CHAR_LANGUAGES
+CARD_AUTHORITY_DEFAULT = "registry"        # the issuing authority (a code; its names are the texts `auth.<code>`); env CARD_AUTHORITY, or CARD_AUTHORITY_FA / CARD_AUTHORITY_EN for any name
+# Height in centimetres: the saved height TRAIT (very_short .. very_tall, never changed) picks a 10 cm band per gender and a fixed offset inside it (identity.height_cm_for),
+# so the number on the card always agrees with the trait the card and the appearance screen show.
+HEIGHT_BANDS_CM = {
+    "male":   {"very_short": 150, "short": 160, "average": 170, "tall": 180, "very_tall": 190},
+    "female": {"very_short": 140, "short": 150, "average": 160, "tall": 170, "very_tall": 180},
+}
+HEIGHT_BAND_WIDTH_CM = 10
+
+
+def card_valid_years() -> int:
+    return int(_env_num("CARD_VALID_GAME_YEARS", float(CARD_VALID_GAME_YEARS), 1.0, 200.0))
+
+
+def _env_code(name: str, default: str) -> str:
+    v = os.environ.get(name, "").strip().lower()
+    return v if v and len(v) <= 24 and all(ch.isascii() and (ch.isalnum() or ch == "_") for ch in v) else default
+
+
+def char_nationality() -> str:
+    return _env_code("CHAR_NATIONALITY", CHAR_NATIONALITY_DEFAULT)
+
+
+def char_languages() -> tuple:
+    """The default known languages of a new character: the codes of env CHAR_LANGUAGES (comma separated, at most 5, no repeats), else the default."""
+    raw = os.environ.get("CHAR_LANGUAGES", "").strip().lower() or CHAR_LANGUAGES_DEFAULT
+    out = []
+    for part in raw.replace(" ", "").split(","):
+        if part and len(part) <= 8 and part.isascii() and part.isalpha() and part not in out:
+            out.append(part)
+    return tuple(out[:5]) or (CHAR_LANGUAGES_DEFAULT,)
+
+
+def card_authority() -> str:
+    return _env_code("CARD_AUTHORITY", CARD_AUTHORITY_DEFAULT)

@@ -44,7 +44,7 @@ def make(db, uid, *, now=T0, rng=None, first="علی", last="رضایی", gender
 def test_a_fresh_database_has_every_v019_table_and_the_counter_at_zero(db):
     names = {r["name"] for r in db.qa("SELECT name FROM sqlite_master WHERE type='table'")}
     assert {"characters", "character_genes", "character_traits", "character_xp", "character_xp_log", "citizen_seq"} <= names
-    assert db.q1("PRAGMA user_version")[0] == SCHEMA_VERSION == 11
+    assert db.q1("PRAGMA user_version")[0] == SCHEMA_VERSION == 12
     assert dict(db.q1("SELECT * FROM citizen_seq")) == {"id": 1, "next_id": 0}
 
 
@@ -561,7 +561,7 @@ def build_v9(path, plan):
     """A database as v0.18.2 left it: schema 9, no character tables. `plan(db)` fills the old per-group rows."""
     d = Database(path)
     plan(d)
-    for t in ("characters", "character_genes", "character_traits", "character_xp", "character_xp_log", "citizen_seq"):
+    for t in ("character_identity", "characters", "character_genes", "character_traits", "character_xp", "character_xp_log", "citizen_seq"):
         d.x(f"DROP TABLE {t}")
     d.x("PRAGMA user_version=9")
     d.close()

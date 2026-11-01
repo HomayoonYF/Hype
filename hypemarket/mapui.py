@@ -625,6 +625,8 @@ async def handle(c):
             out = presence.start_trip(c.db, city, c.uid, ref)
             if out.status == "unknown":
                 return _stale(c, "mp.unknown")
+            if out.status == "shift":                                          # a running McDonald's shift: the worker stays at work until it is over
+                return Reply(toast=plain(t(lang, "mp.on_shift", left=fmt.dur(out.left, lang))), alert=True)
             st = presence.stand(c.db, city, c.uid)                             # the saved trip is the authority: show what was saved
             others = _others(c.db, city, st)
             spot = city.spot(ref)

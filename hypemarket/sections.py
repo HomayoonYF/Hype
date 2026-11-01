@@ -31,7 +31,7 @@ STOCK_CMDS = frozenset({
 GLOBAL_CMDS = frozenset({
     "start", "help", "menu", "profile", "language", "invite", "daily", "salary", "shop", "map",
     "cash", "fx", "jobs", "snapp", "mcd", "muni",
-    "cities", "travel", "idcard", "giftcode",
+    "cities", "travel", "idcard", "character", "giftcode",
     "settings", "setlang", "msglimit", "quiet",
 })
 

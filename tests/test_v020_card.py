@@ -1,416 +1,232 @@
-"""v0.20: the national ID card, `کارت ملی`.
+"""v0.20: the two-sided national ID card, `کارت ملی`, as TEXT.
 
-The card is a real picture: a 2D portrait drawn from the character's SAVED traits and gender (portrait.py) next to the saved names, citizen ID, age, birthplace and current
-city (idcard.py). The picture is made in memory, never stored; the same saved data gives the same bytes in every group, city, restart and repeat. These tests cover the drawing
-(every trait changes the picture, nothing random or remote is involved), what the card says (and does not say while the character is on a journey), the command and the menu
-button, and the player whose character is not finished. What they cannot cover: how Telegram shows the photo on a real phone (the pictures were looked at by eye)."""
-import io
-import random
-import socket
+There is no picture: each side is a message written from the character's SAVED rows (identity.dossier). Where a photo would be, everybody has the same blank default («مهمان» / GUEST).
+Front: full name, citizen ID, gender, birthday, age, height, birthplace, nationality, current city, status, the appearance (skin tone, hair, eyes, build, face shape), character level and XP with a
+progress bar and the XP still needed. Back: home address (city, district, street, building), languages, fingerprint ID, signature, issue and expiry dates, issuing authority and document number.
+These tests cover every field, both languages, the blank photo, the XP bar, the in-world wording of what is not assigned yet, the journey state, determinism, HTML safety and that rendering
+changes nothing. What they cannot cover: how the text looks on a real phone (fonts, the monospace frame of the blank photo) and the real arabic-reshaper / python-bidi behaviour: none of it is drawn
+any more, but Telegram does the right-to-left layout itself."""
+import ast
+import dataclasses
+import inspect
+import re
 
 import pytest
-from PIL import Image
 
-import mapkit
-import test_bot as tb
-from hypemarket import character, config as C, core, idcard, intercity, portrait, textparse, traits as T, world, worldmap, worldplaces
+import charkit
+import idkit
+from idkit import A, B, DISCLAIMERS, snapshot
+from hypemarket import charxp, config as C, core, fmt, identity, idcard, traits as T
 from hypemarket.db import Database
-from hypemarket.texts import ALIASES, t
 
-REAL_CHARACTER_SETUP = True                                          # these tests drive the real set-up / finish characters themselves
-
-CH1, CH2 = -100941, -100942
-A, B = 883001, 883002
-_LAYOUTS: dict = {}
-BASE = {"height": "average", "build": "average", "skin_tone": "medium", "hair_color": "brown", "hair_style": "wavy", "eye_color": "brown", "face_shape": "oval"}
-PORTRAIT_BOX = (44, 136, 44 + 300, 136 + 366)                        # where the Persian card puts the portrait (the English card mirrors it)
+T0 = 1_800_000_000
+FRONT_FIELDS_FA = ("نام کامل", "کد شهروندی", "جنسیت", "تاریخ تولد", "سن", "قد", "زادگاه", "ملیت", "شهر فعلی", "وضعیت شهروندی", "مشخصات ظاهری", "سطح", "تجربه")
+FRONT_FIELDS_EN = ("Full name", "Citizen ID", "Gender", "Date of birth", "Age", "Height", "Birthplace", "Nationality", "Current city", "Citizen status", "Appearance", "Level", "XP")
+BACK_FIELDS_FA = ("نشانی محل سکونت", "شهر", "محله", "خیابان", "ساختمان", "زبان‌های شناخته‌شده", "شناسه‌ی اثر انگشت", "امضای دارنده", "تاریخ صدور", "تاریخ انقضا", "مرجع صدور", "شناسه‌ی سند")
+BACK_FIELDS_EN = ("Home address", "City", "District", "Street", "Building", "Known languages", "Fingerprint ID", "signature", "Issued", "Expires", "Issued by", "Document no.")
 
 
-def layout(seed):
-    if seed not in _LAYOUTS:
-        _LAYOUTS[seed] = world.build(seed)
-    return _LAYOUTS[seed]
+@pytest.fixture(scope="module")
+def world():
+    """Two finished characters in a memory database: (database, dossier of the first at the middle of its second year)."""
+    d = Database(":memory:")
+    w1, w2 = charkit.fake_world(d, -1, "One"), charkit.fake_world(d, -2, "Two")
+    for uid, first, last, gender in ((1, "آرمان", "کیانی", "male"), (2, "Sam", "Lee", "female")):
+        core.ensure_user(d, uid, None, "x")
+        charkit.complete(d, uid, first=first, last=last, gender=gender, world_id=w1, now=T0)
+    return d, w1, w2
 
 
 @pytest.fixture()
-def h():
-    worldmap.cache_clear()
-    worldplaces.cache_clear()
-    portrait.cache_clear()
-    hh = tb.Harness()
-    world.save_world(hh.db, CH1, layout(7))
-    world.save_world(hh.db, CH2, layout(5))
-    return hh
+def d1(world):
+    return identity.dossier(world[0], 1, T0 + 9 * 86400)
 
 
-def finish(h, uid, first="آرمان", family="کیانی", gender="male", chat=CH1):
-    """The real thing: the first `مپ` makes the pending profile (and the city), the private set-up chat finishes it."""
-    h.say(uid, "مپ", chat=chat)
-    h.say(uid, "/start char")
-    h.say(uid, first)
-    h.say(uid, family)
-    h.press(uid, f"cr:g:{gender}:{uid}")
-    ch = character.get(h.db, uid)
-    assert character.is_done(ch)
-    return ch
+@pytest.fixture()
+def d2(world):
+    return identity.dossier(world[0], 2, T0 + 9 * 86400)
 
 
-def photos(calls):
-    return [c for c in calls if isinstance(c, tb.SendPhoto)]
+def plain(text):
+    """The text without its HTML tags."""
+    return re.sub(r"<[^>]+>", "", text)
 
 
-def pic(call):
-    return call.photo.data
+# ================================================================================================ both sides, every field
+@pytest.mark.parametrize("lang,fields", [("fa", FRONT_FIELDS_FA), ("en", FRONT_FIELDS_EN)])
+def test_the_front_has_every_field(d1, lang, fields):
+    text = plain(idcard.front(lang, d1))
+    for f in fields:
+        assert f in text, f
+    assert d1.name in text and fmt.loc(str(d1.citizen_id), lang) in text and fmt.num(d1.height_cm, lang) in text
+    assert fmt.date(d1.born_at, lang) in text and idcard.city_text(lang, d1.birth) in text and idcard.city_text(lang, d1.current) in text
+    assert idcard.gender_name(lang, d1.gender) in text and identity.nationality_name(lang, d1.nationality) in text and identity.status_name(lang, d1.status) in text
 
 
-def png(b):
-    return Image.open(io.BytesIO(b))
+@pytest.mark.parametrize("lang,fields", [("fa", BACK_FIELDS_FA), ("en", BACK_FIELDS_EN)])
+def test_the_back_has_every_field(d1, lang, fields):
+    text = plain(idcard.back(lang, d1))
+    for f in fields:
+        assert f in text, f
+    assert d1.fingerprint in text and fmt.date(d1.issued_at, lang) in text and fmt.date(d1.expires_at, lang) in text
+    assert f"{d1.doc_number[:3]} {d1.doc_number[3:6]} {d1.doc_number[6:]}" in text and identity.authority_name(lang, d1.authority) in text
+    assert ", ".join(identity.language_names("en", d1.languages)) in text if lang == "en" else "فارسی" in text
+    assert idcard.signature_text(d1) in text
 
 
-def data(traits=None, **kw):
-    tr = dict(BASE, **(traits or {}))
-    base = dict(first="آرمان", last="کیانی", citizen_id=12, gender="male", age=15, traits=tuple(tr.items()), birth=(1, "شهر یک", "City One"), here=(1, "شهر یک", "City One"), to=None)
-    base.update(kw)
-    return idcard.CardData(**base)
+def test_the_two_sides_and_the_two_languages_are_different_texts(d1):
+    t = {(lang, side): idcard.render(d1, lang, side) for lang in ("fa", "en") for side in ("front", "back")}
+    assert len(set(t.values())) == 4
+    assert "1 / 2" in plain(t["fa", "front"]) and "2 / 2" in plain(t["fa", "back"]) and "1 / 2" in plain(t["en", "front"]) and "2 / 2" in plain(t["en", "back"])
+    assert not re.search("[؀-ۿ]", plain(t["en", "front"]).replace(d1.name, "")) and not re.search("[؀-ۿ]", plain(t["en", "back"]).replace(idcard.signature_text(d1), ""))
+    assert idcard.render(d1, "fa", "front") == idcard.front("fa", d1) and idcard.render(d1, "en", "back") == idcard.back("en", d1)
 
 
-# ============================================================================================== the portrait is drawn from the traits
-@pytest.mark.parametrize("trait", list(T.TRAIT_NAMES))
-def test_every_value_of_every_trait_changes_the_picture(trait):
-    seen = {}
-    for code in T.CATALOG[trait]["values"]:
-        img = portrait.render(dict(BASE, **{trait: code}), "male")
-        seen[code] = img.tobytes()
-    assert len(set(seen.values())) == len(seen), f"two values of {trait} look the same"
+def test_everything_the_card_says_is_read_from_the_saved_character(d1, d2):
+    a, b = idcard.front("fa", d1), idcard.front("fa", d2)
+    assert a != b and d2.name in b and d1.name not in b
+    assert idcard.back("fa", d1) != idcard.back("fa", d2)                                  # the fingerprint, the document number and the signature are each person's own
+    assert d1.fingerprint != d2.fingerprint and d1.doc_number != d2.doc_number
 
 
-def test_gender_changes_the_picture_and_nothing_else_does():
-    m = portrait.render(BASE, "male").tobytes()
-    f = portrait.render(BASE, "female").tobytes()
-    assert m != f
-    assert portrait.render(BASE, "male").tobytes() == m and portrait.render(dict(reversed(list(BASE.items()))), "male").tobytes() == m      # the order of the dict does not matter
+# ================================================================================================ no picture, one blank photo for everybody
+def test_there_is_no_picture_and_the_blank_photo_is_the_same_for_everybody(d1, d2):
+    for d in (d1, d2):
+        for lang in ("fa", "en"):
+            text = idcard.front(lang, d)
+            assert isinstance(text, str) and f"<pre>{idcard.GUEST}</pre>" in text
+    assert "GUEST" in idcard.GUEST and idcard.GUEST.count("\n") == 5
+    traits_a = dict(d1.traits)
+    other = {k: T.CATALOG[k]["values"][-1] for k in T.TRAIT_NAMES}
+    d3 = dataclasses.replace(d1, traits=tuple((k, other[k]) for k, _ in d1.traits), gender="female")
+    assert idcard.front("en", d3).split("Photo: guest")[0].split("<pre>")[1] == idcard.front("en", d1).split("Photo: guest")[0].split("<pre>")[1]     # whatever the genes, the same blank photo
+    assert traits_a != other
 
 
-def test_the_portrait_is_the_same_every_time_even_after_the_cache_is_gone():
-    first = portrait.render(BASE, "female").tobytes()
-    portrait.cache_clear()
-    assert portrait.render(BASE, "female").tobytes() == first
-    img = portrait.render(BASE, "female")
-    assert img.size == (portrait.PW, portrait.PH) and img.mode == "RGB"
+def test_the_card_module_draws_nothing_and_the_portrait_is_gone():
+    tree = ast.parse(inspect.getsource(idcard))
+    imported = {(n.module if isinstance(n, ast.ImportFrom) else a.name) for n in ast.walk(tree) for a in (getattr(n, "names", None) or [None]) if isinstance(n, (ast.Import, ast.ImportFrom))}
+    assert imported <= {"__future__", None, "texts"} | {"."}, imported                           # only the game's own text and format helpers: no imaging library, no random numbers, no clock
+    names = {a.name for n in ast.walk(tree) if isinstance(n, ast.ImportFrom) for a in n.names}
+    assert names <= {"annotations", "fmt", "identity", "t"}, names
+    with pytest.raises(ImportError):
+        import hypemarket.portrait  # noqa: F401
+    with pytest.raises(ImportError):
+        import hypemarket.cardart  # noqa: F401
+    assert not hasattr(idcard, "render_front") and not hasattr(idcard, "record_picture")
 
 
-def test_the_portrait_uses_no_randomness_and_no_network(monkeypatch):
-    def boom(*a, **k):
-        raise AssertionError("not allowed while drawing")
-    portrait.cache_clear()
-    for name in ("random", "randint", "choice", "shuffle", "uniform", "getrandbits", "randrange", "sample", "gauss"):
-        monkeypatch.setattr(random, name, boom)
-    monkeypatch.setattr(random, "Random", boom)
-    monkeypatch.setattr(socket, "socket", boom)
-    monkeypatch.setattr(socket, "create_connection", boom)
-    monkeypatch.setattr(socket, "getaddrinfo", boom)
-    img = portrait.render(BASE, "male")
-    out = idcard.render(data(), "fa")
-    assert img.size == (portrait.PW, portrait.PH) and png(out).size == (idcard.W, idcard.H)
-
-
-def test_a_damaged_set_of_traits_is_refused_not_drawn_as_someone_else():
-    for bad in ({}, dict(BASE, build="enormous"), {k: v for k, v in BASE.items() if k != "height"}, dict(BASE, extra="x")):
-        with pytest.raises(Exception):
-            portrait.render(bad, "male")
-    with pytest.raises(Exception):
-        portrait.render(BASE, "other")
-
-
-def test_every_combination_the_catalog_allows_can_be_drawn():
-    """Each value of each trait on top of the other six at their extremes: nothing raises and nothing is blank."""
-    for trait, spec in T.CATALOG.items():
-        for code in spec["values"]:
-            for gender in ("male", "female"):
-                img = portrait.render(dict(BASE, **{trait: code}), gender)
-                assert len(set(img.resize((24, 30)).getdata())) > 8
-
-
-# ============================================================================================== the card picture
-def test_the_card_is_a_png_of_a_fixed_size_and_the_same_every_time():
-    d = data()
-    a, b = idcard.render(d, "fa"), idcard.render(d, "fa")
-    assert a == b and a[:8] == b"\x89PNG\r\n\x1a\n" and png(a).size == (idcard.W, idcard.H)
-    assert idcard.render(d, "en") != a and idcard.render(d, "en") == idcard.render(d, "en")
-
-
-@pytest.mark.parametrize("field,value", [
-    ("first", "سارا"), ("last", "احمدی"), ("citizen_id", 13), ("age", 16), ("gender", "female"),
-    ("birth", (2, "شهر دو", "City Two")), ("here", (2, "شهر دو", "City Two")), ("to", (2, "شهر دو", "City Two")),
-])
-@pytest.mark.parametrize("lang", ["fa", "en"])
-def test_every_field_is_on_the_card(field, value, lang):
-    base = idcard.render(data(), lang)
-    changed = idcard.render(data(**{field: value}), lang)
-    assert changed != base
-
-
-@pytest.mark.parametrize("lang", ["fa", "en"])
-def test_a_change_of_text_never_changes_the_portrait(lang):
-    a = png(idcard.render(data(), lang))
-    b = png(idcard.render(data(first="سارا", last="احمدی", citizen_id=9999, age=40, birth=(7, "x", "x"), here=(8, "y", "y")), lang))
-    box = PORTRAIT_BOX if lang == "fa" else (idcard.W - 44 - 300, 136, idcard.W - 44, 136 + 366)
-    assert a.crop(box).tobytes() == b.crop(box).tobytes()
-    assert a.tobytes() != b.tobytes()
-
-
-@pytest.mark.parametrize("lang", ["fa", "en"])
-def test_a_change_of_traits_changes_the_portrait_only(lang):
-    a = png(idcard.render(data(), lang))
-    b = png(idcard.render(data({"skin_tone": "dark", "hair_color": "blond"}), lang))
-    box = PORTRAIT_BOX if lang == "fa" else (idcard.W - 44 - 300, 136, idcard.W - 44, 136 + 366)
-    outside = Image.composite(a, b, Image.new("L", a.size, 255))                      # (a itself; the next lines compare everything outside the box)
-    for img in (a, b):
-        img.paste((0, 0, 0), box)
-    assert a.tobytes() == b.tobytes() == outside.tobytes() or a.tobytes() == b.tobytes()
-    assert idcard.render(data(), lang) != idcard.render(data({"skin_tone": "dark", "hair_color": "blond"}), lang)
-
-
-def test_while_travelling_the_card_does_not_show_the_city_they_left_as_the_current_one():
-    on_road = data(to=(2, "شهر دو", "City Two"))
+def test_the_card_never_carries_a_disclaimer(d1):
     for lang in ("fa", "en"):
-        a = idcard.render(on_road, lang)
-        b = idcard.render(data(to=(2, "شهر دو", "City Two"), here=(9, "جای دیگه", "Elsewhere")), lang)
-        assert a == b                                                                 # where they set off from is not on the card
-        assert a != idcard.render(data(), lang)
+        for side in ("front", "back"):
+            text = idcard.render(d1, lang, side)
+            for bad in DISCLAIMERS:
+                assert bad not in text, (lang, side, bad)
 
 
-def test_very_long_names_and_cities_still_fit_the_card():
-    long = "ا" * 60
+# ================================================================================================ the appearance words
+@pytest.mark.parametrize("trait", [n for n in T.TRAIT_NAMES if n != "height"])         # the height is the number of centimetres, tested below
+def test_every_value_of_every_trait_is_named_on_the_front(d1, trait):
+    key = {"skin_tone": "skin", "hair_color": "hair", "hair_style": "hair", "eye_color": "eyes", "build": "build", "face_shape": "face"}[trait]
     for lang in ("fa", "en"):
-        out = idcard.render(data(first=long, last="ب" * 80, birth=(1, "ج" * 90, "J" * 90), here=(2, "د" * 90, "D" * 90)), lang)
-        assert png(out).size == (idcard.W, idcard.H)
-        img = png(out)
-        edge = [img.getpixel((x, y)) for y in range(140, 520, 3) for x in (idcard.W - 40, idcard.W - 36)]        # nothing runs out of the card at the right edge
-        assert max(max(p) for p in edge) < 120
+        fronts = set()
+        for code in T.CATALOG[trait]["values"]:
+            d = dataclasses.replace(d1, traits=tuple((k, code if k == trait else v) for k, v in d1.traits))
+            word = identity.trait_value(lang, trait, code)
+            text = idcard.front(lang, d)
+            assert word and (lang == "en" or word != code) and word in idcard.traits_line(lang, d)[key] and f"<b>{idcard.traits_line(lang, d)[key]}</b>" in text, (trait, code, lang)
+            fronts.add(text)
+        assert len(fronts) == len(T.CATALOG[trait]["values"]), (trait, lang)                  # every value reads differently: no two values share a word
 
 
-def test_the_card_says_it_is_in_game_only():
+def test_the_height_in_centimetres_is_the_saved_one(d1, d2):
+    assert f"{d1.height_cm} cm" in plain(idcard.front("en", d1)) and f"{d2.height_cm} cm" in plain(idcard.front("en", d2))
+    assert T.traits_of is not None and C.HEIGHT_BANDS_CM[d1.gender][dict(d1.traits)["height"]] <= d1.height_cm < C.HEIGHT_BANDS_CM[d1.gender][dict(d1.traits)["height"]] + 10
+
+
+# ================================================================================================ the XP bar
+def test_a_new_character_is_level_one_with_an_empty_visible_bar(d1):
+    text = idcard.front("fa", d1)
+    assert d1.level == 1 and d1.xp == 0
+    assert "▱" * 12 in text and "▰" not in text                                             # always drawn, empty at 0 XP
+    assert f"{fmt.num(100, 'fa')} XP" in plain(text) and f"سطح {fmt.num(2, 'fa')}" in plain(text)         # the XP still needed for the next level
+
+
+def test_the_bar_fills_with_the_xp_and_the_needed_amount_is_exact(world):
+    d, w1, w2 = world
+    core.ensure_user(d, 3, None, "x")
+    charkit.complete(d, 3, first="Xp", last="Test", world_id=w1, now=T0)
+    seen = []
+    for total, level in ((0, 1), (50, 1), (99, 1), (100, 2), (250, 2), (399, 2), (400, 3), (900, 4)):
+        d.x("UPDATE character_xp SET xp=? WHERE user_id=3", (total,))
+        dos = identity.dossier(d, 3, T0 + 5)
+        text = idcard.front("en", dos)
+        frac = dos.xp_fraction
+        assert dos.level == level and text.count("▰") == int(round(frac * 12)) and text.count("▰") + text.count("▱") == 12
+        assert f"{dos.xp_left} XP to level {level + 1}" in plain(text) and f"Level: {level}" in plain(text) and f"XP: {total}" in plain(text)
+        seen.append((level, text.count("▰")))
+    for lv in (1, 2, 3, 4):                                                                 # inside one level, more XP never shows fewer segments
+        segs = [n for l, n in seen if l == lv]
+        assert segs == sorted(segs)
+
+
+# ================================================================================================ what is not assigned, journeys, the home
+def test_an_unassigned_address_is_said_in_the_documents_own_words_and_never_invented(d1):
+    for lang, word in (("fa", "تخصیص‌نیافته"), ("en", "Unassigned")):
+        text = plain(idcard.back(lang, d1))
+        assert text.count(word) == 3                                                         # district, street, building
+    assert idcard.address_parts("fa", d1)[1:] == (None, None, None, False) and idcard.address_detail("fa", d1) == idcard.LABELS["fa"]["addr_none"]
+    assigned = dataclasses.replace(d1, district="Hill", street="Oak Road", building="12")
+    text = plain(idcard.back("en", assigned))
+    assert "Hill" in text and "Oak Road" in text and "12" in text and "Unassigned" not in text
+    assert idcard.address_parts("en", assigned)[4] is True and idcard.address_detail("en", assigned) == "Hill, Oak Road, 12"
+
+
+def test_the_card_names_the_city_and_during_a_journey_the_destination(world, d1):
+    d, w1, w2 = world
+    assert idcard.city_text("fa", d1.current) in idcard.front("fa", d1)
+    away = dataclasses.replace(d1, current=None, to=(w2, "دو", "Two"))
+    assert "در سفر به" in idcard.front("fa", away) and "Travelling to" in idcard.front("en", away) and "Two" in idcard.front("en", away)
+    assert idcard.city_text("fa", away.birth) in idcard.front("fa", away)                    # the birthplace never changes
+    assert idcard.city_text("fa", None) == idcard.LABELS["fa"]["unset"] and idcard.city_text("en", None) == idcard.LABELS["en"]["unset"]
+
+
+# ================================================================================================ names, escaping, size
+@pytest.mark.parametrize("first,last", [("<b>x</b>", "&amp;"), ("A" * 40, "B" * 40), ("علی‌اکبر", "حسینی‌نژاد"), ("Zoë", "O'Neil")])
+def test_names_are_escaped_and_the_text_stays_valid_and_short(world, first, last):
+    d, w1, w2 = world
+    uid = 100 + len(first) + len(last) + ord(first[0])
+    core.ensure_user(d, uid, None, "x")
+    charkit.complete(d, uid, first=first, last=last, world_id=w1, now=T0)
+    dos = identity.dossier(d, uid, T0 + 5)
     for lang in ("fa", "en"):
-        assert "legal" in idcard.LABELS["en"]["foot"] and "فاقد اعتبار" in idcard.LABELS["fa"]["foot"]
-    assert "فقط توی بازیه" in t("fa", "idc.caption", first="a", last="b") and "in-game" in t("en", "idc.caption", first="a", last="b")
+        for side in ("front", "back"):
+            text = idcard.render(dos, lang, side)
+            assert len(text) < 4096
+            assert not re.search(r"<(?!/?(b|i|code|pre)>)", text)                             # only the allowed Telegram tags: every other < in a name is escaped
+            assert not re.search(r"&(?!(amp|lt|gt|quot|#\d+);)", text)                         # and every & is an entity
+            assert text.count("<b>") == text.count("</b>") and text.count("<i>") == text.count("</i>") and text.count("<code>") == text.count("</code>") and text.count("<pre>") == 1 * (side == "front")
+    if first.startswith("<"):
+        assert "&lt;b&gt;x&lt;/b&gt;" in idcard.front("en", dos) and "&amp;amp;" in idcard.front("en", dos)
 
 
-# ============================================================================================== the command
-def test_the_card_of_a_finished_character_comes_as_a_photo_built_from_the_saved_rows(h):
-    ch = finish(h, A)
-    calls = h.say(A, "کارت ملی")
-    ph = photos(calls)
-    assert len(ph) == 1
-    d = idcard.build(h.db, A)
-    assert pic(ph[0]) == idcard.render(d, "fa")
-    assert d.first == ch["first_name"] and d.last == ch["last_name"] and d.citizen_id == ch["citizen_id"] and d.gender == "male"
-    assert dict(d.traits) == T.traits_of(h.db, A) and d.age == C.CHARACTER_START_AGE
-    w = intercity.city(h.db, ch["birth_world_id"])
-    assert d.birth == (w["id"], w["name_fa"], w["name_en"]) and d.here == d.birth and d.to is None
-    cap = ph[0].caption
-    assert "آرمان" in cap and "کیانی" in cap and "کارت ملی" in cap
-    assert png(pic(ph[0])).size == (idcard.W, idcard.H)
+# ================================================================================================ the signature
+def test_the_signature_is_stable_and_comes_from_the_saved_name(d1, d2):
+    s1, s2 = idcard.signature_text(d1), idcard.signature_text(d2)
+    assert s1 == idcard.signature_text(d1) and s1 != s2 and s1.startswith("آ. کیانی ") and s2.startswith("S. Lee ")
+    assert s1.rstrip("∼~≈⁓ ") == "آ. کیانی" and s1.split()[-1] in {f * n for f in idcard.FLOURISH for n in (2, 3, 4)}
+    other = dataclasses.replace(d1, signature_seed="0" * 16)
+    assert idcard.signature_text(other) != s1 or idcard.FLOURISH[0] * 2 == s1.split()[-1]
 
 
-def test_the_portrait_on_the_card_is_the_one_drawn_from_the_saved_traits(h):
-    finish(h, A, gender="female")
-    d = idcard.build(h.db, A)
-    expected = portrait.render(T.traits_of(h.db, A), "female").resize((300, 366), Image.LANCZOS)
-    got = png(pic(photos(h.say(A, "کارت ملی"))[0])).crop(PORTRAIT_BOX)
-    diff = sum(abs(p - q) for pa, pb in zip(expected.getdata(), got.getdata()) for p, q in zip(pa, pb)) / (300 * 366 * 3)
-    assert diff < 6                                                                  # the same picture (its rounded corners and the PNG are all that differ)
-    assert d.gender == "female"
-
-
-@pytest.mark.parametrize("word", ["کارت ملی", "کارتملی", "کارت‌ملی", "id card", "idcard", "national id", "/idcard"])
-def test_every_way_to_ask_gives_the_same_card(h, word):
-    finish(h, A)
-    ph = photos(h.say(A, word))
-    assert len(ph) == 1 and pic(ph[0]) == idcard.render(idcard.build(h.db, A), "fa")
-
-
-def test_the_same_card_in_every_group_every_repeat_and_after_a_restart(h, tmp_path):
-    finish(h, A)
-    first = pic(photos(h.say(A, "کارت ملی"))[0])
-    assert pic(photos(h.say(A, "کارت ملی"))[0]) == first                                              # again
-    assert pic(photos(h.say(A, "کارت ملی", chat=CH1))[0]) == first                                    # in the group of the character's city
-    assert pic(photos(h.say(A, "کارت ملی", chat=CH2))[0]) == first                                    # in another group: the same character, the same card
-    worldmap.cache_clear()
-    portrait.cache_clear()
-    assert pic(photos(h.say(A, "کارت ملی"))[0]) == first                                              # with every cache gone
-    # a restart: a new connection to the same saved rows
-    path = str(tmp_path / "game.db")
-    d1 = Database(path)
-    world.save_world(d1, CH1, layout(7))
-    import charkit
-    core.ensure_user(d1, A, None, "آرمان")
-    charkit.complete(d1, A, first="آرمان", last="کیانی", world_id=1)
-    png1 = idcard.render(idcard.build(d1, A, now=core.now()), "fa")
-    d2 = Database(path)
-    assert idcard.render(idcard.build(d2, A, now=core.now()), "fa") == png1
-
-
-def test_two_players_get_their_own_cards(h):
-    finish(h, A, first="آرمان", gender="male")
-    finish(h, B, first="سارا", family="احمدی", gender="female")
-    a, b = pic(photos(h.say(A, "کارت ملی"))[0]), pic(photos(h.say(B, "کارت ملی"))[0])
-    assert a != b
-    assert photos(h.say(A, "کارت ملی"))[0].caption != photos(h.say(B, "کارت ملی"))[0].caption
-
-
-def test_asking_for_the_card_changes_nothing_that_is_saved(h):
-    finish(h, A)
-    tables = ("characters", "character_genes", "character_traits", "character_xp", "users", "intercity_trips", "worlds", "xp_ledger", "cash_ledger")
-    def snap():
-        out = {}
-        for tb_ in tables:
-            try:
-                out[tb_] = [tuple(r) for r in h.db.qa(f"SELECT * FROM {tb_} ORDER BY 1")]
-            except Exception:
-                pass
-        return out
-    before = snap()
-    for _ in range(3):
-        h.say(A, "کارت ملی")
-        h.say(A, "کارت ملی", chat=CH1)
-    after = snap()
-    users_b, users_a = before.pop("users"), after.pop("users")
-    assert before == after                                                                         # (the user row itself may note activity; nothing of the character moves)
-    assert len(users_b) == len(users_a)
-
-
-def test_the_english_card_for_an_english_player(h):
-    finish(h, A)
-    h.db.x("UPDATE users SET lang='en' WHERE id=?", (A,))
-    ph = photos(h.say(A, "id card"))
-    assert len(ph) == 1 and pic(ph[0]) == idcard.render(idcard.build(h.db, A), "en")
-    assert "National ID" in ph[0].caption and pic(ph[0]) != idcard.render(idcard.build(h.db, A), "fa")
-
-
-# ============================================================================================== the age on the card
-def test_the_age_on_the_card_is_the_current_age(h):
-    ch = finish(h, A)
-    start = idcard.build(h.db, A).age
-    assert start == C.CHARACTER_START_AGE
-    tb.T[0] += 4 * 86400 + 5
-    older = idcard.build(h.db, A)
-    assert older.age == start + 1
-    assert pic(photos(h.say(A, "کارت ملی"))[0]) == idcard.render(older, "fa")
-    assert idcard.build(h.db, A, now=ch["age_started_at"]).age == start
-
-
-# ============================================================================================== the card and a journey between cities
-def test_during_a_journey_the_card_names_the_destination_and_after_it_the_new_city(h):
-    ch = finish(h, A)
-    h.say(B, "مپ", chat=CH2)                                                                          # (makes city 2 exist for a player's eyes; A's own city stays 1)
-    home = ch["birth_world_id"]
-    dest = 2 if home == 1 else 1
-    before = pic(photos(h.say(A, "کارت ملی"))[0])
-    h.say(A, f"سفر {dest}", chat=CH1)
-    assert intercity.active(h.db, A) is not None
-    mid = idcard.build(h.db, A)
-    assert mid.to is not None and mid.to[0] == dest and mid.birth[0] == home
-    on_road = pic(photos(h.say(A, "کارت ملی"))[0])
-    assert on_road != before and on_road == idcard.render(mid, "fa")
-    tb.T[0] += 300                                                                                    # half way: still on the road, still not the new city
-    assert idcard.build(h.db, A).to is not None
-    assert pic(photos(h.say(A, "کارت ملی"))[0]) == idcard.render(idcard.build(h.db, A), "fa") != before
-    tb.T[0] += 301                                                                                    # the journey is over: applied before the card is made
-    arrived = pic(photos(h.say(A, "کارت ملی"))[0])
-    after = idcard.build(h.db, A)
-    assert after.to is None and after.here[0] == dest and after.birth[0] == home
-    assert arrived == idcard.render(after, "fa") and arrived != on_road and arrived != before
-    assert character.get(h.db, A)["birth_world_id"] == home                                          # the birthplace never changes
-    assert png(arrived).crop(PORTRAIT_BOX).tobytes() == png(before).crop(PORTRAIT_BOX).tobytes()    # and neither does the face
-
-
-def test_a_card_after_a_journey_is_the_same_every_time(h):
-    finish(h, A)
-    h.say(A, "سفر 2", chat=CH1) if character.get(h.db, A)["birth_world_id"] != 2 else h.say(A, "سفر 1", chat=CH2)
-    tb.T[0] += 700
-    one = pic(photos(h.say(A, "کارت ملی"))[0])
-    assert pic(photos(h.say(A, "کارت ملی", chat=CH2))[0]) == one == pic(photos(h.say(A, "کارت ملی", chat=CH1))[0])
-
-
-# ============================================================================================== who gets a card
-def test_a_character_that_is_not_finished_gets_the_set_up_and_never_a_card(h):
-    h.say(A, "مپ", chat=CH1)                                                                         # a pending profile
-    out = h.say(A, "کارت ملی", chat=CH1)
-    assert not photos(out)
-    assert t("fa", "char.need") in tb.Harness.texts(out)                                              # in a group: the button that opens the private chat
-    priv = h.say(A, "کارت ملی")
-    assert not photos(priv)
-    assert t("fa", "char.s.first", min=C.CHAR_NAME_MIN, max=C.CHAR_NAME_MAX) in tb.Harness.texts(priv)  # in private: the set-up itself, where it stopped
-    h.say(A, "/start char")
-    h.say(A, "آرمان")
-    mid = h.say(A, "کارت ملی")
-    assert not photos(mid) and "آرمان" in tb.Harness.texts(mid)                                      # a name already given is kept; the set-up continues
-    h.say(A, "کیانی")
-    h.press(A, f"cr:g:male:{A}")
-    assert len(photos(h.say(A, "کارت ملی"))) == 1                                                    # finished: now there is a card
-
-
-def test_nothing_is_drawn_for_a_character_that_is_not_finished(h):
-    h.say(A, "مپ", chat=CH1)
-    with pytest.raises(core.GameError) as e:
-        idcard.build(h.db, A)
-    assert e.value.code == "card_char"
-    with pytest.raises(core.GameError) as e2:
-        idcard.build(h.db, 424242)
-    assert e2.value.code == "char_none"
-
-
-def test_a_finished_character_without_saved_traits_is_reported_not_drawn(h):
-    finish(h, A)
-    h.db.x("DROP TRIGGER IF EXISTS character_traits_no_delete")
-    for trg in [r["name"] for r in h.db.qa("SELECT name FROM sqlite_master WHERE type='trigger' AND tbl_name='character_traits'")]:
-        h.db.x(f"DROP TRIGGER {trg}")
-    h.db.x("DELETE FROM character_traits WHERE user_id=?", (A,))
-    with pytest.raises(core.GameError) as e:
-        idcard.build(h.db, A)
-    assert e.value.code == "card_traits"
-    out = h.say(A, "کارت ملی")
-    assert not photos(out) and t("fa", "e.card_traits") in tb.Harness.texts(out)
-
-
-# ============================================================================================== entry points
-def test_the_command_words_belong_to_the_card_and_the_old_card_word_still_shares(h):
-    for word in ALIASES["idcard"]:
-        p = textparse.parse(word)
-        assert p is not None and p.cmd == "idcard", word
-    assert textparse.parse("کارت").cmd == "share" and textparse.parse("کارت من").cmd == "share"
-    assert textparse.parse("card").cmd == "share"
-
-
-def test_in_a_group_only_the_exact_words_count_as_the_command(h):
-    finish(h, A)
-    assert len(photos(h.say(A, "کارت ملی", chat=CH1))) == 1
-    for chat_text in ("کارت ملی من گم شد", "کارت ملی رو دیدی؟", "id card please"):
-        assert not photos(h.say(A, chat_text, chat=CH1)) and not tb.Harness.texts(h.say(A, chat_text, chat=CH1))
-
-
-def test_the_main_menu_has_the_card_button_and_it_opens_the_same_card(h):
-    finish(h, A)
-    out = h.say(A, "منو")
-    data_ = mapkit.buttons_of(out[-1])
-    assert (t("fa", "menu.idcard"), f"mn:go:idcard:{A}") in data_
-    assert (t("fa", "menu.cities"), f"mn:go:cities:{A}") in data_
-    calls = h.press(A, f"mn:go:idcard:{A}")
-    ph = photos(calls)
-    assert len(ph) == 1 and pic(ph[0]) == idcard.render(idcard.build(h.db, A), "fa")
-    assert not [c for c in calls if isinstance(c, (tb.EditMessageText, tb.EditMessageMedia))]          # like the map: the card is a new message, the menu above it stays as it was
-
-
-def test_somebody_elses_menu_button_does_nothing(h):
-    finish(h, A)
-    finish(h, B, first="سارا", family="احمدی")
-    calls = h.press(B, f"mn:go:idcard:{A}")
-    assert not photos(calls) and not [c for c in calls if isinstance(c, tb.EditMessageMedia)]
-
-
-def test_the_card_has_a_help_entry_in_both_languages():
-    from hypemarket import docs
-    fa_desc, fa_ex, en_desc, en_ex = docs.DOCS["idcard"]
-    assert fa_desc and en_desc and "کارت ملی" in fa_ex and "id card" in en_ex
-    assert "idcard" in dict(docs.CATEGORIES)["start"]
+# ================================================================================================ rendering changes nothing
+def test_showing_the_card_changes_nothing(world):
+    d, w1, w2 = world
+    tables = idkit.CHAR_TABLES + ("users", "life_accounts", "life_ledger")
+    before = snapshot(d, tables)
+    for uid in (1, 2):
+        dos = identity.dossier(d, uid, T0 + 9 * 86400)
+        for lang in ("fa", "en"):
+            for side in ("front", "back"):
+                assert idcard.render(dos, lang, side) == idcard.render(dos, lang, side)
+    assert snapshot(d, tables) == before

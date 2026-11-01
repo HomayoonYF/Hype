@@ -180,23 +180,29 @@ def stand(db, city, uid: int, now: int | None = None) -> Standing:
 # --- walking ------------------------------------------------------------------------------------------------------------------
 @dataclass
 class Outcome:
-    status: str                  # "started" | "busy" | "here" | "unknown" | "unreachable"
+    status: str                  # "started" | "busy" | "here" | "unknown" | "unreachable" | "shift"
     trip: object | None = None
     same: bool = False           # busy: the walk in progress already goes to the requested place
+    left: int = 0                # shift: seconds until the McDonald's shift that holds the player is over
 
 
 def start_trip(db, city, uid: int, ref: str, now: int | None = None, *, mode: str = "walk", speed: float | None = None) -> Outcome:
     """Plan the walk to `ref` and save it. The saved row is the authority: if this returns "started" the trip exists and cannot be started
     a second time (one walk at a time per player per city). Nothing but the five map tables is touched.
     v0.18: `mode` is how the trip is travelled ("walk" by default; the Snapp job drives a rental car: "car", at the configured car speed).
-    It is stored with the trip and changes nothing but the speed and the wording; routes, arrival and one-trip-at-a-time are the same."""
+    It is stored with the trip and changes nothing but the speed and the wording; routes, arrival and one-trip-at-a-time are the same.
+    v0.20 fix: status "shift" (nothing saved) while the player is on a running McDonald's shift: from the first minute to the due time the only place they may walk to is that McDonald's."""
     now = core.now() if now is None else now
     if mode not in ("walk", "car"):
         raise ValueError("unknown travel mode")
     spot = city.spot(ref)
     if spot is None:
         return Outcome("unknown")
+    from . import work                                                  # (work builds on presence; imported here to keep this module's import graph one-way)
     with db.tx():
+        held = work.shift_hold(db, uid, now)
+        if held is not None and spot.id != held[0]:                     # v0.20 fix: a worker on a running McDonald's shift cannot walk anywhere but back to that McDonald's
+            return Outcome("shift", None, False, held[1])
         st = stand(db, city, uid, now)
         if st.trip is not None:
             return Outcome("busy", st.trip, st.trip["dest_id"] == spot.id)
