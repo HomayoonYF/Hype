@@ -14,7 +14,7 @@ from aiogram import Bot, F, Router
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramRetryAfter
 from aiogram.types import BufferedInputFile, CallbackQuery, ChatMemberUpdated, InputMediaPhoto, LabeledPrice, Message, PreCheckoutQuery, User
 
-from . import achievements, adminpanel, analytics, backups, cash, character, characterui, charhub, charts, giftui, gifts, interact, intercity, lifeui, mapui, salary, config as C, core, events, fmt, gate, progress, quests, sections, shop, social, textparse, trading, travelui, trust, views, work, workui, world, worldinspect, worldmap, worldplaces
+from . import bizrouter, achievements, adminpanel, analytics, backups, cash, character, characterui, charhub, charts, giftui, gifts, interact, intercity, invui, lifeui, mapui, salary, config as C, core, events, fmt, gate, progress, quests, sections, shop, social, textparse, trading, travelui, trust, views, work, workui, world, worldinspect, worldmap, worldplaces
 from .core import GameError
 from .db import Database
 from .texts import ALIASES, SOFT_ARGS, SOFT_EXACT, EXAMPLES, level_title, t
@@ -150,7 +150,7 @@ def plain(text: str, limit: int = 190) -> str:
 
 
 MONEY_KW = {"funds": ("need", "have"), "rb_need": ("need", "nw"), "bad_goal": ("lo", "hi"), "fx_low_stock": ("need", "have")}
-CASH_KW = {"cash_low": ("need", "have")}                        # life cash: whole cents, shown as $
+CASH_KW = {"cash_low": ("need", "have"), "till_low": ("need", "have"), "owed_wages": ("need",), "price_range": ("max",)}                        # life cash: whole cents, shown as $
 TIME_ERRORS = ("rug_young", "rug_cooldown", "daily_wait", "job_cooldown", "job_notready", "ia_cooldown")
 
 
@@ -167,6 +167,8 @@ def err_text(lang: str, e: GameError) -> str:
             kw[k] = fmt.tk(v)
         elif k == "job":
             kw[k] = t(lang, f"job.{v}.name")
+        elif k == "why" and e.code == "mode_busy":                                  # v0.211: the reason a property cannot change its type, in words
+            kw[k] = t(lang, f"bz.block.{v}")
         elif isinstance(v, int):
             kw[k] = fmt.num(v, lang)
         else:
@@ -1131,6 +1133,42 @@ async def cb_character(c: Ctx):
     return r
 
 
+@cmd("inventory")
+async def h_inventory(c: Ctx):
+    """`کوله‌پشتی`: the player's inventory: the categories with their counts, the equipment and the way into every item (v0.21). Text and buttons only."""
+    r = await invui.command(c, travelui._unfinished)
+    if r is None:
+        raise Ignore
+    return r
+
+
+@cbk("iv")
+async def cb_inventory(c: Ctx):
+    """iv:<action>:...:<player id>: a screen or an action of the inventory (m bag, c category, o item, e wear, u take off, q equipment, s slot, x use); see invui."""
+    r = await invui.callback(c, travelui._unfinished)
+    if r is None:
+        raise Ignore
+    return r
+
+
+@cmd("business")
+async def h_business(c: Ctx):
+    """`کسب‌وکار`: the business hub (v0.211): properties, brands, branches, shops, staff, reports, reputation, style. Text and buttons; a few pixel-art pictures."""
+    return await bizrouter.open_hub(c, "h")
+
+
+@cmd("property")
+async def h_property(c: Ctx):
+    """`املاک`: the properties for sale nearest to the player, straight from the map position the server knows (v0.211)."""
+    return await bizrouter.open_hub(c, "n")
+
+
+@cbk("bz")
+async def cb_business(c: Ctx):
+    """bz:<action>[:...]:<player id>: every business button; the shape of the pieces is checked (bizrouter), the player id against the presser (BOUND), the state against the saved rows."""
+    return await bizrouter.handle(c)
+
+
 @cmd("giftcode")
 async def h_giftcode(c: Ctx):
     """`کد هدیه <code>`: redeem an admin's gift code, once per player (v0.20)."""
@@ -1904,7 +1942,7 @@ async def on_photo(m: Message, app: App) -> None:
     await handle_message(m, app, m.caption)
 
 
-BOUND = {"pf", "cl", "up", "sk", "lg", "rb", "rug", "hp", "qs", "wh", "scp", "scr", "sal", "mn", "sm", "ad", "gate", "cs", "jb", "ia", "cr", "cy", "cg"}
+BOUND = {"pf", "cl", "up", "sk", "lg", "rb", "rug", "hp", "qs", "wh", "scp", "scr", "sal", "mn", "sm", "ad", "gate", "cs", "jb", "ia", "cr", "cy", "cg", "iv", "bz"}
 
 
 @router.callback_query()

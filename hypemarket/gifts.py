@@ -8,6 +8,8 @@ Rewards (the amount is in the unit stated):
 * `stock_money`: stock-game coins, the same balance (`users.cash`, in 1/100-coin units) an admin's /give and the daily bonus change; the coins are counted as minted (`core.mint`);
 * `life_cash`: life cash in cents, through `cash.apply` (its ledger row `gift` / <code> is unique per player: the payout is idempotent by itself);
 * `char_xp`: character XP, through `charxp.grant` (source `gift`, reference <code>: idempotent by itself); it needs a FINISHED character.
+* `item` (v0.21): a quantity of one catalog item (`gift_codes.item_id` names it; the amount is the quantity per redeemer), put into the player's bag by `inventory.give` (source `gift`,
+  reference <code>: idempotent by itself, so a repeated message never gives it twice). A bag with no room for the whole quantity refuses the code and nothing of it is used up.
 
 Redeeming is ONE transaction: the code is read, the player's earlier use and the limit are checked, the use counter goes up (`WHERE used_count < max_uses`, so two players racing for the
 last place cannot both get it), the redemption row is written and the reward is paid. If anything fails (the reward cannot be given, a cap is reached, a crash) nothing of it stays: no
@@ -22,10 +24,10 @@ import re
 import secrets
 import sqlite3
 
-from . import cash, character, charxp, config as C, core
+from . import cash, character, charxp, config as C, core, inventory, items
 from .core import GameError
 
-REWARDS = ("stock_money", "life_cash", "char_xp")
+REWARDS = ("stock_money", "life_cash", "char_xp", "item")
 ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 PREFIX = "HM"
 GROUPS, GROUP_LEN = 3, 4
@@ -38,16 +40,16 @@ MAX_TYPED = 60                                   # a typed code longer than this
 
 def limit(reward: str) -> int:
     """The largest amount an admin may put into a code of this reward, in the unit it is typed in (coins, dollars, XP)."""
-    return {"stock_money": C.GIFT_MAX_STOCK_COINS, "life_cash": C.GIFT_MAX_CASH_DOLLARS, "char_xp": C.GIFT_MAX_XP}[reward]
+    return {"stock_money": C.GIFT_MAX_STOCK_COINS, "life_cash": C.GIFT_MAX_CASH_DOLLARS, "char_xp": C.GIFT_MAX_XP, "item": C.GIFT_MAX_ITEM_QTY}[reward]
 
 
 def to_units(reward: str, n: int) -> int:
     """What an admin typed (whole coins / dollars / XP) as the stored amount (1/100-coin units / cents / XP)."""
-    return n * {"stock_money": C.UNIT, "life_cash": 100, "char_xp": 1}[reward]
+    return n * {"stock_money": C.UNIT, "life_cash": 100, "char_xp": 1, "item": 1}[reward]
 
 
 def from_units(reward: str, amount: int) -> int:
-    return amount // {"stock_money": C.UNIT, "life_cash": 100, "char_xp": 1}[reward]
+    return amount // {"stock_money": C.UNIT, "life_cash": 100, "char_xp": 1, "item": 1}[reward]
 
 
 def parse_whole(token, lo: int, hi: int) -> int | None:
@@ -106,13 +108,28 @@ def looks_like_attempt(parts) -> bool:
 # =====================================================================================================================
 #                                                       making a code
 # =====================================================================================================================
-def create(db, by: int, reward: str, amount: int, max_uses: int, admins, now: int | None = None):
-    """Store a new code and return its row. `amount` is the stored amount (units / cents / XP: use `to_units`). The maker must be an admin (checked again HERE, at execution,
-    whatever screen led to it). GameError: gift_denied. ValueError for a reward, amount or limit outside what an admin may make."""
+def create(db, by: int, reward: str, amount: int, max_uses: int, admins, now: int | None = None, item_id: str | None = None, item_data: dict | None = None):
+    """Store a new code and return its row. `amount` is the stored amount (units / cents / XP / the quantity of an item: use `to_units`). An item code names a catalog item (`item_id`);
+    no other code may. v0.211: `item_data` (quality `q`, brand `b`) is the instance data every redeemed unit carries; it is stored once beside the code (`gift_item_data`) and never changes.
+    The maker must be an admin (checked again HERE, at execution, whatever screen led to it). GameError: gift_denied. ValueError for a reward, amount, item or limit
+    outside what an admin may make."""
     if by not in admins:
         raise GameError("gift_denied")
     if reward not in REWARDS:
         raise ValueError("unknown reward")
+    if (reward == "item") != (item_id is not None):
+        raise ValueError("an item code names an item and no other code does")
+    items.ensure(db)
+    if reward == "item" and items.get(item_id) is None:
+        raise ValueError("unknown item")
+    if item_data is not None and reward != "item":
+        raise ValueError("only an item code carries item data")
+    data_text = None
+    if item_data is not None:
+        data_text = inventory._data(item_data)                                    # validates the shape (quality 1-5, a brand key)
+        inventory._check_data_fits(item_id, data_text)
+        if "b" in item_data and item_data["b"] not in C.brand_names():
+            raise ValueError("unknown brand")
     if not isinstance(amount, int) or isinstance(amount, bool) or not (1 <= from_units(reward, amount) <= limit(reward)) or amount % to_units(reward, 1):
         raise ValueError("amount out of range")
     if not isinstance(max_uses, int) or isinstance(max_uses, bool) or not 1 <= max_uses <= C.GIFT_MAX_USES:
@@ -122,7 +139,9 @@ def create(db, by: int, reward: str, amount: int, max_uses: int, admins, now: in
         code = make_code()
         try:
             with db.tx():
-                db.x("INSERT INTO gift_codes(code,reward_type,amount,max_uses,used_count,created_by,created_at) VALUES(?,?,?,?,0,?,?)", (code, reward, amount, max_uses, by, now))
+                db.x("INSERT INTO gift_codes(code,reward_type,amount,max_uses,used_count,created_by,created_at,item_id) VALUES(?,?,?,?,0,?,?,?)", (code, reward, amount, max_uses, by, now, item_id))
+                if data_text is not None:
+                    db.x("INSERT INTO gift_item_data(code,data) VALUES(?,?)", (code, data_text))
             return db.q1("SELECT * FROM gift_codes WHERE code=?", (code,))
         except sqlite3.IntegrityError:                                            # the (astronomically unlikely) clash: draw again
             continue
@@ -131,6 +150,12 @@ def create(db, by: int, reward: str, amount: int, max_uses: int, admins, now: in
 
 def get(db, code: str):
     return db.q1("SELECT * FROM gift_codes WHERE code=?", (code,))
+
+
+def item_data(db, code: str) -> str | None:
+    """The instance data (canonical json) an item code gives each unit, or None for a plain item / another reward."""
+    r = db.q1("SELECT data FROM gift_item_data WHERE code=?", (code,))
+    return r["data"] if r else None
 
 
 def recent(db, limit_: int = 10) -> list:
@@ -143,7 +168,7 @@ def recent(db, limit_: int = 10) -> list:
 def redeem(db, uid: int, code: str, now: int | None = None) -> dict:
     """Redeem the canonical `code` for player `uid`, once, atomically. Returns {reward, amount, balance|xp|level, code}. GameError: no_user (unknown or bot account), gift_bad (not a code),
     gift_unknown, gift_used (this player already redeemed it), gift_exhausted (every place is taken), gift_char (an XP code needs a finished character), gift_unavailable (the reward
-    cannot be given now: a cap). Nothing at all changes when it raises."""
+    cannot be given now: a cap, or an item that left the catalog), gift_full (the bag has no room for an item reward). Nothing at all changes when it raises."""
     if normalize(code) != code:
         raise GameError("gift_bad")
     now = core.now() if now is None else now
@@ -165,7 +190,19 @@ def redeem(db, uid: int, code: str, now: int | None = None) -> dict:
             raise GameError("gift_exhausted")
         db.x("INSERT INTO gift_redemptions(code,user_id,reward_type,amount,redeemed_at) VALUES(?,?,?,?,?)", (code, uid, reward, amount, now))     # UNIQUE(code, user_id)
         out = {"reward": reward, "amount": amount, "code": code}
-        if reward == "stock_money":
+        if reward == "item":
+            item_id = row["item_id"]
+            data = item_data(db, code)
+            try:
+                given = inventory.give(db, uid, item_id, amount, "gift", code, data=items.parse(data) or None, now=now)
+            except GameError as e:
+                if e.code in ("inv_full", "item_unknown"):                          # no room for the whole quantity, or the item left the catalog: nothing is used up
+                    raise GameError("gift_full" if e.code == "inv_full" else "gift_unavailable") from None
+                raise
+            if given is None:                                                        # its log row exists without a redemption: never give twice
+                raise GameError("gift_used")
+            out["item"], out["qty"], out["data"] = item_id, given, data
+        elif reward == "stock_money":
             db.x("UPDATE users SET cash=cash+? WHERE id=?", (amount, uid))
             core.mint(db, amount)
             out["balance"] = core.get_user(db, uid)["cash"]

@@ -44,7 +44,7 @@ def make(db, uid, *, now=T0, rng=None, first="علی", last="رضایی", gender
 def test_a_fresh_database_has_every_v019_table_and_the_counter_at_zero(db):
     names = {r["name"] for r in db.qa("SELECT name FROM sqlite_master WHERE type='table'")}
     assert {"characters", "character_genes", "character_traits", "character_xp", "character_xp_log", "citizen_seq"} <= names
-    assert db.q1("PRAGMA user_version")[0] == SCHEMA_VERSION == 12
+    assert db.q1("PRAGMA user_version")[0] == SCHEMA_VERSION == 14
     assert dict(db.q1("SELECT * FROM citizen_seq")) == {"id": 1, "next_id": 0}
 
 
@@ -539,9 +539,10 @@ def test_character_xp_is_separate_from_the_stock_game(db):
     assert core.get_user(db, 1)["max_level"] == 0
 
 
-def test_no_game_code_grants_character_xp_except_gift_codes():
-    """Character XP is still infrastructure: no job, task, casino hand or greeting awards it. The one v0.20 exception is an admin's gift code (gifts.py, source `gift`,
-    reference = the code), which goes through the same idempotent `charxp.grant`."""
+def test_no_game_code_grants_character_xp_except_gift_codes_and_completed_jobs():
+    """Character XP is granted only for a gift code (v0.20: gifts.py, source `gift`, reference = the code) and, since v0.211, for COMPLETED work: a McDonald's shift (work.py, `job:mcd`, the
+    task id), a cotton batch (textile.py, `job:cotton`, the task id), a tailoring order (tailor.py, `job:tailor`, the order id) and a settled sale by an accountant (store.py, `job:acct`, branch +
+    buyer + server day); all go through the same idempotent `charxp.grant`. No casino hand, greeting, login or button press awards it."""
     offenders = []
     for p in (ROOT / "hypemarket").rglob("*.py"):
         if p.name == "charxp.py":
@@ -549,8 +550,11 @@ def test_no_game_code_grants_character_xp_except_gift_codes():
         s = p.read_text(encoding="utf-8")
         if re.search(r"charxp\s*\.\s*grant\s*\(", s) or re.search(r"from\s+\.?charxp\s+import[^\n]*\bgrant\b", s) or "character_xp_log" in s and p.name != "db.py":
             offenders.append(p.name)
-    assert offenders == ["gifts.py"]
+    assert sorted(offenders) == ["gifts.py", "store.py", "tailor.py", "textile.py", "work.py"]
     assert "charxp.grant(db, uid, amount, \"gift\", code, now)" in (ROOT / "hypemarket" / "gifts.py").read_text(encoding="utf-8")
+    assert 'charxp.grant(db, uid, C.MCD_XP, "job:mcd", str(tid), now)' in (ROOT / "hypemarket" / "work.py").read_text(encoding="utf-8")
+    for fname, needle in (("textile.py", 'f"job:{JOB}", str(tid), now'), ("tailor.py", 'f"job:{JOB}", str(order["id"]), now'), ("store.py", '"job:acct", r2, now')):
+        assert needle in (ROOT / "hypemarket" / fname).read_text(encoding="utf-8"), fname              # each one passes a stable reference of the finished work: a second press cannot pay twice
     for p in (ROOT / "hypemarket").glob("*.py"):                                     # ...and nothing writes the table directly either
         if p.name not in ("charxp.py", "db.py", "character.py"):
             assert "character_xp" not in p.read_text(encoding="utf-8"), p.name

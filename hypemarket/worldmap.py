@@ -17,7 +17,7 @@ from collections import OrderedDict
 
 from PIL import Image, ImageDraw
 
-from . import cards
+from . import cards, pixelart
 from . import worldgeom as G
 from .texts import t
 
@@ -586,6 +586,8 @@ def overlay(png: bytes, lang: str, marks: dict) -> bytes:
         else:
             _paint(img, _bounds(pts, 4), col, lambda md, T, ss, pts=pts: _dashes(md, [T(q) for q in pts], ss, 2.6))
     boxes: list = []
+    for pl in marks.get("places", ()):                                              # v0.211: shops, workshops, lots for sale and the cotton site, as small pixel pictures
+        pixelart.marker(img, pl.get("kind", ""), _px(pl["pt"]), pl.get("sign", "plain"))
     for stop in marks.get("stops", ()):
         sx, sy = _px(stop["pt"])
         _pin(img, (sx, sy), PIN_COLORS.get(stop.get("color"), HILITE), stop.get("kind", "dest"))
@@ -618,6 +620,11 @@ def overlay(png: bytes, lang: str, marks: dict) -> bytes:
         _paint(img, (cx - 13, cy - 13, cx + 13, cy + 13), BG, lambda md, T, ss: md.ellipse([*(v - 8.4 * ss for v in T((cx, cy))), *(v + 8.4 * ss for v in T((cx, cy)))], fill=255))
         _paint(img, (cx - 13, cy - 13, cx + 13, cy + 13), ME, lambda md, T, ss: md.ellipse([*(v - 7.4 * ss for v in T((cx, cy))), *(v + 7.4 * ss for v in T((cx, cy)))], outline=255, width=int(1.6 * ss)))
         _paint(img, (cx - 13, cy - 13, cx + 13, cy + 13), ME, lambda md, T, ss: md.ellipse([*(v - 4.4 * ss for v in T((cx, cy))), *(v + 4.4 * ss for v in T((cx, cy)))], fill=255))
+    for o in marks.get("others", ()):                                                # v0.211: the style of a player (a ring, rings, a spark, a crown) on top of the marker, never instead of it
+        if o.get("tier") and not o.get("vehicle"):
+            pixelart.style_mark(img, o["tier"], _px(o["pt"]), PEER)
+    if me and me.get("tier") and not me.get("vehicle"):
+        pixelart.style_mark(img, me["tier"], _px(me["pt"]), ME)
     for stop in marks.get("stops", ()):
         if stop.get("tag"):
             sx, sy = _px(stop["pt"])

@@ -728,6 +728,6 @@ def test_the_main_menu_offers_the_city_list(h):
 
 
 def test_schema_has_the_journey_table(h):
-    assert SCHEMA_VERSION == 12
+    assert SCHEMA_VERSION == 14
     names = {r["name"] for r in h.db.qa("SELECT name FROM sqlite_master WHERE type='table'")}
     assert "intercity_trips" in names

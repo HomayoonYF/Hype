@@ -99,10 +99,10 @@ def bal(h, uid=A):
 
 
 # ================================================================================================ the board
-def test_the_board_lists_the_three_jobs_and_the_cash(h):
+def test_the_board_lists_the_four_jobs_and_the_cash(h):
     text, datas = screen(h.say(A, "مشاغل", chat=CH))
-    assert "مشاغل" in text and "$۱۰۰٫۰۰" in text and text.count("وضعیت: 🟢 آماده") == 3                 # a compact list: name, short description, status
-    assert datas[:3] == [f"jb:o:snapp:{A}", f"jb:o:mcd:{A}", f"jb:o:muni:{A}"] and f"cs:w:{A}" in datas
+    assert "مشاغل" in text and "$۱۰۰٫۰۰" in text and text.count("وضعیت: 🟢 آماده") == 4                 # a compact list: name, short description, status (v0.211: the cotton job is the fourth)
+    assert datas[:4] == [f"jb:o:snapp:{A}", f"jb:o:mcd:{A}", f"jb:o:muni:{A}", f"jb:o:cotton:{A}"] and f"cs:w:{A}" in datas
     for word in ("jobs", "شغل"):
         assert "مشاغل" in screen(h.say(A, word, chat=CH))[0]
     assert "💼" in tb.Harness.texts(h.say(A, "مشاغل"))                                              # in a private chat too (the board needs no city)

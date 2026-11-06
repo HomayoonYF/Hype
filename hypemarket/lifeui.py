@@ -24,7 +24,8 @@ def _step(lang: str) -> str:
 
 
 def _kind_label(lang: str, kind: str) -> str:
-    return t(lang, f"cash.k.{kind}") if kind in ("grant", "fx", "snapp_fare", "snapp_tip", "snapp_fee", "mcd_wage", "muni_sweep", "muni_waste", "muni_green", "casino_bet", "casino_win") else kind
+    from .texts import STR
+    return t(lang, f"cash.k.{kind}") if f"cash.k.{kind}" in STR["fa"] else kind
 
 
 def wallet(db, lang: str, uid: int) -> Reply:

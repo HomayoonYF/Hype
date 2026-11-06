@@ -44,6 +44,7 @@ def hub_reply(lang: str, d, uid: int) -> Reply:
     rows = [[(t(lang, "cg.b.card"), _cb("card", uid)), (t(lang, "cg.b.prof"), _cb("prof", uid))],
             [(t(lang, "cg.b.look"), _cb("look", uid)), (t(lang, "cg.b.gene"), _cb("gene", uid))],
             [(t(lang, "cg.b.pers"), _cb("pers", uid)), (t(lang, "cg.b.prog"), _cb("prog", uid))],
+            [(t(lang, "cg.b.inv"), f"iv:m:{uid}")],
             [(t(lang, "menu.back"), f"mn:menu:{uid}")]]
     text = t(lang, "cg.hub", name=_name(d), cid=fmt.loc(str(d.citizen_id), lang), age=fmt.num(d.age, lang), level=fmt.num(d.level, lang))
     return Reply(text=text, kb=kb(rows))

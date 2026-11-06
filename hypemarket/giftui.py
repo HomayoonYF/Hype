@@ -1,14 +1,20 @@
 """What the player and the admin see of gift codes (v0.20): the amount of a reward in words, and the answer to `کد هدیه <code>`. The rules are in gifts.py."""
 from __future__ import annotations
 
-from . import charxp, core, fmt, gifts
+from . import charxp, core, fmt, gifts, items
 from .core import GameError
 from .texts import t
 from .views import Reply
 
 
-def amount_text(lang: str, reward: str, amount: int) -> str:
-    """The stored amount of a reward as a short text: «500 🪙», «$25.00», «50 XP»."""
+def amount_text(lang: str, reward: str, amount: int, item_id: str | None = None, data=None) -> str:
+    """The stored amount of a reward as a short text: «500 🪙», «$25.00», «50 XP», «3 عدد تی‌شرت سفید». An item with a quality / brand names them («3 عدد تی‌شرت NIKE ⭐⭐⭐⭐☆»)."""
+    if reward == "item":
+        if not item_id:
+            return t(lang, "gift.n.item", n=fmt.num(amount, lang), item="?")
+        name = fmt.esc(items.display_name(lang, item_id, data))
+        q = items.quality_of(data)
+        return t(lang, "gift.n.item", n=fmt.num(amount, lang), item=name + (" " + items.stars(q) if q else ""))
     if reward == "stock_money":
         return fmt.coins_x(amount, lang)
     if reward == "life_cash":
@@ -16,13 +22,15 @@ def amount_text(lang: str, reward: str, amount: int) -> str:
     return f"{fmt.num(amount, lang)} XP"
 
 
-def what(lang: str, reward: str, amount: int) -> str:
-    """«500 🪙 پول سهام» / «$25.00 پول زندگی» / «50 XP شخصیت»: the reward as the admin's screens name it."""
-    return t(lang, f"gift.what.{reward}", n=amount_text(lang, reward, amount))
+def what(lang: str, reward: str, amount: int, item_id: str | None = None, data=None) -> str:
+    """«500 🪙 پول سهام» / «$25.00 پول زندگی» / «50 XP شخصیت» / «3 عدد تی‌شرت سفید»: the reward as the admin's screens name it."""
+    return t(lang, f"gift.what.{reward}", n=amount_text(lang, reward, amount, item_id, data))
 
 
 def redeemed(lang: str, r: dict) -> str:
-    n = amount_text(lang, r["reward"], r["amount"])
+    n = amount_text(lang, r["reward"], r["amount"], r.get("item"), r.get("data"))
+    if r["reward"] == "item":
+        return t(lang, "gift.ok.item", n=n)
     if r["reward"] == "stock_money":
         return t(lang, "gift.ok.stock_money", n=n, balance=fmt.coins_x(r["balance"], lang))
     if r["reward"] == "life_cash":

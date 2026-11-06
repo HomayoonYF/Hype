@@ -75,7 +75,7 @@ def test_the_migration_gives_every_character_a_row_and_issues_the_finished_ones(
     anchors = {r["user_id"]: r["age_started_at"] for r in raw.execute("SELECT user_id, age_started_at FROM characters")}
     raw.close()
     d = Database(path)
-    assert d.q1("PRAGMA user_version")[0] == dbmod.SCHEMA_VERSION == 12
+    assert d.q1("PRAGMA user_version")[0] == dbmod.SCHEMA_VERSION == 14
     rows = {r["user_id"]: r for r in d.qa("SELECT * FROM character_identity")}
     assert sorted(rows) == [1, 2, 3, 4, 5]                                              # one per character; the bot (7) and the character-less user (6) have none
     assert snapshot(d, OLD_TABLES) == before                                            # no citizen ID, gene, trait, XP, city, balance or ledger row changed
@@ -125,7 +125,7 @@ def test_the_migration_is_safe_to_repeat_and_reopening_changes_nothing(tmp_path)
     d.close()
     for _ in range(2):
         d = Database(path)
-        assert snapshot(d, ("character_identity",) + OLD_TABLES) == first and d.q1("PRAGMA user_version")[0] == 12
+        assert snapshot(d, ("character_identity",) + OLD_TABLES) == first and d.q1("PRAGMA user_version")[0] == 14
         d.close()
 
 
@@ -149,7 +149,7 @@ def test_a_failed_migration_leaves_schema_11_and_can_be_retried(tmp_path, monkey
     raw.close()
     monkeypatch.setattr(identity, "issue", real)
     d = Database(path)
-    assert d.q1("PRAGMA user_version")[0] == 12 and d.q1("SELECT COUNT(*) c FROM character_identity")["c"] == 5
+    assert d.q1("PRAGMA user_version")[0] == 14 and d.q1("SELECT COUNT(*) c FROM character_identity")["c"] == 5
     d.close()
 
 
@@ -159,7 +159,7 @@ def test_characters_created_by_the_older_migration_get_their_identity_in_the_sam
     path = str(tmp_path / "old.db")
     build_v9(path, legacy_plan)
     d = Database(path)
-    assert d.q1("PRAGMA user_version")[0] == 12
+    assert d.q1("PRAGMA user_version")[0] == 14
     ids = {r["user_id"] for r in d.qa("SELECT user_id FROM characters")}
     assert ids and ids == {r["user_id"] for r in d.qa("SELECT user_id FROM character_identity")}
     assert all(r["issued_at"] is None for r in d.qa("SELECT * FROM character_identity"))          # legacy characters are pending: no document until the player finishes the set-up

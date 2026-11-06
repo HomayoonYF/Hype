@@ -52,7 +52,9 @@ def test_no_job_screen_shows_an_invented_statistic(h):
     seen = collect_everything(h)
     assert len(seen) == 17
     for name, text, datas, photo in seen:
-        assert not INVENTED.search(text), (name, text)
+        # v0.211: the McDonald's skill is real, so its own lines (🎓 title and level, ↳ what it gives, ⭐ the XP of a collected shift) are not «invented»; every other line must still be free of them
+        plain = "\n".join(line for line in text.split("\n") if not line.startswith(("🎓", "↳", "⭐")))
+        assert not INVENTED.search(plain), (name, text)
         assert text.count("▰") + text.count("▱") in (0, 10), name                                               # a bar is always the same ten cells
         if "٪" in text or "%" in text:                                                                          # a percentage only ever belongs to a trip the game is tracking
             assert name in ("snapp to dest", "snapp to pickup"), (name, text)
@@ -72,12 +74,13 @@ def test_the_board_is_a_compact_text_list(h):
     assert photo_of(out) is None and len(text) < 600
     blocks = text.split("\n\n")
     assert blocks[0].startswith("💼 <b>مشاغل</b>") and fmt.usd(C.START_CASH_CENTS if hasattr(C, "START_CASH_CENTS") else bal(h), "fa") in blocks[0]
-    jobs = blocks[1:4]
-    for block, icon, name in zip(jobs, ("🚕", "🍔", "🧹"), ("اسنپ", "مک‌دونالد", "شهرداری")):
+    jobs = blocks[1:5]                                                                                          # v0.211: the cotton job is the fourth entry
+    assert len(jobs) == 4 and len(blocks) in (5, 6)
+    for block, icon, name in zip(jobs, ("🚕", "🍔", "🧹", "🌿"), ("اسنپ", "مک‌دونالد", "شهرداری", "پنبه‌زنی")):
         lines = block.split("\n")
         assert lines[0] == f"{icon} <b>{name}</b>" and len(lines) == 3 and lines[2].startswith("وضعیت:")      # icon + name, a short description, the status
         assert len(lines[1]) < 80
-    assert datas == [f"jb:o:snapp:{A}", f"jb:o:mcd:{A}", f"jb:o:muni:{A}", f"cs:w:{A}", f"jb:h:{A}"]
+    assert datas == [f"jb:o:snapp:{A}", f"jb:o:mcd:{A}", f"jb:o:muni:{A}", f"jb:o:cotton:{A}", f"bz:h:{A}", f"cs:w:{A}", f"jb:h:{A}"]
 
 
 def test_the_board_statuses_follow_the_real_state(h):

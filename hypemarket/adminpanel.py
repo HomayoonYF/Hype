@@ -8,15 +8,15 @@ from __future__ import annotations
 
 import secrets
 
-from . import backups, config as C, core, fmt, gate, giftui, gifts
+from . import backups, config as C, core, fmt, gate, giftflow, giftui, gifts, items
 from .core import GameError
 from .texts import t
 from .views import Reply, kb
 
 PROMPT = "adminchan"          # the key of the guided prompt in App.pending: the admin's next message is a channel name
 PROMPT_TTL = 300
-GIFT_AMOUNT, GIFT_USES = "giftamt", "giftuses"       # the guided prompts of «ساخت گیفت کارت»: the admin's next message is the amount per player / the number of players
-GIFT_PROMPTS = (GIFT_AMOUNT, GIFT_USES)
+GIFT_AMOUNT, GIFT_USES = giftflow.GIFT_AMOUNT, giftflow.GIFT_USES       # the guided prompts of «ساخت گیفت کارت»: the admin's next message is the amount per player / the number of players
+GIFT_PROMPTS = giftflow.GIFT_PROMPTS                                     # (+ v0.211: the name, English name and description of a new item template: giftflow.py)
 GIFT_TTL = 600                                        # how long a prompt waits for the admin's answer, and how long an unfinished draft lives (nothing is stored before the confirmation)
 
 
@@ -116,20 +116,26 @@ def gift_type_screen(lang: str, uid: int) -> Reply:
     return _screen(t(lang, "gift.type"), rows)
 
 
+def _gift_reward_label(lang: str, d: dict) -> str:
+    """«⭐ XP شخصیت» / «🎒 آیتم • تی‌شرت سفید»: the reward of a draft as the prompts name it."""
+    label = t(lang, f"gift.b.{d['type']}")
+    return giftflow.reward_label(lang, d) if d["type"] == "item" else label
+
+
 def _gift_ask_amount(lang: str, uid: int, d: dict, edit: bool, note: str = "") -> Reply:
-    body = t(lang, "gift.ask_amount", reward=t(lang, f"gift.b.{d['type']}"), unit=t(lang, f"gift.unit.{d['type']}"), max=fmt.num(gifts.limit(d["type"]), lang))
+    body = t(lang, "gift.ask_amount", reward=_gift_reward_label(lang, d), unit=t(lang, f"gift.unit.{d['type']}"), max=fmt.num(gifts.limit(d["type"]), lang))
     return _screen((note + "\n\n" if note else "") + body, [_gift_cancel_row(lang, uid)], edit)
 
 
 def _gift_ask_uses(lang: str, uid: int, d: dict, edit: bool, note: str = "") -> Reply:
-    what = giftui.what(lang, d["type"], gifts.to_units(d["type"], d["amount"]))
+    what = giftui.what(lang, d["type"], gifts.to_units(d["type"], d["amount"]), d.get("item"))
     body = t(lang, "gift.ask_uses", what=what, max=fmt.num(C.GIFT_MAX_USES, lang))
     return _screen((note + "\n\n" if note else "") + body, [_gift_cancel_row(lang, uid)], edit)
 
 
 def _gift_confirm_screen(lang: str, uid: int, d: dict, edit: bool) -> Reply:
     each = gifts.to_units(d["type"], d["amount"])
-    body = t(lang, "gift.confirm", what=giftui.what(lang, d["type"], each), uses=fmt.num(d["uses"], lang), total=giftui.what(lang, d["type"], each * d["uses"]))
+    body = t(lang, "gift.confirm", what=giftui.what(lang, d["type"], each, d.get("item")), uses=fmt.num(d["uses"], lang), total=giftui.what(lang, d["type"], each * d["uses"], d.get("item")))
     return _screen(body, [[(t(lang, "gift.b.ok"), f"ad:gok:{d['nonce']}:{uid}"), (t(lang, "gift.b.cancel"), f"ad:gx:{uid}")]], edit)
 
 
@@ -139,7 +145,7 @@ def gift_list_screen(app, lang: str, uid: int) -> Reply:
     if not rows:
         body = t(lang, "gift.list_empty")
     else:
-        lines = [t(lang, "gift.line", code=r["code"], what=giftui.what(lang, r["reward_type"], r["amount"]), used=fmt.num(r["used_count"], lang), max=fmt.num(r["max_uses"], lang)) for r in rows]
+        lines = [t(lang, "gift.line", code=r["code"], what=giftui.what(lang, r["reward_type"], r["amount"], r["item_id"], gifts.item_data(app.db, r["code"])), used=fmt.num(r["used_count"], lang), max=fmt.num(r["max_uses"], lang)) for r in rows]
         body = t(lang, "gift.list", lines="\n".join(lines))
     return _screen(body, [[(t(lang, "gift.b.again"), f"ad:gift:{uid}")], [(t(lang, "ad.b.main"), f"ad:main:{uid}")]])
 
@@ -153,10 +159,10 @@ def _gift_confirm(app, lang: str, uid: int, nonce: str) -> Reply:
     if not allowed(app, uid):                                           # re-checked at execution, whatever screen led here
         return Reply(toast=t(lang, "ad.denied"), alert=True)
     try:
-        row = gifts.create(app.db, uid, d["type"], gifts.to_units(d["type"], d["amount"]), d["uses"], app.settings.admins)
+        row = gifts.create(app.db, uid, d["type"], gifts.to_units(d["type"], d["amount"]), d["uses"], app.settings.admins, item_id=d.get("item"), item_data=d.get("data") or None)
     except (GameError, ValueError, RuntimeError):
         return _screen(t(lang, "gift.failed"), [[(t(lang, "gift.b.again"), f"ad:gift:{uid}")], [(t(lang, "ad.b.main"), f"ad:main:{uid}")]])
-    body = t(lang, "gift.made", code=row["code"], what=giftui.what(lang, row["reward_type"], row["amount"]), uses=fmt.num(row["max_uses"], lang))
+    body = t(lang, "gift.made", code=row["code"], what=giftui.what(lang, row["reward_type"], row["amount"], row["item_id"], gifts.item_data(app.db, row["code"])), uses=fmt.num(row["max_uses"], lang))
     return _screen(body, [[(t(lang, "gift.b.list"), f"ad:gl:{uid}"), (t(lang, "gift.b.again"), f"ad:gift:{uid}")], [(t(lang, "ad.b.main"), f"ad:main:{uid}")]])
 
 
@@ -165,6 +171,8 @@ async def gift_text(app, lang: str, uid: int, key: str, text: str) -> Reply:
     if not allowed(app, uid):
         return Reply(toast=t(lang, "ad.denied"))
     d = _gift_draft(app, uid)
+    if d is not None and d.get("type") == "item":                           # v0.211: the item flow has its own questions (name, description, quantity, number of players)
+        return await giftflow.text(app, lang, uid, key, text)
     if d is None or d["step"] != ("amount" if key == GIFT_AMOUNT else "uses"):
         return _gift_stale(lang, uid, False)
     if key == GIFT_AMOUNT:
@@ -201,10 +209,14 @@ async def press(app, lang: str, uid: int, parts: list) -> Reply:
         reward = parts[1] if len(parts) > 1 else ""
         if reward not in gifts.REWARDS:
             return Reply(toast=t(lang, "e.bad_usage"))
-        d = {"type": reward, "step": "amount", "amount": None, "uses": None, "nonce": secrets.token_hex(4), "exp": core.now() + GIFT_TTL}
+        if reward == "item":                                            # an item code is its own flow: category, template, quantity, quality, brand, players, review (giftflow.py)
+            return giftflow.start(app, lang, uid)
+        d = {"type": reward, "step": "amount", "item": None, "amount": None, "uses": None, "nonce": secrets.token_hex(4), "exp": core.now() + GIFT_TTL}
         app.gift_drafts[uid] = d
         _gift_arm(app, uid, GIFT_AMOUNT)
         return _gift_ask_amount(lang, uid, d, True)
+    if sub in ("gc", "gi", "gp", "gn", "gb", "gs", "gk", "gq", "gr"):       # the item flow's buttons (each only acts on the step the draft is in)
+        return await giftflow.press(app, lang, uid, sub, parts)
     if sub == "gx":                                                     # cancel: nothing was stored, so nothing needs undoing
         _gift_end(app, uid)
         return main(app, lang, uid, t(lang, "gift.cancelled"), edit=True)

@@ -13,7 +13,8 @@ Money
     cash ledger rows are written in the SAME transaction (`cash.apply`, UNIQUE per (player, kind, task id)). A repeated or concurrent
     completion matches nothing, so it can never pay twice. Amounts are never read from a button or from typed text: a button carries only
     the task id (and, for municipal offers, the kind and the offer round), and everything else is recomputed from saved state. Jobs pay
-    LIFE CASH only (never stock money) and touch no stock level, XP, skill or portfolio.
+    LIFE CASH only (never stock money) and touch no stock level or portfolio. Since v0.211 a COMPLETED McDonald's shift also grants character XP
+    (source `job:mcd`) and McDonald's skill work (skills.py), each once per shift (the reference is the task id), in the same transaction as the wage.
 
 The jobs
     * Snapp: rental car from the start. Each ride has a rental fee that is shown before the ride, is charged ONCE when the ride ends and is
@@ -33,11 +34,13 @@ import json
 import sqlite3
 from dataclasses import dataclass
 
-from . import cash, config as C, core, presence
+from . import cash, charxp, config as C, core, presence, skills
 from .core import GameError
 
 SNAPP, MCD, MUNI = "snapp", "mcd", "muni"
-JOB_IDS = (SNAPP, MCD, MUNI)
+COTTON, TAILOR = "cotton", "tailor"            # v0.211: the cotton job (textile.py) and a tailor's order a player works on in person (tailor.py: not on the board, started from the branch)
+JOB_IDS = (SNAPP, MCD, MUNI, COTTON)
+HOLD_JOBS = (MCD, COTTON, TAILOR)               # jobs that keep the worker at their place until the work is done
 MUNI_KINDS = ("sweep", "waste", "green")
 PASSENGERS = 8                       # how many passenger names the texts have (snapp.pax.0 ... 7)
 CAR_MODEL = "pride"                  # v0.18.1: the rental car is a Saipa Pride, whatever the ride
@@ -57,7 +60,7 @@ class JobDef:
 
 def defs() -> dict:
     """The job table. Built on demand so the cooldowns follow the configuration."""
-    return {SNAPP: JobDef(SNAPP, True, C.SNAPP_COOLDOWN), MCD: JobDef(MCD, True, 0), MUNI: JobDef(MUNI, True, C.MUNI_COOLDOWN)}
+    return {SNAPP: JobDef(SNAPP, True, C.SNAPP_COOLDOWN), MCD: JobDef(MCD, True, 0), MUNI: JobDef(MUNI, True, C.MUNI_COOLDOWN), COTTON: JobDef(COTTON, True, 0), TAILOR: JobDef(TAILOR, True, 0)}
 
 
 # =====================================================================================================================
@@ -172,6 +175,8 @@ def cancel(db, uid: int, tid: int, now: int | None = None) -> bool:
             return False
         if t["job"] == MCD:
             raise GameError("job_nocancel")
+        if t["job"] == TAILOR:
+            raise GameError("job_nocancel")                                   # a tailor's order is the branch's: it is cancelled there, with its materials already used
         if not _stop(db, uid, tid, None, now):
             return False
         if t["job"] == SNAPP and t["stage"] in ("to_pickup", "to_dest"):
@@ -214,16 +219,24 @@ def snapp_fare(dist: float) -> int:
     return C.SNAPP_BASE_FARE_CENTS + (C.SNAPP_PER_100_CENTS * d) // 100
 
 
-def snapp_tip(seed, uid: int, tid: int) -> int:
+def snapp_tip(seed, uid: int, tid: int, style_bps: int = 0) -> int:
     """The passenger's tip in cents, 0..SNAPP_TIP_MAX_CENTS: a hash of the city, the driver and the ride, so it is fixed by the saved ride
-    (repeating the completion can never re-roll it) and cannot depend on anything the player sends."""
+    (repeating the completion can never re-roll it) and cannot depend on anything the player sends.
+    `style_bps` (v0.211, from the outfit rating SAVED with the ride, `style.tip_bonus_bps`) adds that many basis points to the chance: a ride that tips without it still tips with it (the extra chance is
+    only taken from the rides that would not have tipped), so a good outfit never costs anybody a tip, and the base chance and every amount are unchanged for a bonus of 0."""
     num, den = C.SNAPP_TIP_ODDS
     if C.SNAPP_TIP_MAX_CENTS < 1 or den < 1:
         return 0
     h = _h("snapp-tip", seed, uid, tid)
-    if h % den >= num:
+    if h % den < num:
+        return 1 + (h // den) % C.SNAPP_TIP_MAX_CENTS
+    miss = 10000 - num * 10000 // den                                                # the share of rides that would not tip
+    if style_bps <= 0 or miss <= 0:
         return 0
-    return 1 + (h // den) % C.SNAPP_TIP_MAX_CENTS
+    h2 = _h("snapp-tip-style", seed, uid, tid)
+    if h2 % 10000 >= min(10000, style_bps * 10000 // miss):
+        return 0
+    return 1 + (h2 // 10000) % C.SNAPP_TIP_MAX_CENTS
 
 
 def plan_ride(city, uid: int, pos, serial: int):
@@ -283,6 +296,10 @@ def snapp_request(db, city, uid: int, now: int | None = None):
             raise GameError("job_noride")
         pick, dest, d1, d2, pax = plan
         data = {"pickup": pick.id, "dest": dest.id, "d1": int(round(d1)), "d2": int(round(d2)), "pax": pax, "car": car_for(city.base["seed"], uid, serial)}
+        from . import style
+        pts = style.rating(db, uid)["points"]
+        if pts > 0:
+            data["style"] = pts                                                      # the outfit the passenger sees; saved with the ride, so the tip is fixed by it
         tid = _open(db, uid, city.id, SNAPP, stage="assigned", data=data, reward=snapp_fare(d2), cost=fee, now=now)
         return get_task(db, tid, uid)
 
@@ -360,7 +377,8 @@ def snapp_settle(db, city, uid: int, tid: int, now: int | None = None):
     st = presence.stand(db, city, uid, now)
     if st.trip is not None or st.row["at_place"] != d.get("dest"):
         return None
-    fare, tip = int(t["reward"]), snapp_tip(city.base["seed"], uid, tid)
+    from . import style
+    fare, tip = int(t["reward"]), snapp_tip(city.base["seed"], uid, tid, style.tip_bonus_bps(int(d.get("style", 0) or 0)))
     fee = min(int(t["cost"]), fare + tip)                                       # a ride never costs the driver money (see config invariants)
     receipt = {"job": SNAPP, "fare": fare, "tip": tip, "fee": fee, "net": fare + tip - fee, "d2": d.get("d2"), "pax": d.get("pax"),
                "pickup": d.get("pickup"), "dest": d.get("dest"), "car": car_of(t)}
@@ -373,9 +391,20 @@ def snapp_settle(db, city, uid: int, tid: int, now: int | None = None):
 # =====================================================================================================================
 #                                                     McDonald's
 # =====================================================================================================================
+def mcd_terms(db, uid: int) -> dict:
+    """What a shift is worth to THIS player right now: {"level", "title", "wage" (cents), "seconds", "wage_bps", "cut_bps"}. The McDonald's skill modestly raises the wage and shortens the
+    shift (linear in the level, whole basis points, rounded down so the skill can never pay more than the configured maximum). Level 0 is exactly the base wage and length."""
+    lvl = skills.level_of(db, uid, "mcdonalds")
+    wage_bps = skills.bonus_bps(lvl, C.MCD_WAGE_BONUS_BPS_MAX)
+    cut_bps = skills.bonus_bps(lvl, C.MCD_SHIFT_CUT_BPS_MAX)
+    return {"level": lvl, "title": skills.title_id(lvl), "wage_bps": wage_bps, "cut_bps": cut_bps,
+            "wage": C.MCD_WAGE_CENTS * (10000 + wage_bps) // 10000, "seconds": max(60, C.MCD_SHIFT_SECONDS * (10000 - cut_bps) // 10000)}
+
+
 def mcd_start(db, city, uid: int, now: int | None = None) -> tuple:
-    """Start the 8-hour shift. (task, True) when started; (task, False) when the player already has THIS shift (a repeated press changes
-    nothing). The player must be standing at the city's McDonald's. Raises GameError: job_nomcd, job_busy, job_far."""
+    """Start the shift. (task, True) when started; (task, False) when the player already has THIS shift (a repeated press changes
+    nothing). The player must be standing at the city's McDonald's. The wage and the length are fixed NOW from the player's skill level and saved in the task, so what the
+    confirmation screen showed is what the shift pays and a later level-up changes nothing about a shift in progress. Raises GameError: job_nomcd, job_busy, job_far."""
     now = core.now() if now is None else now
     with db.tx():
         mid = city.mcd_id
@@ -388,7 +417,8 @@ def mcd_start(db, city, uid: int, now: int | None = None) -> tuple:
         st = presence.stand(db, city, uid, now)
         if st.trip is not None or st.row["at_place"] != mid:
             raise GameError("job_far")
-        tid = _open(db, uid, city.id, MCD, stage="shift", data={"place": mid}, reward=C.MCD_WAGE_CENTS, now=now, started=now, due=now + C.MCD_SHIFT_SECONDS)
+        terms = mcd_terms(db, uid)
+        tid = _open(db, uid, city.id, MCD, stage="shift", data={"place": mid, "lvl": terms["level"]}, reward=terms["wage"], now=now, started=now, due=now + terms["seconds"])
         return get_task(db, tid, uid), True
 
 
@@ -417,9 +447,24 @@ def mcd_claim(db, uid: int, tid: int, now: int | None = None) -> dict:
             raise GameError("job_notready", secs=max(1, (t["due_at"] or now) - now))
         wage = int(t["reward"])
         try:
-            return _close(db, uid, tid, "shift", [("mcd_wage", wage)], {"job": MCD, "wage": wage, "started": t["started_at"], "due": t["due_at"]}, now)
+            rc = _close(db, uid, tid, "shift", [("mcd_wage", wage)], {"job": MCD, "wage": wage, "started": t["started_at"], "due": t["due_at"]}, now)
         except _Stale:
             raise GameError("job_claimed")
+        rc.update(_shift_progress(db, uid, tid, now))
+        return rc
+
+
+def _shift_progress(db, uid: int, tid: int, now: int) -> dict:
+    """The progression of ONE completed shift: character XP and a whole unit of McDonald's skill work, each once per (source, shift id): the claim that paid the wage is the only caller and
+    it runs once per shift, and even a second call would add nothing (the unique references). A shift saved before v0.211 earns the same. Returns {"xp", "level_from", "level_to"} for the screen
+    (zero XP and equal levels when this shift was already counted)."""
+    out = {"xp": 0, "level_from": skills.level_of(db, uid, "mcdonalds"), "level_to": skills.level_of(db, uid, "mcdonalds")}
+    if charxp.get(db, uid) is not None and C.MCD_XP > 0 and charxp.grant(db, uid, C.MCD_XP, "job:mcd", str(tid), now) is not None:
+        out["xp"] = C.MCD_XP
+    moved = skills.grant_work(db, uid, "mcdonalds", 1000, "job:mcd", str(tid), now)
+    if moved is not None:
+        out["level_from"], out["level_to"] = moved
+    return out
 
 
 def notify_ready(db, now: int | None = None) -> int:
@@ -558,11 +603,11 @@ def sync(db, city, uid: int, now: int | None = None) -> dict | None:
 
 
 def shift_hold(db, uid: int, now: int | None = None):
-    """v0.20 fix. While a McDonald's shift is RUNNING (open and not yet due, by the server clock) the worker stays at work: this returns `(place id, seconds left)`, else None.
-    A shift that is due but not collected no longer holds anybody (the work is done); neither does any other job. `presence.start_trip` asks it before it plans any walk."""
+    """v0.20 fix. While a timed job (a McDonald's shift, a batch of cotton work, a tailor's order) is RUNNING (open and not yet due, by the server clock) the worker stays at work: this returns
+    `(place id, seconds left)`, else None. Work that is due but not collected no longer holds anybody (it is done); neither does any other job. `presence.start_trip` asks it before it plans any walk."""
     now = core.now() if now is None else now
     t = current(db, uid)
-    if t is None or shift_state(t, now) != "working":
+    if t is None or t["job"] not in HOLD_JOBS or t["state"] != "open" or t["due_at"] is None or t["due_at"] <= now:
         return None
     return data_of(t).get("place"), max(1, int(t["due_at"]) - now)
 

@@ -54,7 +54,9 @@ The whole game is one SQLite file (`hypemarket.db`) — **back it up** (copy it 
 | City | `مپ` — your character's persistent city map (v0.15; since v0.19 a character lives in one city whatever group it is typed in, section 19) · `مپ P14`, `مپ L1`, `مپ D2` inspect one parcel, public place or district and mark it on the map (v0.16) · **v0.17: the map has buttons** (you, the people near you, places, empty lots, 🚶 walking along the roads), **every city has a casino** (v0.18.1: blackjack for cash, see section 17), and the buttons only obey the player who sent `مپ` · nothing can be bought or built yet · sections 12, 14 and 15 |
 | Cities & travel | **v0.20:** every city has a permanent numeric ID · `شهرها` lists them · `سفر 3` sets off for city 3: a real **10-minute** journey (`INTERCITY_TRAVEL_MINUTES`) that survives restarts and offline time, closes the map / jobs / casino until you arrive, and never changes your birthplace · section 20 |
 | Character & ID card | **v0.20:** `شخصیت` opens the character hub (ID card, details, appearance, genetics, personal info, progress); `کارت ملی` shows the two-sided national ID card as **text** (no pictures; everybody has the same blank «guest» photo) · buttons in `منو` · section 20 |
-| Gift codes | **v0.20:** an admin makes a code in `/admin` → `🎁 ساخت گیفت کارت` (stock money, life cash or character XP, a limit of different players); a player types `کد هدیه HM-XXXX-XXXX-XXXX`, once per player, atomically · section 20 |
+| Gift codes | **v0.20:** an admin makes a code in `/admin` → `🎁 ساخت گیفت کارت` (stock money, life cash or character XP, a limit of different players); a player types `کد هدیه HM-XXXX-XXXX-XXXX`, once per player, atomically · **v0.21:** a code can also give an **item** (picked from the catalog, a quantity per player) that lands in the player's bag · sections 20 and 21 |
+| Business & fashion | **v0.211:** `کسب‌وکار` / `املاک` — buy a **commercial property** on the map (standing at its door), fit it for retail / production, register a **brand** (NIKE, BALENCIAGA, GIVENCHY, LOUIS VUITTON; one owner each), open **branches** with their own till, farm **cotton** (a fourth job) into real **fabric**, **tailor** clothes (1–5★, commercial max 4★, quality = the weakest of four factors), stock a **warehouse** and **display**, sell to players with an **accountant** or the owner's approval, hire staff on contracts, buy upgrades, read profit-and-loss reports · **skills 0–1000** · **Style Rating** from what you wear · nothing is pre-made · section 22 |
+| Inventory & items | **v0.21:** `کوله‌پشتی` (`inventory`) opens your bag: total items, categories, an item's details, **equipment** with five slots (headwear, upper body, lower body, footwear, accessory); one item per slot, a replaced item returns to the bag; all text with inline buttons, a button in `منو` and in `شخصیت`; the catalog is data (`items.py`) and items come from item gift codes only (no shop, no trade yet) · section 21 |
 | Life cash & jobs | **v0.18:** a second balance, `پول نقد` ($, $100 at the start), next to stock money · `صرافی` turns stock money into cash, **one way only** (v0.18.2), at a fixed 1,000 🪙 = $5 · `مشاغل`: Snapp rides, McDonald's shifts, City Hall errands, a compact text list (v0.18.2: only route maps are pictures) · greetings and hugs are buttons under `📍 اطراف من` · see sections 16, 17 and 18 |
 | Guidance | `راهنما` is a menu: starter guide (a checklist that ticks itself off), all commands, and how the game works · quests: a starter checklist, 3 daily and 3 weekly quests with automatic rewards |
 | Telegram | inline buttons everywhere · price alerts by DM · charts · Stars shop (badges, season pass, extra slot, spotlight) · live market board per group (one message the bot keeps editing) |
@@ -704,3 +706,169 @@ Tested against a simulated Telegram only (no real Telegram client). The card and
 ### Files
 
 New: `intercity.py`, `travelui.py`, `texts_travel.py`, `identity.py`, `idcard.py` (text), `charhub.py`, `gifts.py`, `giftui.py`, `texts_gift.py`. Changed: `db.py` (schema 12), `casino.py`, `mapui.py`, `fmt.py` (Jalali dates), `gamecal.py`, `config.py`, `adminpanel.py`, `handlers.py`, `workui.py`, `presence.py` and `work.py` (the shift hold), `interact.py`, `character.py`, `jobs.py`, `views.py`, `sections.py`, `docs.py`, `texts.py`, `texts_char.py`, `texts_map.py`, `texts_life.py`.
+
+## 21. v0.21 — Inventory and items (on top of v0.20)
+
+**What changed for players.**
+
+1. **`کوله‌پشتی`** (also `inventory` / `backpack`, `/inventory`, the last row of `منو`, and `🎒 کوله‌پشتی` in the `شخصیت` hub) opens the bag: the total number of items and kinds, how many places are used, how many slots are worn, and one button per **category** with its count. An empty bag says so and says where items come from. Everything is a text message with inline buttons: **no picture, no web page**. A character that has not finished the set-up is sent to the set-up first, like the other character features.
+2. **Categories** (a category is only a sort key and a label): clothing, footwear, accessories, food and drinks, personal items, gifts, miscellaneous. A category screen lists the items six to a page (`INV_PAGE_SIZE`) with ◀️ / ▶️ and a way back; an item screen shows its Persian name (and the English name when it has one), category, description, how many you own, the largest stack, where it can be worn, whether one is worn now, and when and how you first got it.
+3. **Equipment** (`🎽 تجهیزات`): five slots — **headwear, upper body, lower body, footwear, accessory** — each holds **one** item. `🎽 پوشیدن` on an item puts it on; if the slot was taken the old item **goes back to the bag** and the message says so; `↩️ درآوردن` takes it off. A worn item is not in the bag's counts (it is shown under equipment) and what you wear is saved: it survives a restart.
+4. **Use** (`✨ استفاده`): the button appears **only for an item whose effect has a handler registered** (`items.register_effect`). The game registers none in v0.21 (hunger, thirst, health and the like do not exist yet and were not invented), so no item shows a Use button today; the framework, its transaction and its tests are in place for the system that will need it.
+5. **Item gift codes.** In `/admin` → `🎁 ساخت گیفت کارت` there is a fourth reward, **🎒 آیتم**: the admin picks the item from a paged list of the catalog, types the quantity per player (at most `GIFT_MAX_ITEM_QTY` = 99) and how many different players may use the code, confirms, and gets the usual code. A player types `کد هدیه <code>` and the item goes into his bag. The three older rewards are unchanged.
+
+### The model in one place
+
+| Thing | Where it lives | Rules |
+|---|---|---|
+| **Item definition** (the catalog) | `items.py`, **in code** | Unique id (`^[a-z][a-z0-9_]{2,23}$`), Persian name, optional English name, descriptions, category, `stackable` / `max_stack`, `usable` + `effect`, `equippable` + `slot`, `droppable`, `transferable`, icon. Checked when registered: a bad definition fails at import, never in front of a player. 7 categories, 5 slots and 17 starter items ship with it. |
+| **What a player owns** | `item_inventory` | One row per **stack**: owner, item id, quantity ≥ 1, acquired-at time, source, optional item-specific `data` (JSON). A stackable item piles up to its `max_stack` per row (a full stack starts a new row); a non-stackable one is one row of quantity 1 each. A trigger forbids changing a stack's owner or item. |
+| **What a player wears** | `item_equipment` | Primary key `(user_id, slot)`: **one item per slot** by construction. Wearing moves one unit out of the bag into the slot; taking off moves it back. |
+| **Ledger** | `item_log` | Append-only (update and delete are refused by triggers): every grant (`delta > 0`) and removal (`delta < 0`) with its source and reference. Two partial unique indexes on `(user, item, source, ref)` make a **repeated callback, retry or race unable to give or take the same thing twice**. |
+| **Item gift** | `gift_codes.item_id`, `gift_redemptions` | The code names the item; the redemption row is the once-per-player proof, the ledger row (source `gift`, reference = code) is the second one. |
+| **Rules** | `inventory.py` | `give`, `take`, `equip`, `unequip`, `use`, `audit`; ownership is always `WHERE user_id = ?`. |
+| **Screens** | `invui.py`, `texts_inv.py` | Buttons are `iv:<action>:<arguments>:<player id>`; `iv` is a bound prefix, so another player's press is refused before anything runs, and a stack id is looked up with the presser's id as well (a forged button reaches nobody's items). |
+
+### Rules that hold everywhere
+
+* **No negative or zero quantity**: `CHECK(quantity >= 1)`; a stack that reaches zero is deleted (its history stays in the ledger).
+* **All-or-nothing grants.** `give` puts the **whole** quantity into the bag or nothing: a full bag (`INV_MAX_STACKS` = 200 stacks), an unknown item or an unknown player raise a refusal with a Persian-worded message and change nothing; a quantity outside 1 … `INV_MAX_GIVE` (999) is a programming error (`ValueError`) that no screen can send.
+* **Transactions.** Every change runs in one transaction; when the caller already holds one, a SQLite **savepoint** (`Database.savepoint()`) makes the inventory step atomic inside it, so a gift code whose item cannot be given leaves **no place used** and no row behind.
+* **Stale and duplicate buttons.** Wearing is applied to the current state (the button carries the stack id; a stack that is gone says «این آیتم دیگه توی کوله‌پشتیت نیست» and redraws the screen); using carries the quantity the button was drawn with, so a second press of the same button is refused; a repeated press of a screen only redraws it.
+* **Equip acts on the oldest stack** of an item; a stack keeps its own acquisition time and source (two grants that merge into one stack keep the first one's).
+* **Unknown items.** An item that is in a database but no longer in the catalog is still shown (as an unknown item, under miscellaneous) and can be neither used nor worn; nothing is ever deleted because a definition went away.
+
+### Adding an item, a category or a slot (no other file changes)
+
+```python
+from hypemarket import items
+items.register_category("tools", "ابزار", "Tools", "🔧")
+items.register_slot("back", "پشت", "Back", "🎒")
+items.register_item(id="flashlight", name_fa="چراغ‌قوه", name_en="Flashlight", category="tools",
+                    description_fa="یه چراغ‌قوه‌ی کوچک.", stackable=False)
+items.register_item(id="bandage", name_fa="باند", category="tools", stackable=True, max_stack=10, usable=True, effect="heal_small")
+items.register_effect("heal_small", lambda db, uid, item, now: {"fa": "حالت بهتر شد.", "en": "You feel better."})   # only now does «✨ استفاده» appear for the bandage
+```
+
+The inventory screens, the gift-code picker and the tests list whatever is registered. Give an item from code with `inventory.give(db, uid, "flashlight", 1, source="quest", ref="quest-7")` (the same `source` + `ref` never gives twice).
+
+### Database
+
+**Schema 13**, with `MIGRATIONS[13]`, run once when a v0.20 database is opened (in one transaction; a failure leaves schema 12 intact so it can be retried):
+
+* new tables `item_inventory`, `item_equipment`, `item_log`, their indexes and triggers (purely additive);
+* **`gift_codes` is rebuilt** with one new column `item_id` and the widened `reward_type` CHECK (SQLite cannot change a CHECK in place). The rebuild copies every row in its original order, **keeps every code, amount, limit, counter and redemption exactly as it was**, and recreates the three protection triggers. It was verified on a real v12 database created by the v0.20 code, has a rollback test, and a test that a migrated database has exactly the tables, indexes and triggers of a fresh one.
+
+No player, balance, ledger, city, character, citizen ID or gene is touched. A backup of a v0.20 database restores as before (`restore.py` only copies the file) and is migrated the first time the bot opens it.
+
+### Configuration (code-level constants in `config.py`; no new `.env` variable)
+
+`INV_MAX_STACKS` = 200 (stacks per bag), `INV_MAX_GIVE` = 999 (one grant), `INV_PAGE_SIZE` = 6 (items per page), `GIFT_MAX_ITEM_QTY` = 99 (per redeemer of an item code).
+
+### Not in this version, on purpose
+
+No shop, marketplace or trading; no gym, hunger, thirst or health; no new jobs; no way to drop or hand an item to another player (the `droppable` / `transferable` flags are stored in the definitions for the systems that will need them); **no item effect is registered**, so nothing can be used yet; no pictures. Right now the only way an item gets into a bag is an **item gift code** (or code calling `inventory.give`). Worn items have no gameplay effect yet and do not change the ID card or the appearance.
+
+### Things to check by hand in Telegram
+
+1. `/admin` → `🎁 ساخت گیفت کارت` → `🎒 آیتم`: page through the list, pick an item, type a quantity and a limit, confirm; redeem the code from a second account (in a group and in the private chat) and then once more.
+2. `کوله‌پشتی` from `منو`, from `شخصیت` and by typing it: look at the Persian lines (half-spaces, right-to-left order of the icons and numbers), open every category and an item, go back with every back button.
+3. Wear a T-shirt, then a hoodie: the T-shirt must return to the bag and the message must say so; take the hoodie off; restart the bot and check what is worn is still worn.
+4. Press the same wear / take-off button twice, and a button from an old message; press another player's inventory button (it must be refused).
+5. Fill the bag past `INV_MAX_STACKS` (lower it for the test) and redeem an item code: the refusal must say the bag is full and the code must still be usable later.
+
+### Honest limits
+
+Tested against a simulated Telegram only (no real Telegram client was used). Item names and descriptions are placeholders written for the starter catalog, and the starter items have no gameplay effect. An item's **English name is shown only on the Persian item screen** (below the Persian name); the English screens use the English name when there is one and the Persian name otherwise. The capacity is counted in stacks, not in weight. There is no per-slot rule beyond «one item per slot» (no sets, no durability, no sizes).
+
+### Files
+
+New: `items.py` (the catalog), `inventory.py` (rules), `invui.py` (screens), `texts_inv.py`. Changed: `db.py` (schema 13, `Database.savepoint`), `config.py`, `gifts.py`, `giftui.py`, `adminpanel.py`, `texts_gift.py`, `handlers.py`, `views.py` (menu), `sections.py`, `charhub.py` (hub button), `docs.py` (help page), `texts.py`.
+
+## 22. v0.211 — Property, the fashion industry and player-run businesses (on top of v0.21)
+
+**What changed for players.** A player can now **buy a commercial property on the city map, register a brand, open a branch, make clothes from fabric he farmed himself (or bought from other players), stock a shop and sell to other players** — with employees, an accountant who makes sales automatic, upgrades that really change something, reputation and profit-and-loss reports. **Nothing is pre-made**: there is no property that belongs to anybody, no brand that is registered, no product or fabric in any shop, no demo business. Everything starts empty and every number is created by what players do.
+
+1. **`کسب‌وکار`** (`business`, `/business`, the menu) is the hub: properties near you, my properties, brands, my branches, shops here, the fabric ad board, the cotton job, my contracts, reports, reputation and style. **`املاک`** (`property`, `/property`) opens the properties for sale nearest to the place the **server** knows you stand at. Text and inline buttons; a few small **retro pixel-art** pictures (a «for sale» lot, a storefront that follows its sign upgrade) — all drawn from small tables in `pixelart.py`, original art, no logo or picture of any real brand.
+2. **Property.** Every vacant lot of the saved city whose zone has a rate is a possible commercial property ($250 – $50,000, from area, zone, closeness to the centre and main-road frontage; five tiers: kiosk, small, medium, large, flagship — each fixes warehouse and display capacity, employee and equipment slots and the highest product quality). Inspecting and buying need you to **stand at its door** (`BIZ_NEAR_UNITS`, decided on the server from the saved position: the buttons only name the lot); a lot far away offers «🚶 walk there». The property starts as an **empty shell**: it must be **fitted** for `retail`, `production` or `both` (only what its zone permits) for a fee, and **converting** it later costs three times as much on purpose. Two buyers racing for one lot cannot both get it (guarded update), a failed purchase charges nothing, and a repeated press pays once.
+3. **Brands.** `NIKE`, `BALENCIAGA`, `GIVENCHY` and `LOUIS VUITTON` (env `BRAND_NAMES` replaces the list; no code change). A brand has **one owner in the whole game, enforced by the database** (the primary key is the brand key: the loser of a race fails and the fee is rolled back). Registering costs $1,000 and gives **nothing else**; one player owns at most one brand (`BRAND_MAX_PER_PLAYER`). **Brand, property and branch are three separate things.** A brand's **headquarters is the city of its first active store** (the oldest open retail branch; it is worked out, never stored, so it follows closings by itself) and the **commercial capital** is the city that is headquarters of the most different brands (ties keep the current one).
+4. **Branches.** A branch = one brand at one fitted property (at most one open branch per property; numbered per brand and city: «NIKE · Tehran #2»). Every branch has its **own till** (money moves only through `till_apply`, one append-only ledger row each, never below zero) and its own warehouse, display, staff, upgrades and report. `fund` / `withdraw` are the only places money crosses between the owner's cash and the till. **Managers** are delegated by a contract with explicit permissions (`stock`, `produce`, `spend`, `approve`, `upgrade`, `ads`); `hire`, the brand itself, closing the branch, taking money out for himself and taking goods out stay with the owner.
+5. **Fabric and the cotton job.** The fourth entry of `مشاغل` is the **cotton job** at the city's park (the single park parcel; the map shows a cotton pin on it). You pick a **grade 1–5★** (a higher grade needs a higher **Textile** skill and takes much longer); the terms are fixed when the batch **starts** and saved, the fabric exists only when the server clock says it is done **and** you collect it (a full bag leaves the batch waiting). The **fabric** is a real item with a quality. It can be kept, sold to the game at a fixed price per quality (`FABRIC_GAME_CENTS`), handed to another business through an ad, or used in tailoring.
+6. **Material purchase ads.** A branch with a workshop posts «I buy fabric of ≥ N★ at $X, up to Q pieces, for T hours». The **whole budget is reserved from the till at once** (wages owed stay reserved: they cannot go into an ad), unused money returns when the ad ends or expires (`bizjobs` sweeps it). Filling an ad is one transaction: the guarded remaining quantity, the seller's fabric out of **his** bag, his cash in, the fabric into the branch warehouse, one `ad_fills` row; two sellers can never fill the same pieces, and the owner or his staff can never fill their own ad.
+7. **Tailoring.** A real-time order at a production-fitted branch with a sewing machine (an upgrade), the recipe's equipment, enough fabric in the warehouse and a worker whose **Tailoring skill** reaches the recipe. **Quality is not luck**: it is the **lowest of four factors** — fabric stars, the stars the worker's skill allows, the best machine's stars and the property's highest quality (never above **4★** for a commercial property, also held by the database; 5★ exists only for gifted items). Time and material saved by skill are fixed when the order starts; the fabric leaves the warehouse at the start; the pieces enter the warehouse **once** when it is collected (guarded update), with their quality, brand and a **production-history id** (the factors, the worker and the times are saved in the order). The worker is the owner, a manager, a production employee (standing at the property, using his one job slot) or a **bot production worker** (fixed performance, no skill, no XP).
+8. **Warehouse, display and prices.** Goods in the **warehouse are not for sale**; a customer sees only the **display** (a slot holds 10 pieces of one variant). Per variant the owner sets a price (none = not for sale; at most 20× the game's own value), a display target, a warehouse reserve, whether the warehouse refills the display, and — **owner only** — whether the **surplus is bought by the game** at 45 % of the game's own value of the piece (never of the owner's price). Nothing is ever bought back unless the owner switched it on, every buyback is logged, and it is always worth less than selling the fabric itself.
+9. **Selling to customers.** A customer must be **physically near** the shop. Opening the confirm screen makes a **quote** (price and quantity fixed, valid 5 minutes); confirming is one transaction — display stock, buyer's bag, buyer's cash, the till, reputation, the accountant's progress — and a second confirm finds the order done. **With an accountant (player or bot) the sale completes by itself** while the owner is offline, up to that accountant's limit (a bot: $100; a player: grows with the Accounting skill); a self-checkout upgrade covers small purchases with no accountant; otherwise the order **waits for approval** (10 minutes; the owner and anybody with `approve` get a DM) and nothing is taken from the customer meanwhile. Owners, managers and staff can never buy from their own branch.
+10. **Staff, contracts and payroll.** The owner offers a contract — role (manager / accountant / warehouse / production / sales), **fixed pay per day or a share of recorded sales** (≤ 30 % each, ≤ 50 % together), and a manager's permissions — to a player **standing near him** (the list is the server's own `presence.nearby`); the player **accepts or declines** in `قراردادهای من` and gets a DM for a new offer; terms can never be edited behind anybody's back (a different deal is a new contract). A **bot** employee (never a manager) is hired outright and its wage is a **sink** the game takes. Everything owed comes from **recorded figures** (fixed wages by the server clock; a percentage of the branch's `sale` rows); `settle` pays from the till as far as it holds and **reserves** what it cannot; the periodic tick settles every few hours, an employee can ask any time, and a branch with wages it cannot pay cannot close.
+11. **Upgrades** (a configurable catalog in `upgrades.py`; each is read by the system it belongs to): shelving and racks (capacity), sewing machines (speed and machine quality) and a cutting table, sign and shop window (rank in the directory), cameras (reputation per sale), self-checkout, staff room and workbench (slots). They are paid **from the branch's own till**, level by level, never removed, and the equipment ones need a free equipment slot.
+12. **Reputation** is earned only by recorded business (a completed customer sale by star, a really filled ad, a fully paid payroll), once per reference, at most 6 points per branch from one customer a day; the score only goes up and ranks the directory (`rep.directory`).
+13. **Reports.** Per branch and for all of them: income, costs by kind, wages, materials, upgrades, net profit, till and what is reserved, every figure re-added from the ledger (`audit_till`), plus the **production history** of each piece.
+14. **Skills 0–1000** (`skills.py`): McDonald's, Textile, Tailoring, Accounting, Warehouse, Production. A skill is earned **only by completed work** (a shift, ten minutes of finished cotton or tailoring, a settled sale…), once per task (a stable reference), on one curve with diminishing returns (`SKILL_CURVE_POWER` 1.8): 1000 McDonald's shifts is the long-term benchmark; titles beginner … master. A McDonald's level shortens a shift by up to 20 % and raises the wage by up to 25 % (fixed when the shift starts). Character XP stays a separate system.
+15. **Style Rating** (0–100) comes from **what you wear**, by quality, a complete outfit bonus and up to two accessories; it never depends on money. It decorates your marker on the map (nobody is ever hidden or made smaller) and raises a **Snapp** passenger's tipping chance by at most 10 points at the top tier (never lowers it for plain clothes; technical jobs and McDonald's ignore it). Four saved outfits (streetwear, casual, formal, work).
+16. **Gift codes and the default items.** The 17 starter items of v0.21 are **no longer in the catalog**. An admin builds an item gift code from **templates** (`item_templates`, empty by default: a preset of a fashion product type, or a custom item) with an optional quality (1–5★) and brand; clothing a player already owns **stays** (see Database). Item data (quality, brand) is part of the stack, so a gifted NIKE cap and a shop's NIKE cap are the same kind of item.
+17. **Map.** The overlay paints open shops and workshops with their sign colours, the lots for sale near the viewer (not all of them), the cotton site and the style marks, on a **copy** — the saved city picture is never regenerated. A place panel (`مپ P14`) shows the owner, the brand and whether it is for sale. Every button that depends on location is checked on the server; a stale one fails with a short alert.
+
+### The cycle, end to end
+
+`کسب‌وکار` → walk to a lot and buy it → fit it for **both** → register a brand → open a branch → in `مشاغل` do cotton at the park (or post an ad) → put fabric in the warehouse → order tailoring (time passes, collect) → set prices and the display target → hire an accountant (a bot costs a day's wage) → a customer walks up, confirms, and the till, stock, reputation and skills all move in one transaction → read the report.
+
+### The model in one place
+
+| Thing | Table (schema 14) | Rules |
+|---|---|---|
+| Property | `properties` | UNIQUE(world, lot); attributes saved once and frozen by a trigger; owner changes only by the guarded `WHERE owner_id IS NULL` |
+| Brand | `brands` | primary key = brand key (one owner); owner never changes, never deleted |
+| Branch, till | `branches`, `biz_ledger` | one open branch per property; ledger append-only and unique per branch, kind and reference |
+| Stock | `branch_stock`, `stock_rules`, `stock_log` | quantity ≥ 0; every change logged once; `audit` adds the log up |
+| Production | `prod_orders` | factors, time and worker saved; the pieces are made once |
+| Ads | `material_ads`, `ad_fills` | budget reserved; fills unique by reference |
+| Customers | `store_orders` | quote → done in one guarded update |
+| Staff | `contracts` | terms frozen by a trigger; accrual from recorded figures |
+| Upgrades, reputation | `branch_upgrades`, `branch_rep`, `rep_log` | level by level; each award once per reference |
+| Skills | `character_skills`, `skill_log` | work only goes up; one row per (skill, source, reference) |
+| Outfits, items | `outfits`, `item_templates`, `gift_item_data` | saved outfits; empty template list; gift data |
+| Events | `biz_events` | the business log for reports and DMs |
+
+### Rules that hold everywhere
+
+* **Server-side proximity.** Inspecting, buying, visiting a shop, hiring and the cotton job read the saved position (`presence`), never a button. A stale button of a moved or sold property fails.
+* **Idempotent money.** Every money movement is one `cash.apply` / `till_apply` row with a unique reference: a repeated callback, retry or race can never pay twice.
+* **Owner-only buttons.** `bz` and `jb` are bound prefixes: another player's press is refused before anything runs; every action re-reads the saved state.
+* **One-shot buttons carry the state they were drawn with** (an upgrade level, the number of ads made), so a second press of an old button is refused as stale.
+* **Additive migrations.** `MIGRATIONS[14]` changes no existing data (see Database).
+
+### Periodic work
+
+`bizjobs.tick` runs every 60 seconds (`business_tick` in `jobs.py`) and is safe to repeat: it closes expired ads (budget back to the till), voids expired quotes and waiting orders, closes unanswered offers (a slot and a role are free again), finishes the orders of **bot** production workers (a human's order waits for the human) and settles payroll every 6 hours. A restart or two overlapping loops change only the timing.
+
+### Database
+
+**Schema 14.** `MIGRATIONS[14]` (one transaction, safe to repeat): the 17 v0.21 starter items leave the catalog; every item id that a stack, a worn item, a ledger row or a gift code still names becomes a `legacy` row of `item_templates` (its original name, category and slot), so **nothing a player owns is deleted, renamed or made unwearable**. It also writes a short report to `kv` key `migration14` (how many stacks by source and which legacy items are in use) — **stacks whose source is not `gift` cannot be told from legitimate grants, so they are left alone and only counted**. All other new tables come from `SCHEMA` (`IF NOT EXISTS`). No player, balance, ledger, city, character, citizen ID or gene is touched; a v0.21 backup restores as before and is migrated on first open.
+
+### Configuration
+
+Code-level constants in `config.py` (the v0.211 block: skills, brands, property, textile, ads, tailoring, stock, customers, staff, reputation, style) — **no new `.env` variable except `BRAND_NAMES`** (comma-separated; default the four brands).
+
+### Not in this version, on purpose
+
+Property resale or transfer, brand transfer, moving goods between branches or cities, a residential workshop (5★), leather / rubber / metal materials (shoes, belts, chains, watches exist as products — gift them, but no recipe can make them yet), a public auction house, delivery, taxes on businesses, hunger/health, vehicles, pictures other than the pixel art above.
+
+### Things to check by hand in Telegram (none of this has been done on a real client)
+
+1. `کسب‌وکار` and `املاک`: look at Persian lines (half-spaces, right-to-left order of icons and numbers) and the pixel pictures (crisp, not blurred).
+2. Walk to a lot, buy it (a second account tries the same lot at the same moment), fit it, register a brand from two accounts at once, open a branch.
+3. Cotton at the park: start, close the bot, restart, wait out the time, collect; try a grade the skill does not allow; press a stale collect button.
+4. Post an ad, fill it from a second account, let one expire; try to fill your own.
+5. Order tailoring, restart the bot mid-order, collect; check the quality equals the lowest factor; try to order without fabric, machine or skill.
+6. Stock: warehouse → display, set price, see the shop from a second account **near and far**, buy twice (double tap), buy with an accountant, buy without one and approve from the DM.
+7. Hire a player (accept from his `قراردادهای من`) and a bot; let a day pass; check payroll, reserved wages and closing a branch.
+8. Wear clothes and compare the marker; ride Snapp in an iconic and a plain outfit.
+9. Admin: build an item gift code from a template with a quality and a brand, redeem it from two accounts.
+10. Press other players' business buttons (must be refused), buttons of a sold lot and of a closed branch.
+
+### Honest limits
+
+Tested against a **simulated Telegram only**; the pixel pictures and Persian typography have been rendered and checked in code but not seen on a phone. The balance numbers (prices, wages, durations, skill curve) are first guesses made to hold the economy together (a bot wage is a sink; the buyback and the fabric price are chosen so selling crafted stock to the game never beats selling the fabric), not tuned by play. A bot accountant's limit is $100. Offers and pending purchases are the only business **DMs**. One brand per player and `hire` for the owner only are assumptions. A closed branch stays in the books; a sold or abandoned property does not exist yet.
+
+### Files
+
+New: `estate.py`, `brands.py`, `biz.py`, `bizui.py`, `shopui.py`, `peopleui.py`, `cottonui.py`, `bizrouter.py`, `bizmap.py`, `bizjobs.py`, `pixelart.py`, `fashion.py`, `textile.py`, `tailor.py`, `stock.py`, `store.py`, `market.py`, `staff.py`, `upgrades.py`, `rep.py`, `reports.py`, `style.py`, `skills.py`, `itemtpl.py`, `legacy_items.py`, `giftflow.py`, `texts_biz.py`; tests: `tests/bizkit.py` and `tests/test_v0211_{estate,items_skills,textile,shop,ui,integration}.py`. Changed: `db.py` (schema 14), `config.py`, `items.py`, `inventory.py`, `invui.py`, `gifts.py`, `giftui.py`, `adminpanel.py`, `work.py` (McDonald's skill, Snapp style bonus, the fourth job), `workui.py`, `lifeui.py`, `jobs.py`, `mapui.py`, `worldmap.py`, `views.py`, `sections.py`, `handlers.py`, `docs.py`, `texts.py`, `texts_gift.py`, `texts_inv.py`, `texts_life.py`, `texts_map.py`, `texts_world.py`. Existing tests changed (expected, because behaviour changed on purpose; no old test was weakened to make it pass): the job-board tests in `test_life_flow.py` / `test_v0182_jobs_ui.py` (three jobs → four; the «invented numbers» guard skips the three skill lines of the McDonald's block) and `test_life_jobs.py` (a McDonald's shift now has a skill-based length and wage); the menu button count in `test_namespace.py` / `test_v021_ui.py` (12 → 13); the schema-version asserts (13 → 14, `14 in MIGRATIONS`) in `test_casino`, `test_casino_cash`, `test_exchange`, `test_life_cash`, `test_namespace`, `test_v019_character`, `test_v020_identity`, `test_v020_travel` and `test_v021_inventory`; the XP guard in `test_v019_character.py` (the five code places that grant character XP, each for completed work, are now named); the v0.21 inventory / gift / inventory-UI suites, which ask for the old starter items through the `legacy_catalog` fixture of `tests/conftest.py` because the game seeds none (and `tests/mapkit.py`, whose helper passes the database). `tests/conftest.py` also gained an autouse fixture that restores the two hook lists of the business code (permissions of a manager, things that block a property conversion) after every test: a test that emptied one used to take the real hooks away from every later test in the same process (the game code now also imports its own hook modules when it needs them, so this cannot depend on import order).

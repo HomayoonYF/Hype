@@ -42,7 +42,8 @@ def test_the_hub_opens_with_the_six_sections_and_a_way_back(h, word):
     d = identity.dossier(h.db, A)
     assert d.name in msg.text and fmt.loc(str(ch["citizen_id"]), "fa") in msg.text
     assert buttons(msg) == [(t("fa", "cg.b.card"), f"cg:card:{A}"), (t("fa", "cg.b.prof"), f"cg:prof:{A}"), (t("fa", "cg.b.look"), f"cg:look:{A}"), (t("fa", "cg.b.gene"), f"cg:gene:{A}"),
-                            (t("fa", "cg.b.pers"), f"cg:pers:{A}"), (t("fa", "cg.b.prog"), f"cg:prog:{A}"), (t("fa", "menu.back"), f"mn:menu:{A}")]
+                            (t("fa", "cg.b.pers"), f"cg:pers:{A}"), (t("fa", "cg.b.prog"), f"cg:prog:{A}"), (t("fa", "cg.b.inv"), f"iv:m:{A}"),
+                            (t("fa", "menu.back"), f"mn:menu:{A}")]
 
 
 def test_the_words_belong_to_the_hub_and_the_card_word_still_opens_the_card(h):

@@ -8,7 +8,7 @@ import logging
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramRetryAfter
 from aiogram.types import BufferedInputFile
 
-from . import achievements, analytics, backups, bots, casino, charts, config as C, exchange, intercity, salary, core, events, progress, quests, social, trading, views, work
+from . import achievements, analytics, backups, bizjobs, bots, casino, charts, config as C, exchange, intercity, salary, core, events, progress, quests, social, trading, views, work
 from .handlers import App, fit_caption, flush_outbox, send_mod_alerts
 from .texts import t
 
@@ -31,6 +31,12 @@ async def fast_tick(app: App) -> None:
 async def bot_tick(app: App) -> None:
     """Every ~30 s: the automated market traders make their small trades."""
     bots.tick(app.db)
+
+
+async def business_tick(app: App) -> None:
+    """Every ~60 s: expired ads, quotes and job offers are closed, the production bots' finished orders are collected, and every few hours the wages are paid (bizjobs.py)."""
+    bizjobs.tick(app.db)
+    await flush_outbox(app)
 
 
 async def exchange_tick(app: App) -> None:
@@ -200,6 +206,7 @@ def start_jobs(app: App) -> list:
     ]
     tasks.append(asyncio.create_task(_loop("exchange", 60, exchange_tick, app), name="exchange"))
     tasks.append(asyncio.create_task(_loop("salary", 300, salary_tick, app), name="salary"))
+    tasks.append(asyncio.create_task(_loop("business", 60, business_tick, app), name="business"))
     tasks.append(asyncio.create_task(_loop("backup", min(backups.CHECK_EVERY, backups.interval(app.settings)), backup_tick, app), name="backup"))
     if app.settings.bots:
         tasks.append(asyncio.create_task(_loop("bots", 30, bot_tick, app), name="bots"))

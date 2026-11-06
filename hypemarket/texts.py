@@ -20,6 +20,9 @@ ALIASES: dict[str, list[str]] = {
     "idcard": ["کارت ملی", "کارت‌ملی", "کارتملی", "idcard", "id card", "national id"],
     "character": ["شخصیت", "character"],
     "giftcode": ["کد هدیه", "کدهدیه", "giftcode", "gift code"],
+    "inventory": ["کوله‌پشتی", "کوله پشتی", "کولهپشتی", "inventory", "backpack"],
+    "business": ["کسب‌وکار", "کسب وکار", "کسب‌ و کار", "کسبوکار", "بیزنس", "business"],
+    "property": ["املاک", "ملک", "املاک اطراف", "property", "properties", "real estate"],
     "cash": ["پول", "پول نقد", "پول سهام", "کیف پول", "cash", "wallet"],
     "fx": ["صرافی", "currency", "fx"],
     "jobs": ["مشاغل", "شغل", "شغل‌ها", "شغل ها", "jobs"],
@@ -99,7 +102,7 @@ SOFT_EXACT = {
     "group", "index", "grouprank", "leaderboard", "top", "invite", "level", "reputation", "skills", "legacy", "rebirth",
     "news", "events", "season", "shop", "settings", "quiet", "language", "payout", "alert", "quests", "whales", "trust", "achievements", "share",
     "exchange", "earnings", "menu", "stocks", "stockhelp", "map",
-    "cash", "jobs", "snapp", "mcd", "muni", "idcard", "character",
+    "cash", "jobs", "snapp", "mcd", "muni", "idcard", "character", "inventory", "business", "property",
 }
 # ...or with arguments (validated further in handlers.soft_ok).
 SOFT_ARGS = {"buy", "sell", "price", "chart", "launch", "project", "meme", "alert", "upgrade", "cashout",
@@ -378,7 +381,7 @@ FA: dict[str, str] = {
     "help.cat_adminnote": "🔒 ویژه‌ی ادمین‌های ربات",
     "cat.start": "شروع", "cat.trade": "معامله", "cat.own": "سهام خودت", "cat.income": "درآمد", "cat.company": "شرکت", "cat.social": "گروه و رتبه", "cat.progress": "پیشرفت",
     "cat.live": "بازار زنده", "cat.safety": "اعتماد و گزارش", "cat.groupadmin": "ادمین گروه", "cat.botadmin": "ادمین ربات", "cat.city": "شهر",
-    "map.caption": "🗺 <b>{name}</b> — شهر تو\n\nاین نقشه‌ی شروع شهر توئه؛ هر شخصیت فقط توی یک شهر زندگی می‌کنه و این نقشه همیشه همینه، از هر گروهی که «مپ» بزنی.\n🏘 مسکونی · 🏬 تجاری · 🏭 صنعتی · 🏛 عمومی · 🌳 پارک\n⬜ زمین خالی: {vacant} قطعه از {parcels} قطعه برای آینده‌ی شهر\n\nℹ️ خرید زمین و ساخت‌وساز هنوز فعال نیست.",
+    "map.caption": "🗺 <b>{name}</b> — شهر تو\n\nاین نقشه‌ی شروع شهر توئه؛ هر شخصیت فقط توی یک شهر زندگی می‌کنه و این نقشه همیشه همینه، از هر گروهی که «مپ» بزنی.\n🏘 مسکونی · 🏬 تجاری · 🏭 صنعتی · 🏛 عمومی · 🌳 پارک\n⬜ زمین خالی: {vacant} قطعه از {parcels} قطعه برای آینده‌ی شهر\n\nℹ️ خرید ملک تجاری از «املاک» ممکنه؛ ساخت‌وساز هنوز فعال نیست.",
     "map.private": "🗺 نقشه توی گروه باز می‌شه. ربات رو به گروهت اضافه کن و همون‌جا بنویس «مپ»؛ شهر شخصیتت از هر گروهی همونه.",
     "map.corrupt": "⚠️ نقشه‌ی ذخیره‌شده‌ی شهر تو خراب شده و قابل نمایش نیست. به ادمین ربات خبر بده؛ شهر دست‌نخورده می‌مونه.",
     "map.failed": "⚠️ ساخت شهر این بار جواب نداد. چند لحظه بعد دوباره «مپ» رو بزن.",
@@ -756,7 +759,7 @@ EN: dict[str, str] = {
     "help.cat_adminnote": "🔒 Bot admins only",
     "cat.start": "Start", "cat.trade": "Trading", "cat.own": "Your stock", "cat.income": "Income", "cat.company": "Company", "cat.social": "Groups and ranks", "cat.progress": "Progress",
     "cat.live": "Live market", "cat.safety": "Trust and reports", "cat.groupadmin": "Group admin", "cat.botadmin": "Bot admin", "cat.city": "City",
-    "map.caption": "🗺 <b>{name}</b> — your city\n\nThis is the starting map of your city; every character lives in exactly one city and this map stays the same, whichever group you send «map» from.\n🏘 Residential · 🏬 Commercial · 🏭 Industrial · 🏛 Civic · 🌳 Parks\n⬜ Undeveloped land: {vacant} of {parcels} parcels, waiting for the city's future\n\nℹ️ Buying land and building are not available yet.",
+    "map.caption": "🗺 <b>{name}</b> — your city\n\nThis is the starting map of your city; every character lives in exactly one city and this map stays the same, whichever group you send «map» from.\n🏘 Residential · 🏬 Commercial · 🏭 Industrial · 🏛 Civic · 🌳 Parks\n⬜ Undeveloped land: {vacant} of {parcels} parcels, waiting for the city's future\n\nℹ️ Commercial properties can be bought via «Properties»; building is not available yet.",
     "map.private": "🗺 The map opens in a group. Add the bot to your group and send «map» there; your character's city is the same from every group.",
     "map.corrupt": "⚠️ The saved map of your city is damaged and can't be shown. Tell the bot admin; the city itself is left untouched.",
     "map.failed": "⚠️ Building the city didn't work this time. Send «map» again in a moment.",
@@ -907,6 +910,8 @@ from .texts_life import EN_LIFE, FA_LIFE  # noqa: E402  (life cash, the currency
 from .texts_char import EN_CHAR, FA_CHAR  # noqa: E402  (v0.19: the character set-up)
 from .texts_travel import EN_TRAVEL, FA_TRAVEL  # noqa: E402  (v0.20: the list of cities and travel between them)
 from .texts_gift import EN_GIFT, FA_GIFT  # noqa: E402  (v0.20: admin gift codes)
+from .texts_inv import EN_INV, FA_INV  # noqa: E402  (v0.21: the inventory)
+from .texts_biz import EN_BIZ, FA_BIZ  # noqa: E402  (v0.211: properties, brands, branches, shops, staff, cotton)
 
 FA.update(FA_EX)
 EN.update(EN_EX)
@@ -926,6 +931,10 @@ FA.update(FA_TRAVEL)
 EN.update(EN_TRAVEL)
 FA.update(FA_GIFT)
 EN.update(EN_GIFT)
+FA.update(FA_INV)
+EN.update(EN_INV)
+FA.update(FA_BIZ)
+EN.update(EN_BIZ)
 FA["cat.life"], EN["cat.life"] = "پول و کار", "Money and jobs"
 
 STR = {"fa": FA, "en": EN}

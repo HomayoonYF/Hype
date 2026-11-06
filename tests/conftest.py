@@ -31,3 +31,31 @@ def _every_player_has_a_finished_character(request, monkeypatch):
         return out
     monkeypatch.setattr(handlers, "_prepare", prepared)
     yield
+
+
+@pytest.fixture()
+def legacy_catalog():
+    """v0.211 seeds no item at all. The suites of v0.21 test the inventory machinery with its 17 old starter items, so they ask for them explicitly: the items are registered for one test
+    only (and taken out again), exactly as a test of any other game would register what it needs. Nothing in the game ever grants them."""
+    from hypemarket import items, legacy_items
+    added = []
+    for (iid, fa, en, cat, slot, mx, icon, dfa, den) in legacy_items.LEGACY:
+        if iid not in items.ITEMS:
+            items.register_item(id=iid, name_fa=fa, name_en=en, category=cat, equippable=slot is not None, slot=slot, stackable=mx > 1, max_stack=mx, icon=icon,
+                                description_fa=dfa, description_en=den)
+            added.append(iid)
+    yield items
+    for iid in added:
+        items.ITEMS.pop(iid, None)
+
+
+@pytest.fixture(autouse=True)
+def _keep_the_business_hooks():
+    """`biz` keeps a module-level list of permission hooks (staff.py registers the one that turns a manager's contract into permissions at import time). Several tests register their own hooks
+    and empty the list again; without this, such a test would take the REAL hook away from every test that runs after it in the same process (a manager would silently lose every permission).
+    So the list is snapshotted once the real hook is surely registered and put back after each test."""
+    from hypemarket import biz, estate, market, staff, stock, tailor  # noqa: F401  (importing them registers their hooks)
+    saved, blockers = list(biz._PERM_HOOKS), list(estate._BLOCKERS)
+    yield
+    biz._PERM_HOOKS[:] = saved
+    estate._BLOCKERS[:] = blockers                                           # the same for the list of things that keep a property from being converted

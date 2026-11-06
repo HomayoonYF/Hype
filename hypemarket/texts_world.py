@@ -18,7 +18,7 @@ FA_WORLD = {
     "wi.size": "{n}",
     "wi.density.dense": "متراکم", "wi.density.open": "باز و کم‌تراکم",
     "wi.lots": "{n} (زمین خالی {vacant} · ساخته‌شده {built})", "wi.green": "{n} قطعه",
-    "wi.foot": "ℹ️ این فقط اطلاعاته؛ خرید زمین و ساخت‌وساز هنوز فعال نیست.",
+    "wi.foot": "ℹ️ این فقط اطلاعاته؛ خرید ملک تجاری از «املاک» ممکنه؛ ساخت‌وساز هنوز فعال نیست.",
     "wi.back": "🗺 نقشه‌ی کامل: «مپ»",
     # --- errors
     "wi.unknown": "❌ شناسه‌ی <b>{id}</b> توی شهر تو پیدا نشد.\nشناسه‌ی مکان‌های عمومی زیر نقشه‌ی «مپ» نوشته شده؛ مثلاً <code>مپ {example}</code>",
@@ -44,7 +44,7 @@ EN_WORLD = {
     "wi.size": "{n}",
     "wi.density.dense": "Dense", "wi.density.open": "Open, low density",
     "wi.lots": "{n} (empty {vacant} · built {built})", "wi.green": "{n} parcels",
-    "wi.foot": "ℹ️ Information only: buying land and building are not available yet.",
+    "wi.foot": "ℹ️ Information only: commercial properties can be bought via «Properties»; building is not available yet.",
     "wi.back": "🗺 Full map: “map”",
     "wi.unknown": "❌ ID <b>{id}</b> was not found in your city.\nThe public places' IDs are listed under the «map» picture; for example <code>map {example}</code>",
     "wi.bad": "🔎 That is not a valid ID. A parcel looks like <code>map P14</code>, a public place like <code>map L1</code> and a district like <code>map D2</code>.\nFor the full map just send “map”.",

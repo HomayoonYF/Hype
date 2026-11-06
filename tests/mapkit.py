@@ -16,7 +16,7 @@ def shown(h, chat, uid, lang="fa", hl=None):
     city = city_of(h, chat)
     st = presence.stand(h.db, city, uid)
     others = presence.nearby(h.db, city, uid, st.pos, st.now)
-    return worldmap.overlay(worldmap.render(city.layout, lang, hl), lang, mapui._marks(lang, city, st, others, tag_dest=hl is None))
+    return worldmap.overlay(worldmap.render(city.layout, lang, hl), lang, mapui._marks(lang, city, st, others, tag_dest=hl is None, db=h.db))
 
 
 def png(data):

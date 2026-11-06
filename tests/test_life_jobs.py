@@ -436,7 +436,7 @@ def test_the_shift_is_8_real_hours_and_saves_its_start_and_end(E):
     assert C.MCD_SHIFT_SECONDS == 8 * 3600 == 28_800
     assert (task["started_at"], task["due_at"]) == (now, now + 28_800) and task["reward"] == C.MCD_WAGE_CENTS == 1200 and task["paid"] == 0
     assert work.shift_state(task, now) == "working" and work.shift_state(task, now + 28_799) == "working" and work.shift_state(task, now + 28_800) == "ready"
-    assert work.data_of(task) == {"place": E.city.mcd_id}
+    assert work.data_of(task) == {"place": E.city.mcd_id, "lvl": 0}                                   # (v0.211: the skill level the terms were fixed at; a new player is level 0 = the base terms)
 
 
 def test_a_second_press_never_creates_a_second_shift_or_moves_the_times(E):
@@ -499,7 +499,8 @@ def test_a_new_shift_can_follow_a_collected_one(E):
     E.adv(28_800)
     work.mcd_claim(E.db, A, t1["id"], E.now[0])
     t2, started = work.mcd_start(E.db, E.city, A, E.now[0])
-    assert started and t2["id"] != t1["id"] and t2["due_at"] == E.now[0] + 28_800 and E.bal() == 11_200
+    terms = work.mcd_terms(E.db, A)                                                                  # one finished shift is a little skill: the next shift is a little shorter and pays a little more
+    assert started and t2["id"] != t1["id"] and t2["due_at"] == E.now[0] + terms["seconds"] and 28_000 < terms["seconds"] < 28_800 and t2["reward"] == terms["wage"] >= 1200 and E.bal() == 11_200
 
 
 def test_nobody_else_can_collect_my_wage_or_a_task_that_is_not_a_shift(E):

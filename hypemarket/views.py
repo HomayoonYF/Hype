@@ -478,6 +478,9 @@ def board_text(db, lang: str) -> str:
 
 def dm_text(lang: str, key: str, kw: dict) -> str:
     out = {}
+    if key in ("store_pending", "staff_offer"):                        # v0.211: the business world formats its own messages
+        from . import peopleui
+        return peopleui.dm_text(lang, key, kw)
     if key == "quest_done":
         pts = t(lang, "quests.pts", n=fmt.num(kw["points"], lang)) if kw.get("points") else ""
         return t(lang, "n.quest_done", text=quest_text(lang, kw["qid"], kw["n"]), amount=fmt.coins(kw["amount"], lang), pts=pts)
@@ -519,7 +522,7 @@ def quest_done_lines(lang: str, items: list) -> str:
 
 
 # --- the global menu, the stock section menu, the help hub ----------------------------------------------------------
-MAIN_GO = ("profile", "daily", "invite", "map", "cash", "jobs", "cities", "idcard", "character")          # global screens the main menu opens (each one is an ordinary command)
+MAIN_GO = ("profile", "daily", "invite", "map", "cash", "jobs", "cities", "idcard", "character", "inventory", "business")          # global screens the main menu opens (each one is an ordinary command)
 STOCK_GO = tuple(sorted(sections.MENU_SCREENS))   # screens a stock-menu button may open (ordinary commands, run with no arguments)
 ORIGINS = frozenset({"m"} | {cid for cid, _ in sections.STOCK_CATEGORIES})     # where a button was pressed: "m" = the stock menu, else a category
 
@@ -530,7 +533,8 @@ def main_menu(lang: str, uid: int) -> Reply:
             [(t(lang, "menu.invite"), f"mn:go:invite:{uid}"), (t(lang, "menu.map"), f"mn:go:map:{uid}")],
             [(t(lang, "menu.cash"), f"mn:go:cash:{uid}"), (t(lang, "menu.jobs"), f"mn:go:jobs:{uid}")],
             [(t(lang, "menu.cities"), f"mn:go:cities:{uid}"), (t(lang, "menu.idcard"), f"mn:go:idcard:{uid}")],
-            [(t(lang, "menu.character"), f"mn:go:character:{uid}")]]
+            [(t(lang, "menu.character"), f"mn:go:character:{uid}"), (t(lang, "menu.inventory"), f"mn:go:inventory:{uid}")],
+            [(t(lang, "menu.business"), f"mn:go:business:{uid}")]]
     return Reply(text=t(lang, "menu.title", brand=t(lang, "brand")), kb=kb(rows))
 
 

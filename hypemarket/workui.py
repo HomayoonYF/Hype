@@ -15,14 +15,14 @@ import logging
 import math
 import re
 
-from . import character, characterui, config as C, core, fmt, intercity, jobviz, mapui, presence, travelui, work, world, worldinspect, worldplaces
+from . import character, characterui, config as C, core, fmt, intercity, items, jobviz, mapui, presence, skills, travelui, work, world, worldinspect, worldplaces
 from .core import GameError
 from .texts import t
 from .views import Reply, kb
 
 log = logging.getLogger("hypemarket")
 
-EMOJI = {"snapp": "🚕", "mcd": "🍔", "muni": "🧹"}
+EMOJI = {"snapp": "🚕", "mcd": "🍔", "muni": "🧹", "cotton": "🌿", "tailor": "✂️"}
 KIND_EMOJI = {"sweep": "🧹", "waste": "🗑", "green": "🌳"}
 _ID = re.compile(r"^\d{1,12}$")
 DIV = "┄┄┄┄┄┄┄┄┄┄"                                  # the one thin divider of the job screens
@@ -146,6 +146,12 @@ def _history_lines(db, lang: str, uid: int) -> list:
     out = [t(lang, "job.hist.head")]
     for r in rows:
         rc = work.receipt_of(r)
+        if r["job"] == work.COTTON:                                        # a batch of fabric is not money: pieces and quality
+            out.append(t(lang, "job.hist.cotton", job=_name(lang, r["job"]), n=fmt.num(int(rc.get("units", 0)), lang), stars=items.stars(int(rc.get("grade", 1)))))
+            continue
+        if r["job"] == work.TAILOR:
+            out.append(t(lang, "job.hist.tailor", job=_name(lang, r["job"]), n=fmt.num(int(rc.get("pieces", 0)), lang), stars=items.stars(int(rc.get("q", 1)))))
+            continue
         amount = rc.get("net", rc.get("wage", rc.get("reward", 0)))
         out.append(t(lang, "job.hist.row", job=_name(lang, r["job"]), amount=fmt.usd(amount, lang)))
     return out
@@ -163,7 +169,11 @@ def _job_status(lang: str, db, uid: int, job: str, task, now: int, in_city: bool
             return t(lang, "job.st.mcd.working", left=fmt.dur(max(0, int(task["due_at"]) - now), lang))
         if job == work.MUNI:
             return t(lang, "job.st.muni", kind=t(lang, f"muni.kind.{task['kind']}"))
+        if job == work.COTTON:
+            return t(lang, "job.st.cotton.ready") if task["due_at"] is not None and task["due_at"] <= now else t(lang, "job.st.cotton.working", left=fmt.dur(max(0, int(task["due_at"]) - now), lang))
         return t(lang, "job.st.active", stage=_stage_text(lang, db, task, now))
+    if job == work.COTTON:                                                 # the cotton screen works in a private chat too (it needs only the saved position)
+        return t(lang, "job.st.ready")
     if not in_city:
         return t(lang, "job.st.group")
     left = work.cooldown_left(db, uid, job, now)
@@ -174,8 +184,14 @@ def _job_status(lang: str, db, uid: int, job: str, task, now: int, in_city: bool
     return t(lang, "job.st.ready")
 
 
+def _hours(seconds: int, lang: str) -> str:
+    """A shift's length in hours as it is said: 8, or 6.4 once the skill shortened it."""
+    return fmt.num(seconds // 3600, lang) if seconds % 3600 == 0 else fmt.loc(f"{seconds / 3600:.1f}", lang)
+
+
 def _entry(lang: str, db, uid: int, job: str, task, now: int, in_city: bool) -> str:
-    desc = t(lang, f"job.desc.{job}", hours=fmt.num(C.MCD_SHIFT_SECONDS // 3600, lang), wage=fmt.usd(C.MCD_WAGE_CENTS, lang))
+    terms = work.mcd_terms(db, uid)
+    desc = t(lang, f"job.desc.{job}", hours=_hours(terms["seconds"], lang), wage=fmt.usd(terms["wage"], lang))
     return t(lang, "job.entry", emoji=EMOJI[job], name=t(lang, f"job.{job}.name"), desc=desc, status=_job_status(lang, db, uid, job, task, now, in_city))
 
 
@@ -200,6 +216,7 @@ async def board(c, toast: str | None = None) -> Reply:
         lines += ["", DIV] + hist
     uid = c.uid
     rows = [[(t(lang, "job.b.snapp"), f"jb:o:snapp:{uid}"), (t(lang, "job.b.mcd"), f"jb:o:mcd:{uid}"), (t(lang, "job.b.muni"), f"jb:o:muni:{uid}")],
+            [(t(lang, "job.b.cotton"), f"jb:o:cotton:{uid}"), (t(lang, "bz.b.hub.mini"), f"bz:h:{uid}")],
             [(t(lang, "job.b.wallet"), f"cs:w:{uid}"), (t(lang, "job.b.refresh"), f"jb:h:{uid}")]]
     return R(c, "\n".join(lines), rows, toast=toast)
 
@@ -369,9 +386,19 @@ def _last_shift(c) -> str:
     return "\n\n" + t(lang, "mcd.last", start=fmt.clock(row["started_at"], lang), end=fmt.clock(row["due_at"], lang), wage=fmt.usd(row["reward"], lang))
 
 
+def _skill_line(lang: str, db, uid: int, terms: dict | None = None) -> str:
+    """The McDonald's skill in one line: title, level and what it gives now (nothing to say at level 0)."""
+    terms = terms or work.mcd_terms(db, uid)
+    line = t(lang, "mcd.skill", title=skills.title(lang, terms["level"]), level=fmt.num(terms["level"], lang), max=fmt.num(C.SKILL_MAX, lang))
+    if terms["wage_bps"] or terms["cut_bps"]:
+        line += "\n" + t(lang, "mcd.skill.perk", wage=fmt.loc(f"{terms['wage_bps'] / 100:g}", lang), cut=fmt.loc(f"{terms['cut_bps'] / 100:g}", lang))
+    return line
+
+
 def _mcd_idle(c, city, st, toast=None, alert=False) -> Reply:
     lang, uid = c.lang, c.uid
-    head = t(lang, "mcd.home", wage=fmt.usd(C.MCD_WAGE_CENTS, lang), hours=fmt.num(C.MCD_SHIFT_SECONDS // 3600, lang))
+    terms = work.mcd_terms(c.db, uid)
+    head = t(lang, "mcd.home", wage=fmt.usd(terms["wage"], lang), hours=_hours(terms["seconds"], lang)) + "\n\n" + _skill_line(lang, c.db, uid, terms)
     mid = city.mcd_id
     if mid is None:
         return R(c, head + "\n\n" + t(lang, "mcd.none"), [[(t(lang, "job.b.board"), f"jb:h:{uid}")]], toast=toast, alert=alert)
@@ -425,8 +452,9 @@ async def mcd(c, toast=None, alert=False) -> Reply:
 def _mcd_confirm(c) -> Reply:
     lang = c.lang
     now = core.now()
-    text = t(lang, "mcd.confirm", wage=fmt.usd(C.MCD_WAGE_CENTS, lang), hours=fmt.num(C.MCD_SHIFT_SECONDS // 3600, lang),
-             start=fmt.clock(now, lang), end=fmt.clock(now + C.MCD_SHIFT_SECONDS, lang))
+    terms = work.mcd_terms(c.db, c.uid)
+    text = t(lang, "mcd.confirm", wage=fmt.usd(terms["wage"], lang), hours=_hours(terms["seconds"], lang),
+             start=fmt.clock(now, lang), end=fmt.clock(now + terms["seconds"], lang))
     return R(c, text, [[(t(lang, "mcd.b.yes"), f"jb:my:{c.uid}"), (t(lang, "mcd.b.no"), f"jb:o:mcd:{c.uid}")]])
 
 
@@ -512,6 +540,9 @@ async def muni(c, toast=None, alert=False) -> Reply:
 
 
 async def open_job(c, job: str, toast=None, alert=False) -> Reply:
+    if job == work.COTTON:
+        from . import cottonui
+        return await cottonui.screen(c, toast, alert)
     return await {work.SNAPP: snapp, work.MCD: mcd, work.MUNI: muni}[job](c, toast, alert)
 
 
@@ -526,7 +557,7 @@ def _plain(text: str) -> str:
     return mapui.plain(text)
 
 
-ARGS = {"h": 0, "m": 0, "o": 1, "mc": 1, "x": 1, "sr": 0, "sd": 1, "sp": 1, "ms": 0, "my": 0, "mg": 0, "na": 2, "ng": 1, "nd": 1}      # pieces between the action and the player id
+ARGS = {"h": 0, "m": 0, "o": 1, "mc": 1, "x": 1, "sr": 0, "sd": 1, "sp": 1, "ms": 0, "my": 0, "mg": 0, "na": 2, "ng": 1, "nd": 1, "cs": 1, "cg": 0, "cc": 1, "cf": 0, "cq": 2}      # pieces between the action and the player id
 
 
 async def handle(c) -> Reply:
@@ -553,6 +584,20 @@ async def handle(c) -> Reply:
         if job not in work.JOB_IDS:
             return Reply(toast=toast("job.stale"), alert=True)
         return await open_job(c, job)
+    if act in ("cs", "cg", "cc", "cf", "cq"):                       # the cotton job (cottonui.py): its position comes from the saved presence, a private chat works too
+        from . import cottonui
+        nums = [_tid(a) for a in arg]
+        if any(n is None for n in nums):
+            return Reply(toast=toast("job.stale"), alert=True)
+        if act == "cs":
+            return await cottonui.start(c, nums[0])
+        if act == "cg":
+            return await cottonui.walk(c)
+        if act == "cc":
+            return cottonui.claim(c, nums[0])
+        if act == "cf":
+            return cottonui.fabric(c)
+        return cottonui.sell(c, nums[0], nums[1])
     try:
         city = await city_of(c)
     except NoCity as e:
@@ -563,6 +608,10 @@ async def handle(c) -> Reply:
         if rc is None:
             raise GameError("job_stale")
         text = t(lang, "mcd.claimed", wage=fmt.usd(rc["wage"], lang), balance=fmt.usd(rc["balance"], lang))
+        if rc.get("xp"):
+            text += "\n" + t(lang, "mcd.claimed.xp", xp=fmt.num(rc["xp"], lang))
+        if rc.get("level_to", 0) > rc.get("level_from", 0):
+            text += "\n" + t(lang, "mcd.claimed.skill", level=fmt.num(rc["level_to"], lang), title=skills.title(lang, rc["level_to"]))
         return R(c, text, [[(t(lang, "mcd.b.again"), f"jb:o:mcd:{uid}")], [(t(lang, "job.b.board"), f"jb:h:{uid}"), (t(lang, "job.b.wallet"), f"cs:w:{uid}")]])
     if act == "x":                                                # giving a task up works from anywhere
         tid = _tid(arg[0] if arg else None)

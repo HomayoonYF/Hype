@@ -470,6 +470,7 @@ GIFT_MAX_STOCK_COINS = 1_000_000           # stock money, whole 🪙 per redeeme
 GIFT_MAX_CASH_DOLLARS = 100_000            # life cash, whole dollars per redeemer
 GIFT_MAX_XP = 100_000                      # character XP per redeemer
 GIFT_MAX_USES = 10_000                     # how many different players may redeem one code
+GIFT_MAX_ITEM_QTY = 99                     # items per redeemer of an item gift code (v0.21)
 
 
 # --- the identity document (v0.20): nationality, languages, height, the card's validity and its issuing authority --------------------------------
@@ -513,3 +514,153 @@ def char_languages() -> tuple:
 
 def card_authority() -> str:
     return _env_code("CARD_AUTHORITY", CARD_AUTHORITY_DEFAULT)
+
+
+# --- the inventory (v0.21) ---------------------------------------------------------------------------------------------------------------
+# Sanity bounds of the bag, not game balance. items.py / inventory.py / invui.py are the only readers.
+INV_MAX_STACKS = 200                       # a player's bag holds at most this many stacks (a stack is one row: up to the item's max stack size, or one single non-stackable item)
+INV_MAX_GIVE = 999                         # the most one grant may put in a bag in one go
+INV_PAGE_SIZE = 6                          # items per page of a category or slot screen (one button each)
+
+
+# =====================================================================================================================
+#                                  v0.211: skills, brands, properties, textile, tailoring and stores
+# =====================================================================================================================
+# --- skills (skills.py): every skill goes 0 to 1000 and is earned by COMPLETED work only --------------------------------------------------
+SKILL_MAX = 1000
+SKILL_CURVE_POWER = 1.8                    # work needed for level L = SKILL_WORK[skill] * (L / 1000) ** 1.8: the first levels come quickly, the last ones take most of the time (diminishing returns)
+SKILL_WORK = {                             # the work (units) a player has to complete to reach 1000, per skill
+    "mcdonalds": 1000,                     # one unit = one completed 8-hour shift: 1000 shifts is the long-term benchmark of the spec
+    "textile": 2000,                       # one unit = ten minutes of finished cotton work
+    "tailoring": 2000,                     # one unit = ten minutes of finished tailoring
+    "accounting": 3000,                    # one unit = one sale settled by that accountant
+    "warehouse": 3000,                     # one unit = one stock run that moved something
+    "production": 2000,                    # one unit = ten minutes of finished production work as an employee
+}
+SKILL_TITLES = ((0, "beginner"), (50, "trainee"), (150, "skilled"), (300, "experienced"), (500, "professional"), (750, "expert"), (900, "master"))   # (level that starts the title, title id)
+WORK_UNIT_SECONDS = 600                    # the ten minutes of the textile / tailoring / production units
+
+MCD_XP = 10                                # character XP for one completed shift (separate from the skill)
+MCD_WAGE_BONUS_BPS_MAX = 2500              # at skill 1000 a shift pays up to 25% more (scaled linearly by the level at the START of the shift)
+MCD_SHIFT_CUT_BPS_MAX = 2000               # ...and lasts up to 20% less
+MCD_TITLE_BONUS = True                     # (the titles themselves are shown on the job screen)
+
+# --- brands -----------------------------------------------------------------------------------------------------------------------------
+BRAND_NAMES_DEFAULT = "NIKE,BALENCIAGA,GIVENCHY,LOUIS VUITTON"      # env BRAND_NAMES (comma separated) replaces it; the list is small on purpose and can grow without any code change
+BRAND_FEE_CENTS = 1_000_00                 # registering a brand
+BRAND_MAX_PER_PLAYER = 1                   # one player owns at most this many brands (0 = no limit), so nobody can hoard the short list
+
+
+def _brand_key(name: str) -> str:
+    return "_".join("".join(ch.lower() if ch.isalnum() else " " for ch in name).split())[:24]
+
+
+def brand_names() -> dict:
+    """{brand key: display name} of the brands that can be registered, in the configured order (invalid / repeated names are dropped)."""
+    out: dict = {}
+    for raw in (os.environ.get("BRAND_NAMES") or BRAND_NAMES_DEFAULT).split(","):
+        name = " ".join(raw.split()).upper()
+        key = _brand_key(name)
+        if 3 <= len(key) <= 24 and key[0].isalpha() and key.isascii() and key not in out and len(name) <= 24:
+            out[key] = name
+    return out
+
+
+# --- commercial property (estate.py) ----------------------------------------------------------------------------------------------------
+# A property is a vacant lot of the saved city that can hold a business. Its attributes are WORKED OUT once from the lot's geometry and zone with the tables below, then SAVED in its row:
+# a later change of these numbers never changes a property that exists. All prices are life cash, in cents.
+PROPERTY_PRICE_MIN_CENTS = 250_00          # the cheapest a property can be
+PROPERTY_PRICE_MAX_CENTS = 50_000_00       # the most expensive
+PROPERTY_ROUND_CENTS = 5_00                # prices are whole multiples of this
+PROPERTY_ZONE_RATE_CENTS = {"commercial": 14_00, "residential": 4_00, "industrial": 9_00}         # cents per square metre of the lot, by the zone of the land (a zone not listed has no property)
+PROPERTY_ZONE_MODES = {"commercial": ("retail", "production", "both"), "residential": ("retail",), "industrial": ("production",)}   # the business modes a lot of that zone permits
+PROPERTY_CENTRE_BPS = (10000, 15000)       # the price factor from the edge of the city (first) to its centre (second)
+PROPERTY_FRONT_BPS = 11500                 # a lot that fronts a main road costs this much more (basis points)
+PROPERTY_TIERS = (                         # (tier id, smallest area in m2 of the tier, warehouse capacity (items), display capacity (items), employee slots, equipment slots, highest product quality in stars)
+    ("kiosk", 0, 60, 10, 1, 2, 1),
+    ("small", 90, 150, 24, 2, 3, 2),
+    ("medium", 180, 400, 60, 4, 5, 3),
+    ("large", 400, 900, 120, 7, 7, 4),
+    ("flagship", 800, 2000, 240, 10, 9, 4),   # (a commercial property never makes more than four stars: five is for gifted items only)
+)
+PROPERTY_ZONE_MULT_BPS = {"industrial": {"warehouse": 15000, "display": 0}, "residential": {"warehouse": 7000}}   # capacity multipliers by zone (basis points): a workshop has no shop floor, a corner shop a small stockroom
+COMMERCIAL_MAX_QUALITY = 4                 # the highest star rating anything made by a business can have
+BIZ_NEAR_UNITS = 60.0                      # map units (about 33 m): how close to a property's door a player must stand to inspect, buy or visit it
+FITOUT_BPS = 5_00                          # fitting an empty shell for its business mode costs this share of the price (basis points) ...
+FITOUT_MIN_CENTS = 25_00
+MODE_CHANGE_BPS = 15_00                    # ... and converting it later to another mode costs this much (it is deliberately expensive)
+MODE_CHANGE_MIN_CENTS = 75_00
+BUSINESS_MODES = ("retail", "production", "both")
+BRANCH_SIGN_DEFAULT = "plain"
+BRAND_SEQ_CAP = 99                         # branch numbers per brand and city
+
+
+# --- textile: the cotton job (textile.py) -----------------------------------------------------------------------------------------------
+# A batch of cotton work: the player picks a GRADE (the fabric's quality, 1 to 5 stars). A better grade needs a higher textile skill and takes much longer. Every number is fixed when the batch is
+# STARTED (from the skill at that moment) and saved in the task; the output is collected once the server clock says the batch is done.
+COTTON_GRADES = {                          # grade -> (textile skill needed, base seconds of work, base units of fabric)
+    1: (0, 30 * 60, 2),
+    2: (100, 60 * 60, 3),
+    3: (300, 120 * 60, 4),
+    4: (550, 240 * 60, 6),
+    5: (800, 480 * 60, 9),
+}
+COTTON_SPEED_BPS_MAX = 2000                # at skill 1000 a batch takes up to 20% less time (linear in the level at the start)
+COTTON_YIELD_BPS_MAX = 3000                # ... and gives up to 30% more fabric (rounded down, never fewer than the base)
+COTTON_XP = {1: 1, 2: 1, 3: 1, 4: 2, 5: 3} # character XP for one completed batch of that grade (separate from the skill)
+FABRIC_GAME_CENTS = {1: 40, 2: 55, 3: 75, 4: 105, 5: 150}      # what the game pays for ONE unit of fabric of that quality (about what a job of the same hours pays)
+FABRIC_STACK = 100
+
+# --- purchase ads (market.py) ------------------------------------------------------------------------------------------------------------
+AD_MAX_QTY = 500                           # the most units one ad can ask for
+AD_MAX_UNIT_CENTS = 500_00                 # the highest price per unit an ad may offer
+AD_TTL_CHOICES = (6 * 3600, 24 * 3600, 3 * 86400, 7 * 86400)    # the lifetimes an owner can choose (seconds)
+AD_MAX_OPEN = 5                            # open ads per branch
+AD_BOARD_PAGE = 6
+
+# --- tailoring (tailor.py) -----------------------------------------------------------------------------------------------------------------
+TAILOR_MAX_BATCH = 20                      # pieces in one order
+TAILOR_SKILL_Q = ((0, 1), (150, 2), (400, 3), (700, 4), (900, 5))         # (tailoring skill from which this quality is possible, the quality): one of the factors of the final quality
+TAILOR_SPEED_BPS_MAX = 2500                # skill 1000 makes a piece up to 25% faster ...
+TAILOR_SAVE_BPS_MAX = 1000                 # ... and uses up to 10% less material (never fewer than one unit per piece)
+TAILOR_XP_PER_HOUR = 1                     # character XP of a finished order per hour of its work (at least 1), only for a human worker
+BOT_WORKER_SKILL = 300                     # a bot production worker works like a human of this skill: fixed, never grows
+BOT_WORKER_WAGE_DAY_CENTS = {"accountant": 2_00, "production": 3_00, "warehouse": 2_00, "sales": 1_50}   # what a bot employee costs a day (the game takes it: it is a sink, not a payment to a player)
+
+# --- stock, prices and the game's buyback (stock.py) -----------------------------------------------------------------------------------------------
+DISPLAY_SLOT_ITEMS = 10                    # one display slot holds this many pieces of one product
+PRICE_MAX_MULT = 20                        # an owner's price is at most this many times the game's own value of the piece
+BUYBACK_BPS = 4500                         # the game buys surplus stock at 45% of its own value of the piece: always less than the same fabric sells for
+STOCK_RUN_MAX_MOVES = 200
+
+# --- customers and the accountant (store.py) --------------------------------------------------------------------------------------------------
+QUOTE_TTL = 300                            # seconds a price quote (the confirm screen) stays valid
+APPROVAL_TTL = 600                         # seconds a purchase waits for the owner / manager's approval when no accountant handles it
+BOT_AUTO_LIMIT_CENTS = 100_00              # the biggest purchase a BOT accountant completes by itself
+ACCOUNTANT_AUTO_BASE_CENTS = 100_00        # a player accountant: this plus ACCOUNTANT_AUTO_PER_LEVEL x skill level
+ACCOUNTANT_AUTO_PER_LEVEL_CENTS = 50
+ACCOUNTING_MIN_SALE_CENTS = 100            # a sale smaller than this never counts towards Accounting skill or reputation
+ACCOUNTING_XP = 1
+
+# --- staff (staff.py) -------------------------------------------------------------------------------------------------------------------
+STAFF_PERCENT_MAX_BPS = 3000               # one contract may pay at most 30% of the sales ...
+STAFF_PERCENT_TOTAL_BPS = 5000             # ... and all percent contracts of a branch together at most 50%
+STAFF_FIXED_MAX_DAY_CENTS = 500_00
+STAFF_OFFER_TTL = 3 * 86400
+ROLES = ("manager", "accountant", "warehouse", "production", "sales")
+BOT_ROLES = ("accountant", "warehouse", "production", "sales")
+
+# --- reputation (reputation in biz.py's family: rep.py) ----------------------------------------------------------------------------------------
+REP_SALE_PER_STAR = 1                      # a completed sale adds this per quality star of the piece (a piece without quality counts one star)
+REP_FILL = 3                               # a fulfilled material ad
+REP_WAGE_RUN = 1                           # a payroll that was paid in full
+REP_PER_BUYER_DAILY = 6                    # at most this many points per branch from one customer a (server) day: nobody can farm a reputation with one account
+REP_TITLES = ((0, "newcomer"), (40, "known"), (150, "trusted"), (500, "respected"), (1500, "renowned"))
+
+# --- style (style.py) -------------------------------------------------------------------------------------------------------------------
+STYLE_Q_POINTS = {0: 6, 1: 8, 2: 12, 3: 18, 4: 26, 5: 32}          # one worn piece: by its quality (0 = a piece without a quality)
+STYLE_COMPLETE_BONUS = 12                  # upper + lower + footwear all worn
+STYLE_ACCESSORY_BONUS = 4                  # per worn accessory or headwear (at most two count)
+STYLE_TIERS = ((0, "plain"), (1, "simple"), (25, "average"), (55, "stylish"), (80, "iconic"))
+STYLE_TIP_BPS_MAX = 1000                   # an iconic outfit raises a Snapp passenger's tipping chance by at most 10 points (nobody's chance goes DOWN for plain clothes)
+OUTFIT_KINDS = ("streetwear", "casual", "formal", "work")

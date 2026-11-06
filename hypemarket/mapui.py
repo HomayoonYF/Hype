@@ -25,7 +25,7 @@ import re
 import secrets
 import sqlite3
 
-from . import casino, cash, character, config as C, core, fmt, interactui, intercity, jobviz, presence, views, work, world, worldgeom as G, worldinspect, worldmap, worldnet as N, worldplaces
+from . import bizmap, casino, cash, character, config as C, core, fmt, interactui, intercity, jobviz, presence, views, work, world, worldgeom as G, worldinspect, worldmap, worldnet as N, worldplaces
 from .core import GameError
 from .texts import t
 from .views import Reply, kb
@@ -190,6 +190,15 @@ def _marks(lang: str, city, st, others, tag_dest: bool, db=None) -> dict:
         if o.mode == "car" and db is not None:
             entry["vehicle"] = {"kind": "car", "heading": o.heading, "color": jobviz.car_of_user(db, o.uid)}
         marks["others"].append(entry)
+    if db is not None:                                                                    # v0.211: the business world's pictures and the players' style
+        try:
+            marks["places"] = bizmap.places(db, city, st.pos)
+            tiers = bizmap.tiers(db, [st.row["user_id"]] + [o.uid for o in others])
+            me["tier"] = tiers.get(st.row["user_id"])
+            for entry, o in zip(marks["others"], others):
+                entry["tier"] = tiers.get(o.uid)
+        except Exception:                                                                 # the map must never fail because of a decoration
+            log.exception("the business marks of the map could not be built")
     if st.trip is not None:
         try:
             pts = presence.route_of(st.trip)
@@ -352,7 +361,7 @@ def screen_lots(lang: str, w, city, sid: str, st, page) -> Screen:
     return Screen(text, rows, view="ln", page=page)
 
 
-def screen_object(lang: str, w, city, sid: str, st, ref: str, back: str) -> Screen | None:
+def screen_object(lang: str, w, city, sid: str, st, ref: str, back: str, db=None) -> Screen | None:
     """One place: the existing inspection panel for exactly this ID, then what walking there means for this player, and the buttons."""
     res = worldinspect.inspect(lang, w, city.layout, ref, notes=False)
     if res is None:
@@ -361,6 +370,10 @@ def screen_object(lang: str, w, city, sid: str, st, ref: str, back: str) -> Scre
     lines = [res.text]
     rows: list = []
     sel = res.id
+    if spot is not None and db is not None:
+        extra = bizmap.inspect_lines(lang, db, city, spot)                       # v0.211: the cotton park, a lot for sale / owned / with a branch
+        if extra:
+            lines += [""] + extra
     if spot is not None:
         sel = spot.id
         casino_here = spot.id == city.casino_id
@@ -522,7 +535,7 @@ async def open_map(c, w, city, ref: str | None):
     if ref is None:
         scr = screen_main(c.lang, w, city, sid, st, others)
     else:
-        scr = screen_object(c.lang, w, city, sid, st, ref, "m")
+        scr = screen_object(c.lang, w, city, sid, st, ref, "m", db=c.db)
         if scr is None:
             return Reply(text=worldinspect.unknown_text(c.lang, city.layout, ref))
     return await _reply(c, w, city, sid, None, st, others, scr, first=True)
@@ -615,7 +628,7 @@ async def handle(c):
                 back = sess["back"]
             else:
                 back = "m"
-            return await show(screen_object(lang, w, city, sid, st, spot.id, back))
+            return await show(screen_object(lang, w, city, sid, st, spot.id, back, db=c.db))
         if act == "go":
             ref = rest[0] if rest else ""
             if sess["view"] != "obj" or sess["sel"] != ref:
@@ -638,8 +651,8 @@ async def handle(c):
                 msg_ = plain(t(lang, "mp.busy", dest=_dest_html(lang, city, st.trip["dest_id"] if st.trip else ref)))
                 return await show(screen_trip(lang, w, city, sid, st, others) if st.trip is not None else screen_main(lang, w, city, sid, st, others), toast=msg_)
             if out.status == "here":
-                return await show(screen_object(lang, w, city, sid, st, ref, sess["back"]), toast=plain(t(lang, "mp.here")))
-            return await show(screen_object(lang, w, city, sid, st, ref, sess["back"]), toast=plain(t(lang, "mp.unreachable")), alert=True)
+                return await show(screen_object(lang, w, city, sid, st, ref, sess["back"], db=c.db), toast=plain(t(lang, "mp.here")))
+            return await show(screen_object(lang, w, city, sid, st, ref, sess["back"], db=c.db), toast=plain(t(lang, "mp.unreachable")), alert=True)
         if act == "ce":
             cid = city.casino_id
             if cid is None or sess["sel"] != cid or sess["view"] not in ("obj", "cas", "bj"):

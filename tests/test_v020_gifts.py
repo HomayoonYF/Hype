@@ -474,7 +474,7 @@ def test_the_admin_walks_through_the_flow_and_gets_a_code_that_players_can_redee
 def test_every_step_names_what_it_asks_for(h):
     h.say(ADMIN, "/start")
     t1 = panel(h.press(ADMIN, f"ad:gift:{ADMIN}"))
-    assert cbs(t1) == [f"ad:gt:stock_money:{ADMIN}", f"ad:gt:life_cash:{ADMIN}", f"ad:gt:char_xp:{ADMIN}", f"ad:gx:{ADMIN}"] and FA["gift.type"] in t1.text
+    assert cbs(t1) == [f"ad:gt:stock_money:{ADMIN}", f"ad:gt:life_cash:{ADMIN}", f"ad:gt:char_xp:{ADMIN}", f"ad:gt:item:{ADMIN}", f"ad:gx:{ADMIN}"] and FA["gift.type"] in t1.text
     t2 = panel(h.press(ADMIN, f"ad:gt:char_xp:{ADMIN}"))
     assert "XP" in t2.text and fmt.num(C.GIFT_MAX_XP, "fa") in t2.text and h.app.pending[ADMIN][0] == adminpanel.GIFT_AMOUNT and cbs(t2) == [f"ad:gx:{ADMIN}"]
     t3 = panel(h.say(ADMIN, "150"))
